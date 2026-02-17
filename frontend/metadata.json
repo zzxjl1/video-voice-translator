@@ -1,0 +1,5 @@
+{
+  "name": "Video Voice Cloner & Translator",
+  "description": "An AI-powered tool to transcribe, translate, and re-voice video content using Gemini. Upload a video to automatically generate time-coded transcriptions with speaker identification, translate the dialogue, and synthesize new audio using cloned voices.",
+  "requestFramePermissions": []
+}
