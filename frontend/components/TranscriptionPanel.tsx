@@ -4,14 +4,13 @@ import { TranscriptionSegment, Speaker } from '../types';
 import { formatTime } from '../utils/helpers';
 
 interface TranscriptionPanelProps {
-  segments: TranscriptionSegment[];
-  speakers: Speaker[];
-  isTranscribing: boolean;
-  onSegmentUpdate: (segmentId: string, newTranslatedText: string) => void;
-  onTranslateSegment: (segmentId: string) => void;
-  onSynthesizeSegment: (segmentId: string) => void;
-  onToggleTtsSource: (segmentId: string) => void;
-  onSpeakerNameChange: (id: string, newName: string) => void;
+    segments: TranscriptionSegment[];
+    speakers: Speaker[];
+    isTranscribing: boolean;
+    onSegmentUpdate: (segmentId: string, newTranslatedText: string) => void;
+    onTranslateSegment: (segmentId: string) => void;
+    onSynthesizeSegment: (segmentId: string) => void;
+    onSpeakerNameChange: (id: string, newName: string) => void;
 }
 
 const SegmentCard: React.FC<{
@@ -20,29 +19,20 @@ const SegmentCard: React.FC<{
     onSegmentUpdate: (segmentId: string, newTranslatedText: string) => void;
     onTranslateSegment: (segmentId: string) => void;
     onSynthesizeSegment: (segmentId: string) => void;
-    onToggleTtsSource: (segmentId: string) => void;
     onSpeakerNameChange: (id: string, newName: string) => void;
-}> = memo(({ segment, speaker, onSegmentUpdate, onTranslateSegment, onSynthesizeSegment, onToggleTtsSource, onSpeakerNameChange }) => {
+}> = memo(({ segment, speaker, onSegmentUpdate, onTranslateSegment, onSynthesizeSegment, onSpeakerNameChange }) => {
     return (
         <div className={`p-6 rounded-2xl space-y-4 border transition-all duration-500 ${segment.audioUrl ? 'bg-white border-claude-accent/30 shadow-md ring-1 ring-claude-accent/10' : 'bg-white border-claude-border hover:border-gray-300 shadow-sm'}`}>
             <div className="flex items-center justify-between">
                 <div className="flex items-center space-x-3">
                     <div className="w-2.5 h-2.5 rounded-full ring-2 ring-white shadow-sm" style={{ backgroundColor: speaker?.color || '#9ca3af' }}></div>
-                    <input 
-                      value={speaker?.name || '...'} 
-                      onChange={(e) => speaker && onSpeakerNameChange(speaker.id, e.target.value)}
-                      className="bg-transparent text-xs font-bold uppercase tracking-wider text-gray-700 focus:outline-none focus:text-claude-accent w-32 border-b border-transparent focus:border-claude-accent transition-colors"
+                    <input
+                        value={speaker?.name || '...'}
+                        onChange={(e) => speaker && onSpeakerNameChange(speaker.id, e.target.value)}
+                        className="bg-transparent text-xs font-bold uppercase tracking-wider text-gray-700 focus:outline-none focus:text-claude-accent w-32 border-b border-transparent focus:border-claude-accent transition-colors"
                     />
                 </div>
-                <div className="flex items-center space-x-3">
-                    <span className="text-[10px] font-mono text-gray-400 bg-claude-paper px-2 py-1 rounded-md">{formatTime(segment.startTime)}</span>
-                    <button 
-                        onClick={() => onToggleTtsSource(segment.id)}
-                        className="text-[10px] uppercase font-bold text-gray-400 hover:text-claude-accent transition cursor-pointer"
-                    >
-                        {segment.ttsSource}
-                    </button>
-                </div>
+                <span className="text-[10px] font-mono text-gray-400 bg-claude-paper px-2 py-1 rounded-md">{formatTime(segment.startTime)}</span>
             </div>
 
             <div className="grid grid-cols-1 gap-4">
@@ -59,42 +49,42 @@ const SegmentCard: React.FC<{
                     />
                 </div>
             </div>
-            
+
             <div className="flex items-center justify-between pt-1">
-                 <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2">
                     {segment.audioUrl && (
-                        <button 
+                        <button
                             onClick={() => new Audio(segment.audioUrl).play()}
                             className="p-2 bg-claude-accent/10 text-claude-accent rounded-full hover:bg-claude-accent/20 transition"
                             title="Play Audio"
                         >
-                            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
                         </button>
                     )}
-                 </div>
-                 <div className="flex gap-2">
-                    <button 
+                </div>
+                <div className="flex gap-2">
+                    <button
                         onClick={() => onTranslateSegment(segment.id)}
                         disabled={segment.isTranslating}
                         className="text-xs font-medium px-4 py-2 rounded-lg bg-gray-100 text-gray-600 hover:bg-gray-200 disabled:opacity-50 transition border border-gray-200"
                     >
                         {segment.isTranslating ? 'Translating...' : 'Translate'}
                     </button>
-                    <button 
+                    <button
                         onClick={() => onSynthesizeSegment(segment.id)}
                         disabled={segment.isSynthesizing || !segment.translatedText}
                         className="text-xs font-medium px-4 py-2 rounded-lg bg-claude-accent text-white hover:bg-claude-accentHover disabled:opacity-50 disabled:cursor-not-allowed transition shadow-sm"
                     >
                         {segment.isSynthesizing ? 'Generating...' : 'Synthesize Voice'}
                     </button>
-                 </div>
+                </div>
             </div>
         </div>
     );
 });
 
-export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = memo(({ 
-    segments, speakers, isTranscribing, onSegmentUpdate, onTranslateSegment, onSynthesizeSegment, onToggleTtsSource, onSpeakerNameChange 
+export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = memo(({
+    segments, speakers, isTranscribing, onSegmentUpdate, onTranslateSegment, onSynthesizeSegment, onSpeakerNameChange
 }) => {
     const speakerMap = new Map(speakers.map(s => [s.id, s]));
 
@@ -107,7 +97,7 @@ export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = memo(({
                 </h3>
                 {isTranscribing && (
                     <div className="flex items-center gap-2">
-                        <span className="text-xs font-medium text-claude-accent">Streaming</span>
+                        <span className="text-xs font-medium text-claude-accent">Processing</span>
                         <div className="flex gap-1">
                             <span className="w-1 h-1 bg-claude-accent rounded-full animate-bounce [animation-delay:-0.3s]"></span>
                             <span className="w-1 h-1 bg-claude-accent rounded-full animate-bounce [animation-delay:-0.15s]"></span>
@@ -116,7 +106,7 @@ export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = memo(({
                     </div>
                 )}
             </div>
-            
+
             <div className="flex-grow overflow-y-auto p-6 space-y-5 custom-scrollbar bg-claude-bg">
                 {segments.length === 0 && !isTranscribing ? (
                     <div className="flex flex-col items-center justify-center h-full text-center space-y-4 opacity-40">
@@ -126,20 +116,19 @@ export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = memo(({
                 ) : (
                     <>
                         {segments.map(segment => (
-                            <SegmentCard 
-                                key={segment.id} 
-                                segment={segment} 
+                            <SegmentCard
+                                key={segment.id}
+                                segment={segment}
                                 speaker={speakerMap.get(segment.speakerId)}
                                 onSegmentUpdate={onSegmentUpdate}
                                 onTranslateSegment={onTranslateSegment}
                                 onSynthesizeSegment={onSynthesizeSegment}
-                                onToggleTtsSource={onToggleTtsSource}
                                 onSpeakerNameChange={onSpeakerNameChange}
                             />
                         ))}
                         {isTranscribing && (
                             <div className="p-8 rounded-2xl border-2 border-dashed border-claude-border animate-pulse flex justify-center">
-                                <span className="text-xs uppercase font-bold text-gray-400 tracking-widest">Listening...</span>
+                                <span className="text-xs uppercase font-bold text-gray-400 tracking-widest">Processing...</span>
                             </div>
                         )}
                     </>

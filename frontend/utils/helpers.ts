@@ -7,7 +7,7 @@ export const formatTime = (seconds: number): string => {
 
 /**
  * Decodes a base64 string into a Uint8Array.
- * Following @google/genai manual implementation guidelines.
+ * Decodes a base64-encoded string into a byte array.
  */
 export function decodeBase64(base64: string) {
   const binaryString = atob(base64);
@@ -29,7 +29,7 @@ export const createWavUrlFromPcm = (base64Pcm: string): string => {
   const sampleRate = 24000;
   const numChannels = 1;
   const bitsPerSample = 16;
-  
+
   const header = new Uint8Array(44);
   const view = new DataView(header.buffer);
 
@@ -63,7 +63,7 @@ export const createWavUrlFromPcm = (base64Pcm: string): string => {
   const wavFile = new Uint8Array(header.length + pcmData.length);
   wavFile.set(header);
   wavFile.set(pcmData, header.length);
-  
+
   const blob = new Blob([wavFile], { type: 'audio/wav' });
   return URL.createObjectURL(blob);
 };
