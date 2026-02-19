@@ -32,6 +32,8 @@ class Speaker:
 
     @classmethod
     def from_dict(cls, data):
+        if isinstance(data, cls):
+            return data
         return cls(**data)
 
 
@@ -51,6 +53,8 @@ class Segment:
 
     @classmethod
     def from_dict(cls, data):
+        if isinstance(data, cls):
+            return data
         return cls(**data)
 
 
@@ -75,6 +79,9 @@ class VideoState:
 
     @classmethod
     def from_dict(cls, data):
+        if isinstance(data, cls):
+            return data
+            
         segments_data = data.pop("segments", [])
         speakers_data = data.pop("speakers", [])
         status_val = data.pop("status", VideoStatus.UPLOADED.value)
