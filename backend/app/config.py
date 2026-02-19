@@ -18,7 +18,7 @@ LLM_THINKING_ENABLED = False
 TTS_API_KEY = SILICONFLOW_API_KEY
 TTS_BASE_URL = SILICONFLOW_BASE_URL
 TTS_MODEL = "FunAudioLLM/CosyVoice2-0.5B"
-TTS_VOICE = "alex"
+TTS_VOICE = "FunAudioLLM/CosyVoice2-0.5B:alex"
 
 # ----- File storage -----
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
