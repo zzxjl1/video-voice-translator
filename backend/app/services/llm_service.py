@@ -2,8 +2,10 @@
 LLM translation service via SiliconFlow (using OpenAI SDK).
 Translates transcript segments with full context awareness.
 """
+import datetime
 import json
 import logging
+import os
 
 from openai import AsyncOpenAI
 
@@ -18,8 +20,11 @@ _client = AsyncOpenAI(
 )
 
 
+from app.models import get_video_dir
+
 async def translate_single(text: str, target_language: str) -> str:
     """Translate a single piece of text."""
+    # (Optional: we could also save single translations, but mostly batch is used)
     response = await _client.chat.completions.create(
         model=config.SILICONFLOW_MODEL,
         messages=[
@@ -38,6 +43,7 @@ async def translate_single(text: str, target_language: str) -> str:
 
 
 async def translate_script(
+    video_id: str,
     segments: list[dict],
     target_language: str = "English",
 ) -> list[dict]:
@@ -45,6 +51,7 @@ async def translate_script(
     Translate an entire script with full context.
     
     Args:
+        video_id: Unique ID for the video to save context files
         segments: List of dicts with keys: id, text, speaker_id, start_time
         target_language: Target language for translation
     
@@ -63,6 +70,21 @@ Do not wrap the JSON in markdown code blocks. Just return the raw JSON string.
 
 Input Script:
 {script_context}"""
+
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # Save prompt to disk (in llm/ subfolder)
+    video_dir = get_video_dir(video_id)
+    llm_dir = os.path.join(video_dir, "llm")
+    os.makedirs(llm_dir, exist_ok=True)
+    
+    prompt_path = os.path.join(llm_dir, f"prompt_{timestamp}.txt")
+    try:
+        with open(prompt_path, "w", encoding="utf-8") as f:
+            f.write(prompt)
+        logger.info(f"Saved LLM prompt to {prompt_path}")
+    except Exception as e:
+        logger.warning(f"Failed to save LLM prompt: {e}")
 
     logger.info(f"Submitting translation task to LLM ({config.SILICONFLOW_MODEL})")
     
@@ -83,6 +105,15 @@ Input Script:
 
     result_text = response.choices[0].message.content.strip()
 
+    # Save raw result to disk
+    raw_result_path = os.path.join(llm_dir, f"response_{timestamp}.json")
+    try:
+        with open(raw_result_path, "w", encoding="utf-8") as f:
+            f.write(result_text)
+        logger.info(f"Saved raw LLM response to {raw_result_path}")
+    except Exception as e:
+        logger.warning(f"Failed to save raw LLM response: {e}")
+
     # Clean potential markdown wrapping
     clean = result_text.replace("```json", "").replace("```", "").strip()
     start = clean.find("[")
@@ -90,5 +121,16 @@ Input Script:
     if start == -1 or end == -1:
         logger.error(f"Invalid JSON response from LLM: {result_text}")
         raise ValueError(f"Invalid JSON response from LLM: {result_text[:200]}")
+        
+    parsed_results = json.loads(clean[start : end + 1])
 
-    return json.loads(clean[start : end + 1])
+    # Save latest translation result to video root
+    latest_path = os.path.join(video_dir, "translation_result.json")
+    try:
+        with open(latest_path, "w", encoding="utf-8") as f:
+            json.dump(parsed_results, f, ensure_ascii=False, indent=2)
+        logger.info(f"Saved latest translation result to {latest_path}")
+    except Exception as e:
+        logger.warning(f"Failed to save latest translation result: {e}")
+
+    return parsed_results

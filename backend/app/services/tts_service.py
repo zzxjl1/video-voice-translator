@@ -1,13 +1,10 @@
-"""
-TTS service via OpenAI SDK.
-Uses SiliconFlow's TTS endpoint to synthesize speech from text.
-"""
 import base64
 import logging
+import os
 
 from openai import AsyncOpenAI
-
 from app import config
+from app.models import get_video_dir
 
 logger = logging.getLogger(__name__)
 
@@ -18,11 +15,13 @@ _client = AsyncOpenAI(
 )
 
 
-async def synthesize_speech(text: str, voice: str | None = None) -> tuple[str, str]:
+async def synthesize_speech(video_id: str, segment_id: str, text: str, voice: str | None = None) -> tuple[str, str]:
     """
-    Synthesize speech from text using OpenAI TTS API.
+    Synthesize speech from text using OpenAI TTS API and save to disk.
     
     Args:
+        video_id: MD5 hash of the video
+        segment_id: Unique ID for the segment
         text: Text to synthesize
         voice: Voice name (optional, uses config default)
     
@@ -31,7 +30,7 @@ async def synthesize_speech(text: str, voice: str | None = None) -> tuple[str, s
     """
     voice = voice or config.TTS_VOICE
     
-    logger.info(f"Submitting TTS task to SiliconFlow ({config.TTS_MODEL}), Voice: {voice}")
+    logger.info(f"Submitting TTS task to SiliconFlow ({config.TTS_MODEL}), Voice: {voice} for {segment_id}")
 
     response = await _client.audio.speech.create(
         model=config.TTS_MODEL,
@@ -40,6 +39,19 @@ async def synthesize_speech(text: str, voice: str | None = None) -> tuple[str, s
         response_format="mp3",
     )
 
-    # response.content is bytes
+    # Save to disk in tts/ subfolder
+    video_dir = get_video_dir(video_id)
+    tts_dir = os.path.join(video_dir, "tts")
+    os.makedirs(tts_dir, exist_ok=True)
+    
+    audio_path = os.path.join(tts_dir, f"{segment_id}.mp3")
+    try:
+        with open(audio_path, "wb") as f:
+            f.write(response.content)
+        logger.info(f"Saved synthesized audio to {audio_path}")
+    except Exception as e:
+        logger.warning(f"Failed to save synthesized audio: {e}")
+
+    # Return base64 for frontend immediate use
     audio_base64 = base64.b64encode(response.content).decode("utf-8")
     return audio_base64, "audio/mp3"

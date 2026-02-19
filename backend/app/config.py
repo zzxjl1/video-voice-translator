@@ -21,12 +21,10 @@ TTS_VOICE = "alloy"
 
 # ----- File storage -----
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
-AUDIO_DIR = os.path.join(BASE_DIR, "audio_cache")
+DATA_DIR = os.path.join(BASE_DIR, "data")
 
-# Ensure directories exist
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-os.makedirs(AUDIO_DIR, exist_ok=True)
+# Ensure directory exists
+os.makedirs(DATA_DIR, exist_ok=True)
 
 # ----- Server -----
 CORS_ORIGINS = ["*"]

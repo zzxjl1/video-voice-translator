@@ -97,13 +97,14 @@ export async function translateScript(
  */
 export async function synthesizeSpeech(
   videoId: string,
+  segmentId: string,
   text: string,
   voice?: string,
 ): Promise<TTSResult> {
   const response = await fetch(`${API_BASE}/videos/${videoId}/tts`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, voice }),
+    body: JSON.stringify({ segment_id: segmentId, text, voice }),
   });
 
   if (!response.ok) {

@@ -142,19 +142,20 @@ async def parse_asr_results(results: list[dict]) -> list[Segment]:
     return segments
 
 
-async def transcribe_video(video_path: str, audio_path: str, file_serve_url: str) -> list[Segment]:
+from app.models import Segment, get_video_dir
+
+async def transcribe_video(video_id: str, video_path: str, audio_path: str, file_serve_url: str) -> list[Segment]:
     """
     Full transcription pipeline:
     1. Extract audio from video
     2. Submit to Ali ASR
     3. Poll for results
     4. Parse into Segments
+    5. Save result to disk
     """
     # Extract audio if not already done
     if not os.path.exists(audio_path):
         logger.info(f"--- [ASR] Step 1: Extracting audio to {audio_path} ---")
-        # Subprocess run is blocking, but ffmpeg usually takes limited time.
-        # For better async, we could use asyncio.create_subprocess_exec
         extract_audio(video_path, audio_path)
 
     # Submit transcription task with the served file URL
@@ -174,4 +175,15 @@ async def transcribe_video(video_path: str, audio_path: str, file_serve_url: str
     segments = await parse_asr_results(results)
     logger.info(f"--- [ASR] Step 4: Parsing complete. Generated {len(segments)} segments. ---")
     
+    # Save PROCESSED segments to disk (for easy recovery)
+    video_dir = get_video_dir(video_id)
+    result_path = os.path.join(video_dir, "asr_result.json")
+    try:
+        segments_dict = [s.to_dict() for s in segments]
+        with open(result_path, "w", encoding="utf-8") as f:
+            json.dump(segments_dict, f, ensure_ascii=False, indent=2)
+        logger.info(f"Saved processed ASR segments to {result_path}")
+    except Exception as e:
+        logger.warning(f"Failed to save processed ASR segments: {e}")
+        
     return segments

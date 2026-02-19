@@ -11,3 +11,4 @@ env/
 uploads/
 audio_cache/
 .DS_Store
+data/

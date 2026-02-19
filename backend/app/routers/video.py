@@ -6,11 +6,19 @@ import hashlib
 import logging
 import os
 import shutil
+import uuid
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 
 from app import config
-from app.models import VideoState, VideoStatus, get_or_create_state, get_state
+from app.models import (
+    VideoState,
+    VideoStatus,
+    get_or_create_state,
+    get_state,
+    get_video_dir,
+    save_state,
+)
 from app.schemas import (
     SegmentOut,
     TranscribeResponse,
@@ -42,28 +50,42 @@ def _compute_md5(file_path: str) -> str:
 async def upload_video(file: UploadFile = File(...)):
     """Upload a video file. Returns video_id (MD5 hash)."""
     logger.info(f"Received upload request for file: {file.filename}")
-    # Save to temp first to compute MD5
-    temp_path = os.path.join(config.UPLOAD_DIR, f"temp_{file.filename}")
-    with open(temp_path, "wb") as f:
-        shutil.copyfileobj(file.file, f)
+    
+    # We need to save to a temp location first to compute MD5
+    temp_dir = os.path.join(config.DATA_DIR, "temp")
+    os.makedirs(temp_dir, exist_ok=True)
+    temp_path = os.path.join(temp_dir, f"{uuid.uuid4()}_{file.filename}")
+    
+    try:
+        with open(temp_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
 
-    video_id = _compute_md5(temp_path)
-    logger.info(f"Computed MD5 for {file.filename}: {video_id}")
+        video_id = _compute_md5(temp_path)
+        logger.info(f"Computed MD5 for {file.filename}: {video_id}")
 
-    # Move to final path with MD5 name
-    ext = os.path.splitext(file.filename)[1]
-    final_path = os.path.join(config.UPLOAD_DIR, f"{video_id}{ext}")
-    if not os.path.exists(final_path):
-        os.rename(temp_path, final_path)
-        logger.info(f"Saved new video file: {final_path}")
-    else:
-        os.remove(temp_path)  # Already uploaded before
-        logger.info(f"Video already exists, skipping save: {final_path}")
+        # Final destination
+        video_dir = get_video_dir(video_id)
+        ext = os.path.splitext(file.filename)[1]
+        final_video_name = f"original_video{ext}"
+        final_path = os.path.join(video_dir, final_video_name)
 
-    # Create/retrieve state
-    state = get_or_create_state(video_id, file.filename, final_path)
+        if not os.path.exists(final_path):
+            os.rename(temp_path, final_path)
+            logger.info(f"Saved new video file: {final_path}")
+        else:
+            os.remove(temp_path)  # Already uploaded before
+            logger.info(f"Video already exists, skipping save: {final_path}")
 
-    return UploadResponse(video_id=video_id, filename=file.filename)
+        # Create/retrieve state
+        state = get_or_create_state(video_id, file.filename, final_path)
+        save_state(video_id)
+
+        return UploadResponse(video_id=video_id, filename=file.filename)
+    except Exception as e:
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        logger.error(f"Upload failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/{video_id}/status", response_model=VideoStatusResponse)
@@ -108,9 +130,11 @@ async def transcribe_video(video_id: str, request: Request):
     try:
         state.status = VideoStatus.EXTRACTING_AUDIO
         logger.info(f"[{video_id}] Status: {state.status.value}")
+        save_state(video_id)
 
-        # Extract audio
-        audio_path = os.path.join(config.AUDIO_DIR, f"{video_id}.wav")
+        # Extract audio to the video specific directory
+        video_dir = get_video_dir(video_id)
+        audio_path = os.path.join(video_dir, "extracted_audio.wav")
         if not os.path.exists(audio_path):
             logger.info(f"[{video_id}] Extracting audio...")
             asr_service.extract_audio(state.file_path, audio_path)
@@ -118,21 +142,22 @@ async def transcribe_video(video_id: str, request: Request):
 
         state.status = VideoStatus.TRANSCRIBING
         logger.info(f"[{video_id}] Status: {state.status.value}")
+        save_state(video_id)
 
         # Build a URL for the audio file that Ali ASR can reach
-        # Serve via our own static file endpoint
         base_url = config.SERVER_URL_BASE
         file_serve_url = f"{base_url}/api/videos/{video_id}/audio"
         logger.info(f"[{video_id}] Serving audio for ASR at: {file_serve_url}")
 
         # Submit and poll ASR
         segments = await asr_service.transcribe_video(
-            state.file_path, audio_path, file_serve_url
+            video_id, state.file_path, audio_path, file_serve_url
         )
 
         state.segments = segments
         state.status = VideoStatus.TRANSCRIBED
         logger.info(f"[{video_id}] Status: {state.status.value}. Found {len(segments)} segments.")
+        save_state(video_id)
 
         return TranscribeResponse(
             video_id=video_id,
@@ -153,6 +178,7 @@ async def transcribe_video(video_id: str, request: Request):
         logger.error(f"[{video_id}] Transcription error: {str(e)}", exc_info=True)
         state.status = VideoStatus.ERROR
         state.error_message = str(e)
+        save_state(video_id)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -168,6 +194,7 @@ async def translate_video(video_id: str, req: TranslateRequest):
     try:
         state.status = VideoStatus.TRANSLATING
         logger.info(f"[{video_id}] Status: {state.status.value}")
+        save_state(video_id)
 
         # Prepare context payload
         context = [
@@ -180,7 +207,7 @@ async def translate_video(video_id: str, req: TranslateRequest):
             for seg in req.segments
         ]
 
-        results = await llm_service.translate_script(context, req.target_language)
+        results = await llm_service.translate_script(video_id, context, req.target_language)
 
         # Update state with translations
         translations = []
@@ -197,6 +224,7 @@ async def translate_video(video_id: str, req: TranslateRequest):
 
         state.status = VideoStatus.TRANSLATED
         logger.info(f"[{video_id}] Status: {state.status.value}. Translated {len(translations)} items.")
+        save_state(video_id)
 
         return TranslateResponse(
             video_id=video_id,
@@ -206,6 +234,7 @@ async def translate_video(video_id: str, req: TranslateRequest):
         logger.error(f"[{video_id}] Translation error: {str(e)}", exc_info=True)
         state.status = VideoStatus.ERROR
         state.error_message = str(e)
+        save_state(video_id)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -220,9 +249,9 @@ async def synthesize_speech(video_id: str, req: TTSRequest):
 
     try:
         audio_base64, content_type = await tts_service.synthesize_speech(
-            req.text, req.voice
+            video_id, req.segment_id, req.text, req.voice
         )
-        logger.info(f"[{video_id}] TTS synthesis complete.")
+        logger.info(f"[{video_id}] TTS synthesis complete (Segment: {req.segment_id})")
 
         return TTSResponse(
             audio_base64=audio_base64,
@@ -231,6 +260,21 @@ async def synthesize_speech(video_id: str, req: TTSRequest):
     except Exception as e:
         logger.error(f"[{video_id}] TTS error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{video_id}/video")
+async def serve_video(video_id: str):
+    """Serve the original video file."""
+    from fastapi.responses import FileResponse
+
+    state = get_state(video_id)
+    if not state or not state.file_path:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    if not os.path.exists(state.file_path):
+        raise HTTPException(status_code=404, detail="Video file not found on disk")
+
+    return FileResponse(state.file_path, media_type="video/mp4")
 
 
 @router.get("/{video_id}/audio")

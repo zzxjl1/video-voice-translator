@@ -59,6 +59,7 @@ class TranslateResponse(BaseModel):
 # ----- TTS -----
 
 class TTSRequest(BaseModel):
+    segment_id: str
     text: str
     voice: Optional[str] = None
 

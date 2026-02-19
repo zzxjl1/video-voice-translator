@@ -46,13 +46,73 @@ const App: React.FC = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const activeAudiosRef = useRef<Map<string, HTMLAudioElement>>(new Map());
 
-  const videoUrl = useMemo(() => (videoFile ? URL.createObjectURL(videoFile) : null), [videoFile]);
+  const videoUrl = useMemo(() => {
+    if (videoFile) return URL.createObjectURL(videoFile);
+    if (videoId) return `/api/videos/${videoId}/video`;
+    return null;
+  }, [videoFile, videoId]);
+
+  // Session Recovery
+  useEffect(() => {
+    const pathParts = window.location.pathname.split('/').filter(Boolean);
+    const idFromUrl = pathParts[0]; // Assuming structure like /md5hash
+
+    if (idFromUrl && /^[a-f0-9]{32}$/i.test(idFromUrl)) {
+      console.log("Attempting session recovery for:", idFromUrl);
+      setVideoId(idFromUrl);
+
+      import('./services/apiService').then(({ getVideoStatus }) => {
+        setIsTranscribing(true);
+        getVideoStatus(idFromUrl)
+          .then(data => {
+            if (data.segments && data.segments.length > 0) {
+              const colors = ['#2563eb', '#16a34a', '#d97706', '#dc2626', '#9333ea', '#0891b2'];
+              let speakerMap: Record<string, Speaker> = {};
+
+              const recoveredSegments: TranscriptionSegment[] = data.segments.map((seg: any) => {
+                const label = seg.speaker_label;
+                if (!speakerMap[label]) {
+                  const index = Object.keys(speakerMap).length;
+                  speakerMap[label] = {
+                    id: label,
+                    name: label,
+                    color: colors[index % colors.length],
+                  };
+                }
+                return {
+                  id: seg.id,
+                  speakerId: seg.speaker_id,
+                  startTime: seg.start_time,
+                  endTime: seg.end_time,
+                  originalText: seg.text,
+                  translatedText: seg.translated_text || '',
+                  status: (seg.translated_text ? 'ready' : 'pending') as any,
+                };
+              });
+
+              setSpeakers(Object.values(speakerMap));
+              setSegments(recoveredSegments);
+            }
+          })
+          .catch(err => console.error("Session recovery failed:", err))
+          .finally(() => setIsTranscribing(false));
+      });
+    }
+  }, []);
+
+  // Update URL on videoId change
+  useEffect(() => {
+    if (videoId && !window.location.pathname.includes(videoId)) {
+      window.history.pushState({}, '', `/${videoId}`);
+    }
+  }, [videoId]);
 
   // Handle video URL cleanup
   useEffect(() => {
     return () => {
-      if (videoUrl) {
-        console.log("Revoking video URL:", videoUrl);
+      // Only revoke if it's a local blob URL
+      if (videoUrl?.startsWith('blob:')) {
+        console.log("Revoking local video URL:", videoUrl);
         URL.revokeObjectURL(videoUrl);
       }
     };
@@ -220,7 +280,7 @@ const App: React.FC = () => {
     if (!targetSegment || !videoId) return;
 
     try {
-      const result = await synthesizeSpeech(videoId, targetSegment.translatedText);
+      const result = await synthesizeSpeech(videoId, targetSegment.id, targetSegment.translatedText);
       const audioBlob = new Blob(
         [Uint8Array.from(atob(result.audio_base64), c => c.charCodeAt(0))],
         { type: result.content_type }
@@ -323,7 +383,7 @@ const App: React.FC = () => {
       />
 
       <main className="flex-grow container mx-auto p-6 lg:p-10">
-        {!videoFile ? (
+        {!videoFile && !videoId ? (
           <div className="max-w-3xl mx-auto mt-16 animate-in slide-in-from-bottom-8 fade-in duration-700">
             <VideoUpload onVideoSelect={handleVideoSelect} isLoading={isTranscribing} />
           </div>
