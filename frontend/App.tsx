@@ -68,7 +68,7 @@ const App: React.FC = () => {
             if (data.segments && data.segments.length > 0) {
               const recoveredSegments: TranscriptionSegment[] = data.segments.map((seg: any) => ({
                 id: seg.id,
-                speakerId: seg.speaker_id,
+                speakerId: seg.speaker_label,
                 startTime: seg.start_time,
                 endTime: seg.end_time,
                 originalText: seg.text,

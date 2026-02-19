@@ -1,7 +1,7 @@
 
 import React, { useRef } from 'react';
 import { TranscriptionSegment, Speaker } from '../types';
-import { formatTime } from '../utils/helpers';
+import { formatTime, getSpeakerColor } from '../utils/helpers';
 
 interface TimelineProps {
   segments: TranscriptionSegment[];
@@ -36,23 +36,23 @@ const Timeline: React.FC<TimelineProps> = ({ segments, speakers, duration, curre
         </span>
         <span className="bg-gray-100 px-2 py-1 rounded-md text-gray-600 font-bold">{formatTime(duration)}</span>
       </div>
-      
-      <div 
+
+      <div
         ref={timelineRef}
-        className="relative w-full h-28 bg-[#1a1a1a] rounded-xl overflow-hidden cursor-pointer shadow-inner group ring-1 ring-black/5" 
+        className="relative w-full h-28 bg-[#1a1a1a] rounded-xl overflow-hidden cursor-pointer shadow-inner group ring-1 ring-black/5"
         onClick={handleSeek}
       >
         {/* Waveform Overlay - Light blue on dark background looks pro */}
         <div className="absolute inset-0 flex items-center justify-around px-1 gap-[1px] z-10 opacity-40">
           {waveform.length > 0 ? waveform.map((peak, idx) => (
-            <div 
-              key={idx} 
+            <div
+              key={idx}
               className="w-1 bg-white/80 rounded-full transition-all"
               style={{ height: `${Math.max(4, peak * 80)}%` }}
             />
           )) : (
             <div className="w-full h-full flex items-center justify-center">
-                <div className="w-1/2 h-0.5 bg-gray-700 animate-pulse rounded-full"></div>
+              <div className="w-1/2 h-0.5 bg-gray-700 animate-pulse rounded-full"></div>
             </div>
           )}
         </div>
@@ -66,31 +66,31 @@ const Timeline: React.FC<TimelineProps> = ({ segments, speakers, duration, curre
             const isActive = currentTime >= segment.startTime && currentTime <= segment.endTime;
             const hasTranslation = !!segment.translatedText;
             const hasAudio = !!segment.audioUrl;
-            
+
             return (
               <div
                 key={segment.id}
                 className={`absolute h-full border-l border-white/10 transition-all duration-300 group/segment overflow-hidden ${isActive ? 'bg-opacity-80 z-10' : 'bg-opacity-40 hover:bg-opacity-60'}`}
-                style={{ 
-                  left: `${left}%`, 
-                  width: `${width}%`, 
-                  backgroundColor: speaker?.color || '#555',
+                style={{
+                  left: `${left}%`,
+                  width: `${width}%`,
+                  backgroundColor: getSpeakerColor(segment.speakerId),
                 }}
                 title={`${speaker?.name}: ${segment.originalText.substring(0, 20)}...`}
               >
                 {/* Status Indicators on the timeline segment */}
                 <div className="absolute bottom-0 left-0 right-0 h-1.5 flex">
-                    {hasTranslation && (
-                        <div className="h-full bg-white/60 flex-1" title="Translated"></div>
-                    )}
-                    {hasAudio && (
-                        <div className="h-full bg-claude-accent flex-1 shadow-[0_0_5px_rgba(218,119,86,0.8)]" title="Audio Ready"></div>
-                    )}
+                  {hasTranslation && (
+                    <div className="h-full bg-white/60 flex-1" title="Translated"></div>
+                  )}
+                  {hasAudio && (
+                    <div className="h-full bg-claude-accent flex-1 shadow-[0_0_5px_rgba(218,119,86,0.8)]" title="Audio Ready"></div>
+                  )}
                 </div>
 
                 {/* Active Indicator */}
                 {isActive && (
-                     <div className="absolute top-0 inset-x-0 h-0.5 bg-white shadow-[0_0_10px_white]"></div>
+                  <div className="absolute top-0 inset-x-0 h-0.5 bg-white shadow-[0_0_10px_white]"></div>
                 )}
               </div>
             );
@@ -107,16 +107,16 @@ const Timeline: React.FC<TimelineProps> = ({ segments, speakers, duration, curre
           </div>
         )}
       </div>
-      
+
       {/* Legend */}
       <div className="mt-4 flex gap-6 justify-end text-[10px] text-gray-500 font-bold uppercase tracking-wider">
         <div className="flex items-center gap-2">
-            <div className="w-2.5 h-2.5 bg-gray-300 rounded-sm"></div>
-            <span>Translation Ready</span>
+          <div className="w-2.5 h-2.5 bg-gray-300 rounded-sm"></div>
+          <span>Translation Ready</span>
         </div>
         <div className="flex items-center gap-2">
-            <div className="w-2.5 h-2.5 bg-claude-accent rounded-sm"></div>
-            <span>Audio Generated</span>
+          <div className="w-2.5 h-2.5 bg-claude-accent rounded-sm"></div>
+          <span>Audio Generated</span>
         </div>
       </div>
     </div>

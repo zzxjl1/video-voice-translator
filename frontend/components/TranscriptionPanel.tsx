@@ -1,7 +1,7 @@
 
 import React, { memo } from 'react';
 import { TranscriptionSegment, Speaker } from '../types';
-import { formatTime } from '../utils/helpers';
+import { formatTime, getSpeakerColor } from '../utils/helpers';
 
 interface TranscriptionPanelProps {
     segments: TranscriptionSegment[];
@@ -10,22 +10,6 @@ interface TranscriptionPanelProps {
     onSegmentUpdate: (segmentId: string, updates: Partial<TranscriptionSegment>) => void;
 }
 
-const SPEAKER_COLORS = [
-    '#2563eb', // blue
-    '#16a34a', // green
-    '#d97706', // amber
-    '#dc2626', // red
-    '#9333ea', // purple
-    '#0891b2', // cyan
-];
-
-const getSpeakerColor = (id: string) => {
-    let hash = 0;
-    for (let i = 0; i < id.length; i++) {
-        hash = id.charCodeAt(i) + ((hash << 5) - hash);
-    }
-    return SPEAKER_COLORS[Math.abs(hash) % SPEAKER_COLORS.length];
-};
 
 const EditableTextArea: React.FC<{
     label: string,
