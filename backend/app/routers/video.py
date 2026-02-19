@@ -111,6 +111,7 @@ async def get_video_status(video_id: str):
                 end_time=seg.end_time,
                 text=seg.text,
                 translated_text=seg.translated_text,
+                audio_url=f"/api/videos/{video_id}/tts/{seg.id}" if seg.audio_path else None,
             )
             for seg in state.segments
         ],
