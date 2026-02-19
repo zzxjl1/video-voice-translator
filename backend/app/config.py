@@ -10,7 +10,7 @@ DASHSCOPE_API_KEY = "sk-22b943ff3e5c499abbfbfb33a7cf4451"
 # ----- SiliconFlow LLM (via OpenAI SDK) -----
 SILICONFLOW_API_KEY = "sk-lxeewliusahjaucqxkmnvgswytrvtwonommtvyeywuzeuibz"
 SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1"
-SILICONFLOW_MODEL = "Qwen/Qwen3-32B"
+SILICONFLOW_MODEL = "Pro/moonshotai/Kimi-K2.5"
 
 # ----- OpenAI TTS -----
 # Using SiliconFlow's TTS endpoint via OpenAI SDK
