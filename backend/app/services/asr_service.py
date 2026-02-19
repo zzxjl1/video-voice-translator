@@ -129,9 +129,10 @@ async def parse_asr_results(results: list[dict]) -> list[Segment]:
                 sentences = transcript.get("sentences", [])
                 for sentence in sentences:
                     seg_id = f"seg-{uuid.uuid4().hex[:8]}"
-                    speaker_id = sentence.get("spk_id", "0")
+                    speaker_id = str(sentence.get("speaker_id", "0"))
                     segments.append(Segment(
                         id=seg_id,
+                        speaker_id=speaker_id,
                         speaker_label=f"Speaker {speaker_id}",
                         start_time=sentence.get("begin_time", 0) / 1000.0,  # ms -> seconds
                         end_time=sentence.get("end_time", 0) / 1000.0,

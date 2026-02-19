@@ -21,6 +21,7 @@ class VideoStatus(str, Enum):
 @dataclass
 class Segment:
     id: str
+    speaker_id: str
     speaker_label: str
     start_time: float
     end_time: float

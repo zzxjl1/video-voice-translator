@@ -81,6 +81,7 @@ async def get_video_status(video_id: str):
         segments=[
             SegmentOut(
                 id=seg.id,
+                speaker_id=seg.speaker_id,
                 speaker_label=seg.speaker_label,
                 start_time=seg.start_time,
                 end_time=seg.end_time,
@@ -139,6 +140,7 @@ async def transcribe_video(video_id: str, request: Request):
             segments=[
                 SegmentOut(
                     id=seg.id,
+                    speaker_id=seg.speaker_id,
                     speaker_label=seg.speaker_label,
                     start_time=seg.start_time,
                     end_time=seg.end_time,
