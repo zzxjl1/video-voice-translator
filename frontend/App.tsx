@@ -222,23 +222,15 @@ const App: React.FC = () => {
   }, []);
 
   const handleTranslateSegmentImpl = useCallback(async (id: string, textToTranslate?: string) => {
-    let segmentToTranslate: TranscriptionSegment | undefined;
+    // Find the latest segment data from state
+    const segmentToTranslate = segments.find(s => s.id === id);
+    if (!segmentToTranslate || !videoId) return null;
 
-    setSegments(prev => {
-      segmentToTranslate = prev.find(s => s.id === id);
-      if (segmentToTranslate) {
-        return prev.map(s => s.id === id ? { ...s, isTranslating: true } : s);
-      }
-      return prev;
-    });
+    // Use the latest text passed from the update handler or fallback to current state
+    const text = textToTranslate || segmentToTranslate.originalText;
+    if (!text) return null;
 
-    // We use the latest text passed from the update handler or fallback to state
-    const text = textToTranslate || segmentToTranslate?.originalText;
-
-    if (!segmentToTranslate || !videoId || !text) {
-      setSegments(prev => prev.map(s => s.id === id ? { ...s, isTranslating: false } : s));
-      return null;
-    }
+    setSegments(prev => prev.map(s => s.id === id ? { ...s, isTranslating: true } : s));
 
     try {
       const results = await translateScript(
@@ -259,25 +251,20 @@ const App: React.FC = () => {
       }
     } catch (e) {
       console.error("Translation failed:", e);
+    } finally {
       setSegments(prev => prev.map(s => s.id === id ? { ...s, isTranslating: false } : s));
     }
     return null;
-  }, [videoId, targetLanguage]);
+  }, [videoId, targetLanguage, segments]);
 
   const handleSynthesizeSegment = useCallback(async (id: string, textToSynthesize?: string) => {
-    let targetSegment: TranscriptionSegment | undefined;
+    const targetSegment = segments.find(s => s.id === id);
+    if (!targetSegment || !videoId) return;
 
-    setSegments(prev => {
-      targetSegment = prev.find(s => s.id === id);
-      return prev.map(s => s.id === id ? { ...s, isSynthesizing: true } : s);
-    });
+    const text = textToSynthesize || targetSegment.translatedText;
+    if (!text) return;
 
-    const text = textToSynthesize || targetSegment?.translatedText;
-
-    if (!targetSegment || !videoId || !text) {
-      setSegments(prev => prev.map(s => s.id === id ? { ...s, isSynthesizing: false } : s));
-      return;
-    }
+    setSegments(prev => prev.map(s => s.id === id ? { ...s, isSynthesizing: true } : s));
 
     try {
       const result = await synthesizeSpeech(videoId, targetSegment.id, text);
@@ -289,18 +276,17 @@ const App: React.FC = () => {
       setSegments(prev => prev.map(s => s.id === id ? { ...s, audioUrl, isSynthesizing: false } : s));
     } catch (e) {
       console.error("Synthesis failed:", e);
+    } finally {
       setSegments(prev => prev.map(s => s.id === id ? { ...s, isSynthesizing: false } : s));
     }
-  }, [videoId]);
+  }, [videoId, segments]);
 
   const handleSegmentUpdate = useCallback((id: string, updates: Partial<TranscriptionSegment>) => {
-    let currentSeg: TranscriptionSegment | undefined;
-
     setSegments(prev => prev.map(s => {
       if (s.id === id) {
-        currentSeg = s;
         // Revoke old audio URL if text is changing
-        if ((updates.originalText !== undefined || updates.translatedText !== undefined) && s.audioUrl) {
+        if ((updates.originalText !== undefined || updates.translatedText !== undefined) && s.audioUrl && s.audioUrl.startsWith('blob:')) {
+          console.log(`Revoking old audio for segment ${id}`);
           URL.revokeObjectURL(s.audioUrl);
           return { ...s, ...updates, audioUrl: undefined };
         }
@@ -309,13 +295,9 @@ const App: React.FC = () => {
       return s;
     }));
 
-    // Use the values found in the map search for safe async triggering
-    if (!currentSeg) return;
-
     // Auto-trigger Processing Chain
     if (updates.originalText !== undefined) {
       // Chain: ASR -> Translation -> TTS
-      // We pass the new originalText and the existing segment context to avoid races
       handleTranslateSegmentImpl(id, updates.originalText).then(newTranslation => {
         if (newTranslation) {
           handleSynthesizeSegment(id, newTranslation);
