@@ -234,8 +234,25 @@ const App: React.FC = () => {
     }
   }, []);
 
-  const handleSegmentUpdate = useCallback((id: string, text: string) => {
-    setSegments(prev => prev.map(s => s.id === id ? { ...s, translatedText: text } : s));
+  const handleSegmentUpdate = useCallback((id: string, updates: Partial<TranscriptionSegment>) => {
+    setSegments(prev => prev.map(s => {
+      if (s.id === id) {
+        const updated = { ...s, ...updates };
+
+        // Auto-trigger mocks
+        if (updates.originalText !== undefined) {
+          console.log(`[AUTO] Original text changed for ${id}. Triggering re-translation mock...`);
+          // Logic to call handleTranslateSegmentImpl(id) would go here in real impl
+        }
+        if (updates.translatedText !== undefined) {
+          console.log(`[AUTO] Translated text changed for ${id}. Triggering re-synthesis mock...`);
+          // Logic to call handleSynthesizeSegment(id) would go here in real impl
+        }
+
+        return updated;
+      }
+      return s;
+    }));
   }, []);
 
   const handleTranslateSegmentImpl = async (id: string) => {
@@ -507,8 +524,6 @@ const App: React.FC = () => {
                 speakers={speakers}
                 isTranscribing={isTranscribing}
                 onSegmentUpdate={handleSegmentUpdate}
-                onTranslateSegment={handleTranslateSegmentImpl}
-                onSynthesizeSegment={handleSynthesizeSegment}
                 onSpeakerNameChange={handleSpeakerNameChange}
               />
             </div>
