@@ -18,8 +18,9 @@ const EditableTextArea: React.FC<{
     onUpdate: (val: string) => void,
     placeholder?: string,
     className?: string,
-    isSecondary?: boolean
-}> = ({ label, value, onUpdate, placeholder, className, isSecondary }) => {
+    isSecondary?: boolean,
+    isLoading?: boolean
+}> = ({ label, value, onUpdate, placeholder, className, isSecondary, isLoading }) => {
     const [isEditing, setIsEditing] = React.useState(false);
     const [localValue, setLocalValue] = React.useState(value);
     const textareaRef = React.useRef<HTMLTextAreaElement>(null);
@@ -55,16 +56,16 @@ const EditableTextArea: React.FC<{
                 <textarea
                     ref={textareaRef}
                     value={localValue}
-                    readOnly={!isEditing}
+                    readOnly={!isEditing || isLoading}
                     onBlur={handleBlur}
                     onChange={(e) => setLocalValue(e.target.value)}
                     placeholder={placeholder}
                     className={`w-full p-3 text-sm transition-all duration-300 resize-none outline-none leading-relaxed ${isSecondary ? 'bg-[#f9f9f8] text-gray-600 font-serif italic' : 'bg-white text-gray-800 font-sans'
-                        } ${!isEditing ? 'group-hover:blur-[2px] transition-all' : 'blur-0'} ${className}`}
+                        } ${!isEditing ? 'group-hover:blur-[2px] transition-all' : 'blur-0'} ${className} ${isLoading ? 'opacity-40 pointer-events-none' : ''}`}
                     rows={2}
                 />
 
-                {!isEditing && (
+                {!isEditing && !isLoading && (
                     <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300 bg-white/10 backdrop-blur-[0.5px]">
                         <button
                             onClick={handleEditClick}
@@ -72,6 +73,17 @@ const EditableTextArea: React.FC<{
                         >
                             Edit
                         </button>
+                    </div>
+                )}
+
+                {isLoading && (
+                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/60 backdrop-blur-[1px] animate-in fade-in duration-300">
+                        <div className="flex gap-1 mb-1">
+                            <span className="w-1 h-1 bg-claude-accent rounded-full animate-bounce [animation-delay:-0.3s]"></span>
+                            <span className="w-1 h-1 bg-claude-accent rounded-full animate-bounce [animation-delay:-0.15s]"></span>
+                            <span className="w-1 h-1 bg-claude-accent rounded-full animate-bounce"></span>
+                        </div>
+                        <span className="text-[9px] font-bold uppercase tracking-[0.1em] text-claude-accent">Re-translating...</span>
                     </div>
                 )}
             </div>
@@ -101,28 +113,6 @@ const SegmentCard: React.FC<{
                 </div>
             </div>
 
-            {segment.audioUrl ? (
-                <div className="px-1 animate-in fade-in slide-in-from-top-2 duration-500">
-                    <audio
-                        src={segment.audioUrl}
-                        controls
-                        className="w-full h-8 opacity-70 hover:opacity-100 transition-opacity"
-                    />
-                </div>
-            ) : (
-                segment.translatedText && !segment.isSynthesizing && (
-                    <div className="px-1">
-                        <button
-                            onClick={() => onSynthesize(segment.id)}
-                            className="w-full py-2 bg-claude-bg border border-claude-border rounded-xl text-[10px] font-bold uppercase tracking-widest text-[#da7756] hover:bg-claude-paper transition-colors flex items-center justify-center gap-2 shadow-sm"
-                        >
-                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /></svg>
-                            Generate Voice
-                        </button>
-                    </div>
-                )
-            )}
-
             <div className="flex flex-col gap-5">
                 <EditableTextArea
                     label="Original (ASR)"
@@ -136,21 +126,54 @@ const SegmentCard: React.FC<{
                     value={segment.translatedText}
                     onUpdate={(val) => onSegmentUpdate(segment.id, { translatedText: val })}
                     placeholder="Translation will appear here..."
+                    isLoading={segment.isTranslating}
                 />
             </div>
 
-            {(segment.isTranslating || segment.isSynthesizing) && (
-                <div className="flex items-center gap-2 px-1">
-                    <div className="flex gap-1">
-                        <span className="w-1 h-1 bg-claude-accent/50 rounded-full animate-bounce [animation-delay:-0.3s]"></span>
-                        <span className="w-1 h-1 bg-claude-accent/50 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
-                        <span className="w-1 h-1 bg-claude-accent/50 rounded-full animate-bounce"></span>
+            <div className="pt-2">
+                {segment.audioUrl ? (
+                    <div className="animate-in fade-in slide-in-from-top-2 duration-500">
+                        <audio
+                            src={segment.audioUrl}
+                            controls
+                            className="w-full h-8 opacity-70 hover:opacity-100 transition-opacity"
+                        />
                     </div>
-                    <span className="text-[10px] font-medium text-gray-400">
-                        {segment.isTranslating ? 'Re-translating...' : 'Re-synthesizing...'}
-                    </span>
-                </div>
-            )}
+                ) : (
+                    (segment.translatedText || segment.isTranslating) && (
+                        <div className="animate-in fade-in duration-300">
+                            <button
+                                onClick={() => !segment.isSynthesizing && !segment.isTranslating && onSynthesize(segment.id)}
+                                disabled={segment.isSynthesizing || segment.isTranslating}
+                                className={`w-full py-2.5 rounded-xl text-[10px] font-bold uppercase tracking-[0.15em] transition-all flex items-center justify-center gap-3 shadow-sm border ${segment.isSynthesizing || segment.isTranslating
+                                        ? 'bg-[#f9f9f8] border-[#e5e5e0] text-gray-400'
+                                        : 'bg-white border-claude-border text-[#da7756] hover:bg-claude-paper active:scale-[0.98]'
+                                    }`}
+                            >
+                                {segment.isSynthesizing ? (
+                                    <>
+                                        <div className="flex gap-1">
+                                            <span className="w-1 h-1 bg-current rounded-full animate-bounce [animation-delay:-0.3s]"></span>
+                                            <span className="w-1 h-1 bg-current rounded-full animate-bounce [animation-delay:-0.15s]"></span>
+                                            <span className="w-1 h-1 bg-current rounded-full animate-bounce"></span>
+                                        </div>
+                                        <span>Re-synthesizing...</span>
+                                    </>
+                                ) : segment.isTranslating ? (
+                                    <>
+                                        <span>Waiting for translation...</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /></svg>
+                                        Generate Voice
+                                    </>
+                                )}
+                            </button>
+                        </div>
+                    )
+                )}
+            </div>
         </div>
     );
 });
