@@ -38,6 +38,7 @@ async def translate_single(text: str, target_language: str) -> str:
             },
         ],
         temperature=0.3,
+        extra_body={"enable_thinking": config.LLM_THINKING_ENABLED}
     )
     return response.choices[0].message.content.strip()
 
@@ -124,6 +125,7 @@ Input Script:
             },
         ],
         temperature=0.3,
+        extra_body={"enable_thinking": config.LLM_THINKING_ENABLED}
     )
 
     result_text = response.choices[0].message.content.strip()

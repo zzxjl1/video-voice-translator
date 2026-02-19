@@ -11,6 +11,7 @@ DASHSCOPE_API_KEY = "sk-22b943ff3e5c499abbfbfb33a7cf4451"
 SILICONFLOW_API_KEY = "sk-lxeewliusahjaucqxkmnvgswytrvtwonommtvyeywuzeuibz"
 SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1"
 SILICONFLOW_MODEL = "Pro/moonshotai/Kimi-K2.5"
+LLM_THINKING_ENABLED = False
 
 # ----- OpenAI TTS -----
 # Using SiliconFlow's TTS endpoint via OpenAI SDK
@@ -32,7 +33,7 @@ CORS_ORIGINS = ["*"]
 SERVER_URL_BASE = "http://video-voice-translator.idealbroker.cn"
 
 # ----- Timeouts -----
-API_GENERAL_TIMEOUT = 60        # General timeout for HTTP requests (seconds)
+API_GENERAL_TIMEOUT = 120       # General timeout for HTTP requests (seconds)
 ASR_MAX_WAIT = 600        # Maximum time to poll for ASR success (seconds)
-LLM_TIMEOUT = 120      # Timeout for LLM translation calls (seconds)
+LLM_TIMEOUT = 180      # Timeout for LLM translation calls (seconds)
 TTS_TIMEOUT = 60        # Timeout for TTS synthesis calls (seconds)
