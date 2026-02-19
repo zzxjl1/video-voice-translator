@@ -46,16 +46,33 @@ const App: React.FC = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const activeAudiosRef = useRef<Map<string, HTMLAudioElement>>(new Map());
 
-  const videoUrl = useMemo(() => {
-    if (videoFile) return URL.createObjectURL(videoFile);
-    if (videoId) return `/api/videos/${videoId}/video`;
-    return null;
+  const [videoUrl, setVideoUrl] = useState<string | null>(null);
+
+  // Management of video source URL
+  useEffect(() => {
+    // If we have a local file, it's our source
+    if (videoFile) {
+      const url = URL.createObjectURL(videoFile);
+      setVideoUrl(url);
+      console.log("Created stable local video URL:", url);
+      return () => {
+        URL.revokeObjectURL(url);
+        console.log("Revoked local video URL:", url);
+      };
+    }
+    // If no local file but we have an ID (session recovery), use the server URL
+    else if (videoId) {
+      const serverUrl = `/api/videos/${videoId}/video`;
+      setVideoUrl(serverUrl);
+    } else {
+      setVideoUrl(null);
+    }
   }, [videoFile, videoId]);
 
   // Session Recovery
   useEffect(() => {
     const pathParts = window.location.pathname.split('/').filter(Boolean);
-    const idFromUrl = pathParts[0]; // Assuming structure like /md5hash
+    const idFromUrl = pathParts[0];
 
     if (idFromUrl && /^[a-f0-9]{32}$/i.test(idFromUrl)) {
       console.log("Attempting session recovery for:", idFromUrl);
@@ -79,7 +96,6 @@ const App: React.FC = () => {
               if (data.speakers && data.speakers.length > 0) {
                 setSpeakers(data.speakers);
               } else {
-                // Fallback: build speaker list from segments if not provided
                 const uniqueLabels = Array.from(new Set(recoveredSegments.map(s => s.speakerId)));
                 setSpeakers(uniqueLabels.map(label => ({ id: label, name: label })));
               }
@@ -98,17 +114,6 @@ const App: React.FC = () => {
       window.history.pushState({}, '', `/${videoId}`);
     }
   }, [videoId]);
-
-  // Handle video URL cleanup
-  useEffect(() => {
-    return () => {
-      // Only revoke if it's a local blob URL
-      if (videoUrl?.startsWith('blob:')) {
-        console.log("Revoking local video URL:", videoUrl);
-        URL.revokeObjectURL(videoUrl);
-      }
-    };
-  }, [videoUrl]);
 
   // Handle segment audio URL cleanup (only when segments change)
   useEffect(() => {
