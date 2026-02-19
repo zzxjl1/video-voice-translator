@@ -109,6 +109,14 @@ const SegmentCard: React.FC<{
                     </span>
                 </div>
                 <div className="flex items-center gap-3">
+                    {segment.actualDuration && (segment.actualDuration / (segment.endTime - segment.startTime) > 1.875 || segment.actualDuration / (segment.endTime - segment.startTime) < 0.5) && (
+                        <div className="flex items-center gap-1.5 px-2 py-1 bg-amber-50 border border-amber-200 rounded-md animate-pulse">
+                            <svg className="w-3 h-3 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                            </svg>
+                            <span className="text-[9px] font-bold text-amber-700 uppercase tracking-wider">Duration Mismatch</span>
+                        </div>
+                    )}
                     <span className="text-[10px] font-mono text-gray-400 bg-[#f9f9f8] px-2 py-1 rounded-md border border-[#eee]">
                         {formatTime(segment.startTime)} – {formatTime(segment.endTime)} ({(segment.endTime - segment.startTime).toFixed(2)}s)
                     </span>
@@ -138,6 +146,12 @@ const SegmentCard: React.FC<{
                         <audio
                             src={segment.audioUrl}
                             controls
+                            onLoadedMetadata={(e) => {
+                                const duration = e.currentTarget.duration;
+                                if (duration && segment.actualDuration !== duration) {
+                                    onSegmentUpdate(segment.id, { actualDuration: duration });
+                                }
+                            }}
                             className="w-full h-8 opacity-70 hover:opacity-100 transition-opacity"
                         />
                     </div>

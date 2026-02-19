@@ -131,10 +131,12 @@ const App: React.FC = () => {
 
   const handleTimeUpdate = () => {
     if (!videoRef.current) return;
-    const time = videoRef.current.currentTime;
+    const video = videoRef.current;
+    const time = video.currentTime;
     setCurrentTime(time);
 
     let isAnyAudioPlaying = false;
+    let targetVideoRate = 1.0;
 
     segments.forEach(seg => {
       if (seg.audioUrl) {
@@ -143,14 +145,36 @@ const App: React.FC = () => {
 
         if (shouldBePlaying) {
           isAnyAudioPlaying = true;
+
+          // Calculate desired speed factor
+          let audioRate = 1.0;
+          if (seg.actualDuration) {
+            const targetDuration = seg.endTime - seg.startTime;
+            const idealFactor = seg.actualDuration / targetDuration;
+
+            // Audio takes the first hit (clamped 0.75x - 1.5x)
+            audioRate = Math.min(Math.max(idealFactor, 0.75), 1.5);
+
+            // Video takes the rest (clamped 0.8x - 1.5x)
+            const remainingFactor = audioRate / idealFactor;
+            targetVideoRate = Math.min(Math.max(remainingFactor, 0.8), 1.5);
+          }
+
           if (!existingAudio) {
             try {
               const audio = new Audio(seg.audioUrl);
-              audio.currentTime = Math.max(0, time - seg.startTime);
+              audio.playbackRate = audioRate;
+              // Audio content time = wall time offset * speed
+              audio.currentTime = Math.max(0, (time - seg.startTime) * audioRate);
               audio.play().catch(e => console.warn("Audio play blocked:", e));
               activeAudiosRef.current.set(seg.id, audio);
             } catch (e) {
               console.error("Failed to start audio segment:", e);
+            }
+          } else {
+            // Sync existing audio rate just in case
+            if (existingAudio.playbackRate !== audioRate) {
+              existingAudio.playbackRate = audioRate;
             }
           }
         } else if (existingAudio) {
@@ -160,11 +184,8 @@ const App: React.FC = () => {
       }
     });
 
-    if (isAnyAudioPlaying) {
-      videoRef.current.volume = 0.1;
-    } else {
-      videoRef.current.volume = 1.0;
-    }
+    video.playbackRate = targetVideoRate;
+    video.volume = isAnyAudioPlaying ? 0.1 : 1.0;
   };
 
   const handleVideoSelect = useCallback(async (file: File) => {

@@ -13,6 +13,7 @@ export interface TranscriptionSegment {
   originalText: string;
   translatedText: string;
   audioUrl?: string;
+  actualDuration?: number;
   isTranslating?: boolean;
   isSynthesizing?: boolean;
   status: 'pending' | 'ready' | 'error';
