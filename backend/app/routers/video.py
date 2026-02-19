@@ -164,6 +164,7 @@ async def transcribe_video(video_id: str, request: Request):
         
         # Initialize speakers if not already present
         if not state.speakers:
+            unique_labels = sorted(list(set(seg.speaker_label for seg in segments)))
             state.speakers = [
                 Speaker(id=label, name=label)
                 for label in unique_labels
