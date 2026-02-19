@@ -11,6 +11,63 @@ interface TranscriptionPanelProps {
     onSpeakerNameChange: (id: string, newName: string) => void;
 }
 
+const EditableTextArea: React.FC<{
+    label: string,
+    value: string,
+    onUpdate: (val: string) => void,
+    placeholder?: string,
+    className?: string,
+    isSecondary?: boolean
+}> = ({ label, value, onUpdate, placeholder, className, isSecondary }) => {
+    const [isEditing, setIsEditing] = React.useState(false);
+    const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+
+    const handleEditClick = () => {
+        setIsEditing(true);
+        setTimeout(() => textareaRef.current?.focus(), 0);
+    };
+
+    const handleBlur = () => {
+        setIsEditing(false);
+        onUpdate(value); // Trigger update/auto-processing logic
+    };
+
+    return (
+        <div className="relative group">
+            <div className="flex items-center justify-between mb-1.5 ml-1">
+                <span className={`text-[9px] font-bold uppercase tracking-widest ${isSecondary ? 'text-gray-400' : 'text-claude-accent/70'}`}>
+                    {label}
+                </span>
+            </div>
+
+            <div className="relative overflow-hidden rounded-xl border border-[#e5e5e0] transition-all duration-300 bg-white">
+                <textarea
+                    ref={textareaRef}
+                    value={value}
+                    readOnly={!isEditing}
+                    onBlur={handleBlur}
+                    onChange={(e) => onUpdate(e.target.value)}
+                    placeholder={placeholder}
+                    className={`w-full p-3 text-sm transition-all duration-300 resize-none outline-none leading-relaxed ${isSecondary ? 'bg-[#f9f9f8] text-gray-600 font-serif italic' : 'bg-white text-gray-800 font-sans'
+                        } ${!isEditing ? 'blur-[1.5px] select-none' : 'blur-0'} ${className}`}
+                    rows={2}
+                />
+
+                {!isEditing && (
+                    <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300 bg-white/10 backdrop-blur-[0.5px]">
+                        <button
+                            onClick={handleEditClick}
+                            className="px-4 py-1.5 bg-white/90 border border-[#d1d1cc] rounded-full text-[10px] font-bold uppercase tracking-widest shadow-sm hover:scale-105 transition-transform text-gray-600"
+                        >
+                            Edit
+                        </button>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+};
+
 const SegmentCard: React.FC<{
     segment: TranscriptionSegment;
     speaker?: Speaker;
@@ -42,38 +99,20 @@ const SegmentCard: React.FC<{
                 </div>
             </div>
 
-            <div className="flex flex-col gap-4">
-                {/* ASR Source Text */}
-                <div className="relative group">
-                    <div className="flex items-center gap-2 mb-1.5 ml-1">
-                        <span className="text-[9px] font-bold uppercase tracking-widest text-gray-400">Original (ASR)</span>
-                        <div className="text-gray-300 group-hover:text-claude-accent transition-colors cursor-pointer" title="Click to edit">
-                            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
-                            </svg>
-                        </div>
-                    </div>
-                    <textarea
-                        value={segment.originalText}
-                        onChange={(e) => onSegmentUpdate(segment.id, { originalText: e.target.value })}
-                        className="w-full bg-[#f9f9f8] p-3 rounded-xl text-sm text-gray-600 border border-[#e5e5e0] focus:border-claude-accent/40 focus:ring-0 transition resize-none font-serif italic leading-relaxed"
-                        rows={2}
-                    />
-                </div>
+            <div className="flex flex-col gap-5">
+                <EditableTextArea
+                    label="Original (ASR)"
+                    value={segment.originalText}
+                    onUpdate={(val) => onSegmentUpdate(segment.id, { originalText: val })}
+                    isSecondary
+                />
 
-                {/* Translation Target Text */}
-                <div className="relative">
-                    <div className="flex items-center gap-2 mb-1.5 ml-1">
-                        <span className="text-[9px] font-bold uppercase tracking-widest text-claude-accent/70">Translation</span>
-                    </div>
-                    <textarea
-                        value={segment.translatedText}
-                        onChange={(e) => onSegmentUpdate(segment.id, { translatedText: e.target.value })}
-                        placeholder="Translation will appear here..."
-                        className="w-full bg-white p-3 rounded-xl text-sm text-gray-800 border border-[#d1d1cc] focus:border-claude-accent focus:ring-2 focus:ring-claude-accent/10 transition resize-none placeholder:text-gray-300 font-sans leading-relaxed"
-                        rows={2}
-                    />
-                </div>
+                <EditableTextArea
+                    label="Translation"
+                    value={segment.translatedText}
+                    onUpdate={(val) => onSegmentUpdate(segment.id, { translatedText: val })}
+                    placeholder="Translation will appear here..."
+                />
             </div>
 
             {(segment.isTranslating || segment.isSynthesizing) && (
