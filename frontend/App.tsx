@@ -415,7 +415,7 @@ const App: React.FC = () => {
 
             </div>
 
-            <div className="w-full lg:col-span-12 flex flex-col h-[600px] lg:h-[calc(100vh-140px)] mt-8">
+            <div className="w-full lg:col-span-5 flex flex-col h-[600px] lg:h-[calc(100vh-110px)]">
               <TranscriptionPanel
                 segments={segments}
                 speakers={speakers}
