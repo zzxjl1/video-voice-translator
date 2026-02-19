@@ -109,7 +109,9 @@ const SegmentCard: React.FC<{
                     </span>
                 </div>
                 <div className="flex items-center gap-3">
-                    <span className="text-[10px] font-mono text-gray-400 bg-[#f9f9f8] px-2 py-1 rounded-md border border-[#eee]">{formatTime(segment.startTime)}</span>
+                    <span className="text-[10px] font-mono text-gray-400 bg-[#f9f9f8] px-2 py-1 rounded-md border border-[#eee]">
+                        {formatTime(segment.startTime)} – {formatTime(segment.endTime)} ({(segment.endTime - segment.startTime).toFixed(2)}s)
+                    </span>
                 </div>
             </div>
 
@@ -146,8 +148,8 @@ const SegmentCard: React.FC<{
                                 onClick={() => !segment.isSynthesizing && !segment.isTranslating && onSynthesize(segment.id)}
                                 disabled={segment.isSynthesizing || segment.isTranslating}
                                 className={`w-full py-2.5 rounded-xl text-[10px] font-bold uppercase tracking-[0.15em] transition-all flex items-center justify-center gap-3 shadow-sm border ${segment.isSynthesizing || segment.isTranslating
-                                        ? 'bg-[#f9f9f8] border-[#e5e5e0] text-gray-400'
-                                        : 'bg-white border-claude-border text-[#da7756] hover:bg-claude-paper active:scale-[0.98]'
+                                    ? 'bg-[#f9f9f8] border-[#e5e5e0] text-gray-400'
+                                    : 'bg-white border-claude-border text-[#da7756] hover:bg-claude-paper active:scale-[0.98]'
                                     }`}
                             >
                                 {segment.isSynthesizing ? (
