@@ -2,7 +2,7 @@
  * API Service - calls the FastAPI backend
  */
 
-const API_BASE = 'http://localhost:8000/api/videos';
+const API_BASE = '/api';
 
 export interface UploadResult {
   video_id: string;
@@ -35,7 +35,7 @@ export async function uploadVideo(file: File): Promise<UploadResult> {
   const formData = new FormData();
   formData.append('file', file);
 
-  const response = await fetch(`${API_BASE}/upload`, {
+  const response = await fetch(`${API_BASE}/videos/upload`, {
     method: 'POST',
     body: formData,
   });
@@ -52,7 +52,7 @@ export async function uploadVideo(file: File): Promise<UploadResult> {
  * Trigger transcription via Ali ASR. Returns segments.
  */
 export async function transcribeVideo(videoId: string): Promise<SegmentData[]> {
-  const response = await fetch(`${API_BASE}/${videoId}/transcribe`, {
+  const response = await fetch(`${API_BASE}/videos/${videoId}/transcribe`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
   });
@@ -74,7 +74,7 @@ export async function translateScript(
   segments: { id: string; text: string; speaker_id: string; start_time: number }[],
   targetLanguage: string = 'English',
 ): Promise<TranslateResult[]> {
-  const response = await fetch(`${API_BASE}/${videoId}/translate`, {
+  const response = await fetch(`${API_BASE}/videos/${videoId}/translate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -100,7 +100,7 @@ export async function synthesizeSpeech(
   text: string,
   voice?: string,
 ): Promise<TTSResult> {
-  const response = await fetch(`${API_BASE}/${videoId}/tts`, {
+  const response = await fetch(`${API_BASE}/videos/${videoId}/tts`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text, voice }),
@@ -118,7 +118,7 @@ export async function synthesizeSpeech(
  * Get the current processing status of a video.
  */
 export async function getVideoStatus(videoId: string) {
-  const response = await fetch(`${API_BASE}/${videoId}/status`);
+  const response = await fetch(`${API_BASE}/videos/${videoId}/status`);
 
   if (!response.ok) {
     const err = await response.json().catch(() => ({ detail: response.statusText }));

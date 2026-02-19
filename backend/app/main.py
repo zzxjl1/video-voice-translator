@@ -1,7 +1,7 @@
 """
 FastAPI application entry point.
 """
-from fastapi import FastAPI
+from fastapi import FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import config
@@ -22,15 +22,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Routers
-app.include_router(video.router)
+# API Router to wrap everything under /api
+api_router = APIRouter(prefix="/api")
 
-
-@app.get("/")
+@api_router.get("/")
 async def root():
     return {"message": "Video Voice Translator API", "version": "1.0.0"}
 
-
-@app.get("/health")
+@api_router.get("/health")
 async def health():
     return {"status": "ok"}
+
+# Include the video router into the /api router
+# Since video.router already has prefix="/api/videos", 
+# we should probably fix it to have prefix="/videos" if we are including it in an /api router.
+# Let's check video.py again to be sure.
+api_router.include_router(video.router)
+
+app.include_router(api_router)

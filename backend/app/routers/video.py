@@ -23,7 +23,7 @@ from app.schemas import (
 )
 from app.services import asr_service, llm_service, tts_service
 
-router = APIRouter(prefix="/api/videos", tags=["videos"])
+router = APIRouter(prefix="/videos", tags=["videos"])
 
 
 def _compute_md5(file_path: str) -> str:
