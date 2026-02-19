@@ -86,17 +86,18 @@ const SegmentCard: React.FC<{
                 </div>
                 <div className="flex items-center gap-3">
                     <span className="text-[10px] font-mono text-gray-400 bg-[#f9f9f8] px-2 py-1 rounded-md border border-[#eee]">{formatTime(segment.startTime)}</span>
-                    {segment.audioUrl && (
-                        <button
-                            onClick={() => new Audio(segment.audioUrl).play()}
-                            className="p-1.5 bg-gray-50 text-gray-500 rounded-full hover:bg-gray-100 transition border border-[#eee]"
-                            title="Play Audio"
-                        >
-                            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" /></svg>
-                        </button>
-                    )}
                 </div>
             </div>
+
+            {segment.audioUrl && (
+                <div className="px-1 animate-in fade-in slide-in-from-top-2 duration-500">
+                    <audio
+                        src={segment.audioUrl}
+                        controls
+                        className="w-full h-8 opacity-70 hover:opacity-100 transition-opacity"
+                    />
+                </div>
+            )}
 
             <div className="flex flex-col gap-5">
                 <EditableTextArea

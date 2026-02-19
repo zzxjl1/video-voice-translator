@@ -221,29 +221,9 @@ const App: React.FC = () => {
     }
   }, []);
 
-  const handleSegmentUpdate = useCallback((id: string, updates: Partial<TranscriptionSegment>) => {
-    setSegments(prev => prev.map(s => {
-      if (s.id === id) {
-        const updated = { ...s, ...updates };
-
-        // Auto-trigger mocks
-        if (updates.originalText !== undefined) {
-          console.log(`[AUTO] Original text changed for ${id}. Triggering re-translation mock...`);
-          // Logic to call handleTranslateSegmentImpl(id) would go here in real impl
-        }
-        if (updates.translatedText !== undefined) {
-          console.log(`[AUTO] Translated text changed for ${id}. Triggering re-synthesis mock...`);
-          // Logic to call handleSynthesizeSegment(id) would go here in real impl
-        }
-
-        return updated;
-      }
-      return s;
-    }));
-  }, []);
-
-  const handleTranslateSegmentImpl = async (id: string) => {
+  const handleTranslateSegmentImpl = useCallback(async (id: string, textToTranslate?: string) => {
     let segmentToTranslate: TranscriptionSegment | undefined;
+
     setSegments(prev => {
       segmentToTranslate = prev.find(s => s.id === id);
       if (segmentToTranslate) {
@@ -252,39 +232,55 @@ const App: React.FC = () => {
       return prev;
     });
 
-    if (!segmentToTranslate || !videoId) return;
+    // We use the latest text passed from the update handler or fallback to state
+    const text = textToTranslate || segmentToTranslate?.originalText;
+
+    if (!segmentToTranslate || !videoId || !text) {
+      setSegments(prev => prev.map(s => s.id === id ? { ...s, isTranslating: false } : s));
+      return null;
+    }
 
     try {
       const results = await translateScript(
         videoId,
         [{
           id: segmentToTranslate.id,
-          text: segmentToTranslate.originalText,
+          text: text,
           speaker_id: segmentToTranslate.speakerId,
           start_time: segmentToTranslate.startTime,
         }],
         targetLanguage
       );
+
       if (results.length > 0) {
-        setSegments(prev => prev.map(s => s.id === id ? { ...s, translatedText: results[0].translated_text, isTranslating: false } : s));
+        const translatedText = results[0].translated_text;
+        setSegments(prev => prev.map(s => s.id === id ? { ...s, translatedText, isTranslating: false } : s));
+        return translatedText;
       }
     } catch (e) {
       console.error("Translation failed:", e);
       setSegments(prev => prev.map(s => s.id === id ? { ...s, isTranslating: false } : s));
     }
-  };
+    return null;
+  }, [videoId, targetLanguage]);
 
-  const handleSynthesizeSegment = useCallback(async (id: string) => {
+  const handleSynthesizeSegment = useCallback(async (id: string, textToSynthesize?: string) => {
     let targetSegment: TranscriptionSegment | undefined;
+
     setSegments(prev => {
       targetSegment = prev.find(s => s.id === id);
       return prev.map(s => s.id === id ? { ...s, isSynthesizing: true } : s);
     });
 
-    if (!targetSegment || !videoId) return;
+    const text = textToSynthesize || targetSegment?.translatedText;
+
+    if (!targetSegment || !videoId || !text) {
+      setSegments(prev => prev.map(s => s.id === id ? { ...s, isSynthesizing: false } : s));
+      return;
+    }
 
     try {
-      const result = await synthesizeSpeech(videoId, targetSegment.id, targetSegment.translatedText);
+      const result = await synthesizeSpeech(videoId, targetSegment.id, text);
       const audioBlob = new Blob(
         [Uint8Array.from(atob(result.audio_base64), c => c.charCodeAt(0))],
         { type: result.content_type }
@@ -296,6 +292,23 @@ const App: React.FC = () => {
       setSegments(prev => prev.map(s => s.id === id ? { ...s, isSynthesizing: false } : s));
     }
   }, [videoId]);
+
+  const handleSegmentUpdate = useCallback((id: string, updates: Partial<TranscriptionSegment>) => {
+    setSegments(prev => prev.map(s => s.id === id ? { ...s, ...updates } : s));
+
+    // Auto-trigger Processing Chain
+    if (updates.originalText !== undefined) {
+      // Chain: ASR -> Translation -> TTS
+      handleTranslateSegmentImpl(id, updates.originalText).then(newTranslation => {
+        if (newTranslation) {
+          handleSynthesizeSegment(id, newTranslation);
+        }
+      });
+    } else if (updates.translatedText !== undefined) {
+      // Chain: Translation -> TTS
+      handleSynthesizeSegment(id, updates.translatedText);
+    }
+  }, [handleTranslateSegmentImpl, handleSynthesizeSegment]);
 
   const handleBatchTranslate = useCallback(async () => {
     const toProcess = segments.filter(s => !s.translatedText);
