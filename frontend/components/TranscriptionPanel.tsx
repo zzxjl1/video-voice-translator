@@ -20,7 +20,15 @@ const EditableTextArea: React.FC<{
     isSecondary?: boolean
 }> = ({ label, value, onUpdate, placeholder, className, isSecondary }) => {
     const [isEditing, setIsEditing] = React.useState(false);
+    const [localValue, setLocalValue] = React.useState(value);
     const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+
+    // Sync local value when global value changes (e.g. from batch processing)
+    React.useEffect(() => {
+        if (!isEditing) {
+            setLocalValue(value);
+        }
+    }, [value, isEditing]);
 
     const handleEditClick = () => {
         setIsEditing(true);
@@ -29,7 +37,9 @@ const EditableTextArea: React.FC<{
 
     const handleBlur = () => {
         setIsEditing(false);
-        onUpdate(value); // Trigger update/auto-processing logic
+        if (localValue !== value) {
+            onUpdate(localValue); // Trigger update/auto-processing only if changed and on blur
+        }
     };
 
     return (
@@ -43,10 +53,10 @@ const EditableTextArea: React.FC<{
             <div className="relative overflow-hidden rounded-xl border border-[#e5e5e0] transition-all duration-300 bg-white">
                 <textarea
                     ref={textareaRef}
-                    value={value}
+                    value={localValue}
                     readOnly={!isEditing}
                     onBlur={handleBlur}
-                    onChange={(e) => onUpdate(e.target.value)}
+                    onChange={(e) => setLocalValue(e.target.value)}
                     placeholder={placeholder}
                     className={`w-full p-3 text-sm transition-all duration-300 resize-none outline-none leading-relaxed ${isSecondary ? 'bg-[#f9f9f8] text-gray-600 font-serif italic' : 'bg-white text-gray-800 font-sans'
                         } ${!isEditing ? 'group-hover:blur-[2px] transition-all' : 'blur-0'} ${className}`}

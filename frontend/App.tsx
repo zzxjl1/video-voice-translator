@@ -294,11 +294,28 @@ const App: React.FC = () => {
   }, [videoId]);
 
   const handleSegmentUpdate = useCallback((id: string, updates: Partial<TranscriptionSegment>) => {
-    setSegments(prev => prev.map(s => s.id === id ? { ...s, ...updates } : s));
+    let currentSeg: TranscriptionSegment | undefined;
+
+    setSegments(prev => prev.map(s => {
+      if (s.id === id) {
+        currentSeg = s;
+        // Revoke old audio URL if text is changing
+        if ((updates.originalText !== undefined || updates.translatedText !== undefined) && s.audioUrl) {
+          URL.revokeObjectURL(s.audioUrl);
+          return { ...s, ...updates, audioUrl: undefined };
+        }
+        return { ...s, ...updates };
+      }
+      return s;
+    }));
+
+    // Use the values found in the map search for safe async triggering
+    if (!currentSeg) return;
 
     // Auto-trigger Processing Chain
     if (updates.originalText !== undefined) {
       // Chain: ASR -> Translation -> TTS
+      // We pass the new originalText and the existing segment context to avoid races
       handleTranslateSegmentImpl(id, updates.originalText).then(newTranslation => {
         if (newTranslation) {
           handleSynthesizeSegment(id, newTranslation);
