@@ -7,8 +7,10 @@ interface TranscriptionPanelProps {
     segments: TranscriptionSegment[];
     speakers: Speaker[];
     isTranscribing: boolean;
+    currentTime: number;
     onSegmentUpdate: (segmentId: string, updates: Partial<TranscriptionSegment>) => void;
     onSynthesize: (segmentId: string) => void;
+    onSeek: (time: number) => void;
 }
 
 
@@ -94,13 +96,30 @@ const EditableTextArea: React.FC<{
 const SegmentCard: React.FC<{
     segment: TranscriptionSegment;
     speaker?: Speaker;
+    isActive?: boolean;
     onSegmentUpdate: (segmentId: string, updates: Partial<TranscriptionSegment>) => void;
     onSynthesize: (segmentId: string) => void;
-}> = memo(({ segment, speaker, onSegmentUpdate, onSynthesize }) => {
+    onSeek: (time: number) => void;
+}> = memo(({ segment, speaker, isActive, onSegmentUpdate, onSynthesize, onSeek }) => {
     const speakerColor = speaker ? getSpeakerColor(speaker.id) : '#9ca3af';
 
+    // Calculate speed stats
+    let audioRate = 1.0;
+    let videoRate = 1.0;
+    if (segment.actualDuration) {
+        const targetDuration = segment.endTime - segment.startTime;
+        const idealFactor = segment.actualDuration / targetDuration;
+        audioRate = Math.min(Math.max(idealFactor, 0.75), 1.5);
+        videoRate = Math.min(Math.max(audioRate / idealFactor, 0.8), 1.5);
+    }
+
     return (
-        <div className={`p-6 rounded-2xl space-y-5 border transition-all duration-500 bg-white ${segment.audioUrl ? 'border-[#d1d1cc] shadow-md ring-1 ring-[#e5e5e0]/50' : 'border-[#e5e5e0] hover:border-[#d1d1cc] shadow-sm'}`}>
+        <div
+            id={`segment-${segment.id}`}
+            className={`p-6 rounded-2xl space-y-5 border transition-all duration-500 bg-white ${isActive ? 'ring-2 ring-claude-accent/30 border-claude-accent shadow-lg scale-[1.01]' :
+                    segment.audioUrl ? 'border-[#d1d1cc] shadow-md ring-1 ring-[#e5e5e0]/50' : 'border-[#e5e5e0] hover:border-[#d1d1cc] shadow-sm'
+                }`}
+        >
             <div className="flex items-center justify-between">
                 <div className="flex items-center space-x-3">
                     <div className="w-3 h-3 rounded-full ring-2 ring-white shadow-sm" style={{ backgroundColor: speakerColor }}></div>
@@ -120,8 +139,30 @@ const SegmentCard: React.FC<{
                     <span className="text-[10px] font-mono text-gray-400 bg-[#f9f9f8] px-2 py-1 rounded-md border border-[#eee]">
                         {formatTime(segment.startTime)} – {formatTime(segment.endTime)} ({(segment.endTime - segment.startTime).toFixed(2)}s)
                     </span>
+                    <button
+                        onClick={() => onSeek(segment.startTime)}
+                        className="p-1.5 rounded-md hover:bg-claude-paper text-gray-400 hover:text-claude-accent transition-colors"
+                        title="Locate in Timeline"
+                    >
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                        </svg>
+                    </button>
                 </div>
             </div>
+
+            {segment.actualDuration && (
+                <div className="flex items-center gap-2 px-3 py-2 bg-claude-paper/50 rounded-xl border border-claude-border/50">
+                    <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wider ${audioRate !== 1.0 ? 'bg-claude-accent/10 text-claude-accent' : 'bg-gray-100 text-gray-400'}`}>
+                        Audio: {audioRate.toFixed(2)}x
+                    </div>
+                    <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wider ${videoRate !== 1.0 ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-400'}`}>
+                        Video: {videoRate.toFixed(2)}x
+                    </div>
+                    <span className="text-[10px] text-gray-400 ml-auto font-medium">Synced Duration</span>
+                </div>
+            )}
 
             <div className="flex flex-col gap-5">
                 <EditableTextArea
@@ -195,9 +236,21 @@ const SegmentCard: React.FC<{
 });
 
 export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = memo(({
-    segments, speakers, isTranscribing, onSegmentUpdate, onSynthesize
+    segments, speakers, isTranscribing, currentTime, onSegmentUpdate, onSynthesize, onSeek
 }) => {
     const speakerMap = new Map(speakers.map(s => [s.id, s]));
+    const listRef = React.useRef<HTMLDivElement>(null);
+
+    // Auto-scroll logic
+    React.useEffect(() => {
+        const activeSegment = segments.find(s => currentTime >= s.startTime && currentTime < s.endTime);
+        if (activeSegment && listRef.current) {
+            const el = document.getElementById(`segment-${activeSegment.id}`);
+            if (el) {
+                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        }
+    }, [currentTime, segments]);
 
     return (
         <div className="flex-grow flex flex-col h-full bg-[#fbfbf9] border border-[#e5e5e0] rounded-3xl overflow-hidden shadow-sm">
@@ -218,7 +271,10 @@ export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = memo(({
                 )}
             </div>
 
-            <div className="flex-grow overflow-y-auto p-6 space-y-6 custom-scrollbar">
+            <div
+                ref={listRef}
+                className="flex-grow overflow-y-auto p-6 space-y-6 custom-scrollbar scroll-smooth"
+            >
                 {segments.length === 0 && !isTranscribing ? (
                     <div className="flex flex-col items-center justify-center h-full text-center space-y-4 opacity-40">
                         <div className="w-12 h-12 rounded-full border border-dashed border-gray-300 flex items-center justify-center">
@@ -233,8 +289,10 @@ export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = memo(({
                                 key={segment.id}
                                 segment={segment}
                                 speaker={speakerMap.get(segment.speakerId)}
+                                isActive={currentTime >= segment.startTime && currentTime < segment.endTime}
                                 onSegmentUpdate={onSegmentUpdate}
                                 onSynthesize={onSynthesize}
+                                onSeek={onSeek}
                             />
                         ))}
                         {isTranscribing && (

@@ -552,6 +552,8 @@ const App: React.FC = () => {
                 isTranscribing={isTranscribing}
                 onSegmentUpdate={handleSegmentUpdate}
                 onSynthesize={handleSynthesizeSegment}
+                currentTime={currentTime}
+                onSeek={handleSeek}
               />
             </div>
           </div>
