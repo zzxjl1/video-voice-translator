@@ -164,8 +164,17 @@ const App: React.FC = () => {
             try {
               const audio = new Audio(seg.audioUrl);
               audio.playbackRate = audioRate;
-              // Audio content time = wall time offset * speed
-              audio.currentTime = Math.max(0, (time - seg.startTime) * audioRate);
+
+              // Progress-based sync: (video_progress / video_duration) * audio_duration
+              const videoDuration = seg.endTime - seg.startTime;
+              const progress = (time - seg.startTime) / videoDuration;
+              if (seg.actualDuration) {
+                audio.currentTime = Math.max(0, progress * seg.actualDuration);
+              } else {
+                // Fallback if actualDuration not yet loaded
+                audio.currentTime = Math.max(0, time - seg.startTime);
+              }
+
               audio.play().catch(e => console.warn("Audio play blocked:", e));
               activeAudiosRef.current.set(seg.id, audio);
             } catch (e) {

@@ -78,13 +78,12 @@ const Timeline: React.FC<TimelineProps> = ({ segments, speakers, duration, curre
                 }}
                 title={`${speaker?.name}: ${segment.originalText.substring(0, 20)}...`}
               >
-                {/* Status Indicators on the timeline segment */}
-                <div className="absolute bottom-0 left-0 right-0 h-1.5 flex">
+                <div className="absolute bottom-0 left-0 right-0 h-1.5 pointer-events-none">
                   {hasTranslation && (
-                    <div className="h-full bg-white/60 flex-1" title="Translated"></div>
+                    <div className="absolute inset-x-0 bottom-0 h-full bg-white/30" title="Translated"></div>
                   )}
                   {hasAudio && (
-                    <div className="h-full bg-claude-accent flex-1 shadow-[0_0_5px_rgba(218,119,86,0.8)]" title="Audio Ready"></div>
+                    <div className="absolute inset-x-0 bottom-0 h-full bg-claude-accent shadow-[0_0_5px_rgba(218,119,86,0.8)]" title="Audio Ready"></div>
                   )}
                 </div>
 
