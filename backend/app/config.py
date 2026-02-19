@@ -30,3 +30,5 @@ os.makedirs(AUDIO_DIR, exist_ok=True)
 
 # ----- Server -----
 CORS_ORIGINS = ["*"]
+# Public URL of the server (needed for Ali ASR callbacks/downloads)
+SERVER_URL_BASE = "http://video-voice-translator.idealbroker.cn"
