@@ -66,31 +66,23 @@ const App: React.FC = () => {
         getVideoStatus(idFromUrl)
           .then(data => {
             if (data.segments && data.segments.length > 0) {
-              const colors = ['#2563eb', '#16a34a', '#d97706', '#dc2626', '#9333ea', '#0891b2'];
-              let speakerMap: Record<string, Speaker> = {};
+              const recoveredSegments: TranscriptionSegment[] = data.segments.map((seg: any) => ({
+                id: seg.id,
+                speakerId: seg.speaker_id,
+                startTime: seg.start_time,
+                endTime: seg.end_time,
+                originalText: seg.text,
+                translatedText: seg.translated_text || '',
+                status: (seg.translated_text ? 'ready' : 'pending') as any,
+              }));
 
-              const recoveredSegments: TranscriptionSegment[] = data.segments.map((seg: any) => {
-                const label = seg.speaker_label;
-                if (!speakerMap[label]) {
-                  const index = Object.keys(speakerMap).length;
-                  speakerMap[label] = {
-                    id: label,
-                    name: label,
-                    color: colors[index % colors.length],
-                  };
-                }
-                return {
-                  id: seg.id,
-                  speakerId: seg.speaker_id,
-                  startTime: seg.start_time,
-                  endTime: seg.end_time,
-                  originalText: seg.text,
-                  translatedText: seg.translated_text || '',
-                  status: (seg.translated_text ? 'ready' : 'pending') as any,
-                };
-              });
-
-              setSpeakers(Object.values(speakerMap));
+              if (data.speakers && data.speakers.length > 0) {
+                setSpeakers(data.speakers);
+              } else {
+                // Fallback: build speaker list from segments if not provided
+                const uniqueLabels = Array.from(new Set(recoveredSegments.map(s => s.speakerId)));
+                setSpeakers(uniqueLabels.map(label => ({ id: label, name: label })));
+              }
               setSegments(recoveredSegments);
             }
           })
@@ -193,23 +185,13 @@ const App: React.FC = () => {
       const segmentData = await transcribeVideo(uploadResult.video_id);
       setRawLog(prev => prev + `Transcription complete. Found ${segmentData.length} segments.\n`);
 
-      const colors = ['#2563eb', '#16a34a', '#d97706', '#dc2626', '#9333ea', '#0891b2'];
-      let speakerMap: Record<string, Speaker> = {};
+      const uniqueLabels = Array.from(new Set(segmentData.map(seg => seg.speaker_label)));
+      setSpeakers(uniqueLabels.map(label => ({ id: label, name: label })));
 
       const newSegments: TranscriptionSegment[] = segmentData.map(seg => {
-        const label = seg.speaker_label;
-        if (!speakerMap[label]) {
-          const index = Object.keys(speakerMap).length;
-          speakerMap[label] = {
-            id: label,
-            name: label,
-            color: colors[index % colors.length],
-          };
-        }
-
         return {
           id: seg.id,
-          speakerId: label,
+          speakerId: seg.speaker_label,
           startTime: seg.start_time,
           endTime: seg.end_time,
           originalText: seg.text,
@@ -218,7 +200,7 @@ const App: React.FC = () => {
         };
       });
 
-      setSpeakers(Object.values(speakerMap));
+      setSpeakers(uniqueLabels.map(label => ({ id: label, name: label })));
       setSegments(newSegments);
 
       setRawLog(prev => prev + '\n--- Transcription Ready ---\n');
@@ -379,10 +361,6 @@ const App: React.FC = () => {
     }
   }, []);
 
-  const handleSpeakerNameChange = useCallback((id: string, newName: string) => {
-    setSpeakers(prev => prev.map(s => s.id === id ? { ...s, name: newName } : s));
-  }, []);
-
   return (
     <div className="min-h-screen flex flex-col bg-claude-bg text-claude-text font-sans selection:bg-claude-accent/20">
       <Header onOpenSettings={() => setIsSettingsOpen(true)} />
@@ -524,7 +502,6 @@ const App: React.FC = () => {
                 speakers={speakers}
                 isTranscribing={isTranscribing}
                 onSegmentUpdate={handleSegmentUpdate}
-                onSpeakerNameChange={handleSpeakerNameChange}
               />
             </div>
           </div>

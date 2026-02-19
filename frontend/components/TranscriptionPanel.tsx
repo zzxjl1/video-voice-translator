@@ -8,8 +8,24 @@ interface TranscriptionPanelProps {
     speakers: Speaker[];
     isTranscribing: boolean;
     onSegmentUpdate: (segmentId: string, updates: Partial<TranscriptionSegment>) => void;
-    onSpeakerNameChange: (id: string, newName: string) => void;
 }
+
+const SPEAKER_COLORS = [
+    '#2563eb', // blue
+    '#16a34a', // green
+    '#d97706', // amber
+    '#dc2626', // red
+    '#9333ea', // purple
+    '#0891b2', // cyan
+];
+
+const getSpeakerColor = (id: string) => {
+    let hash = 0;
+    for (let i = 0; i < id.length; i++) {
+        hash = id.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    return SPEAKER_COLORS[Math.abs(hash) % SPEAKER_COLORS.length];
+};
 
 const EditableTextArea: React.FC<{
     label: string,
@@ -72,18 +88,17 @@ const SegmentCard: React.FC<{
     segment: TranscriptionSegment;
     speaker?: Speaker;
     onSegmentUpdate: (segmentId: string, updates: Partial<TranscriptionSegment>) => void;
-    onSpeakerNameChange: (id: string, newName: string) => void;
-}> = memo(({ segment, speaker, onSegmentUpdate, onSpeakerNameChange }) => {
+}> = memo(({ segment, speaker, onSegmentUpdate }) => {
+    const speakerColor = speaker ? getSpeakerColor(speaker.id) : '#9ca3af';
+
     return (
         <div className={`p-6 rounded-2xl space-y-5 border transition-all duration-500 bg-white ${segment.audioUrl ? 'border-[#d1d1cc] shadow-md ring-1 ring-[#e5e5e0]/50' : 'border-[#e5e5e0] hover:border-[#d1d1cc] shadow-sm'}`}>
             <div className="flex items-center justify-between">
                 <div className="flex items-center space-x-3">
-                    <div className="w-3 h-3 rounded-full ring-2 ring-white shadow-sm" style={{ backgroundColor: speaker?.color || '#9ca3af' }}></div>
-                    <input
-                        value={speaker?.name || '...'}
-                        onChange={(e) => speaker && onSpeakerNameChange(speaker.id, e.target.value)}
-                        className="bg-transparent text-[11px] font-bold uppercase tracking-[0.1em] text-gray-500 focus:outline-none focus:text-claude-accent w-32 border-b border-transparent focus:border-claude-accent/30 transition-colors"
-                    />
+                    <div className="w-3 h-3 rounded-full ring-2 ring-white shadow-sm" style={{ backgroundColor: speakerColor }}></div>
+                    <span className="text-[11px] font-bold uppercase tracking-[0.1em] text-gray-500">
+                        {speaker?.name || '...'}
+                    </span>
                 </div>
                 <div className="flex items-center gap-3">
                     <span className="text-[10px] font-mono text-gray-400 bg-[#f9f9f8] px-2 py-1 rounded-md border border-[#eee]">{formatTime(segment.startTime)}</span>
@@ -132,7 +147,7 @@ const SegmentCard: React.FC<{
 });
 
 export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = memo(({
-    segments, speakers, isTranscribing, onSegmentUpdate, onSpeakerNameChange
+    segments, speakers, isTranscribing, onSegmentUpdate
 }) => {
     const speakerMap = new Map(speakers.map(s => [s.id, s]));
 
@@ -171,7 +186,6 @@ export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = memo(({
                                 segment={segment}
                                 speaker={speakerMap.get(segment.speakerId)}
                                 onSegmentUpdate={onSegmentUpdate}
-                                onSpeakerNameChange={onSpeakerNameChange}
                             />
                         ))}
                         {isTranscribing && (

@@ -71,9 +71,15 @@ class TTSResponse(BaseModel):
 
 # ----- Status -----
 
+class SpeakerOut(BaseModel):
+    id: str
+    name: str
+
+
 class VideoStatusResponse(BaseModel):
     video_id: str
     filename: str
     status: str
     error: Optional[str] = None
     segments: list[SegmentOut] = []
+    speakers: list[SpeakerOut] = []

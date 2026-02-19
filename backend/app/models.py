@@ -23,6 +23,19 @@ class VideoStatus(str, Enum):
 
 
 @dataclass
+class Speaker:
+    id: str
+    name: str
+
+    def to_dict(self):
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data):
+        return cls(**data)
+
+
+@dataclass
 class Segment:
     id: str
     speaker_id: str
@@ -50,17 +63,20 @@ class VideoState:
     status: VideoStatus = VideoStatus.UPLOADED
     error_message: Optional[str] = None
     segments: list[Segment] = field(default_factory=list)
+    speakers: list[Speaker] = field(default_factory=list)
     created_at: str = field(default_factory=lambda: datetime.datetime.now().isoformat())
 
     def to_dict(self):
         data = asdict(self)
         data["status"] = self.status.value
         data["segments"] = [s.to_dict() for s in self.segments]
+        data["speakers"] = [s.to_dict() for s in self.speakers]
         return data
 
     @classmethod
     def from_dict(cls, data):
         segments_data = data.pop("segments", [])
+        speakers_data = data.pop("speakers", [])
         status_val = data.pop("status", VideoStatus.UPLOADED.value)
         # Handle potential invalid status values
         try:
@@ -70,6 +86,7 @@ class VideoState:
             
         state = cls(status=status, **data)
         state.segments = [Segment.from_dict(s) for s in segments_data]
+        state.speakers = [Speaker.from_dict(s) for s in speakers_data]
         return state
 
 

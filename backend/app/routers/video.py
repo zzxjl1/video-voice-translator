@@ -12,6 +12,7 @@ from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 
 from app import config
 from app.models import (
+    Speaker,
     VideoState,
     VideoStatus,
     get_or_create_state,
@@ -21,6 +22,7 @@ from app.models import (
 )
 from app.schemas import (
     SegmentOut,
+    SpeakerOut,
     TranscribeResponse,
     TranslateRequest,
     TranslateResponse,
@@ -112,6 +114,10 @@ async def get_video_status(video_id: str):
             )
             for seg in state.segments
         ],
+        speakers=[
+            SpeakerOut(id=s.id, name=s.name)
+            for s in state.speakers
+        ],
     )
 
 
@@ -155,6 +161,14 @@ async def transcribe_video(video_id: str, request: Request):
         )
 
         state.segments = segments
+        
+        # Initialize speakers if not already present
+        if not state.speakers:
+            state.speakers = [
+                Speaker(id=label, name=label)
+                for label in unique_labels
+            ]
+            
         state.status = VideoStatus.TRANSCRIBED
         logger.info(f"[{video_id}] Status: {state.status.value}. Found {len(segments)} segments.")
         save_state(video_id)
@@ -173,6 +187,10 @@ async def transcribe_video(video_id: str, request: Request):
                 )
                 for seg in segments
             ],
+            speakers=[
+                SpeakerOut(id=s.id, name=s.name)
+                for s in state.speakers
+            ]
         )
     except Exception as e:
         logger.error(f"[{video_id}] Transcription error: {str(e)}", exc_info=True)
