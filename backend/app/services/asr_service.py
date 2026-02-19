@@ -2,6 +2,7 @@
 Ali DashScope ASR service for speech-to-text transcription.
 Uses the fun-asr model with speaker diarization.
 """
+import logging
 import hashlib
 import json
 import os
@@ -14,6 +15,8 @@ import requests
 
 from app import config
 from app.models import Segment
+
+logger = logging.getLogger(__name__)
 
 
 def extract_audio(video_path: str, audio_output_path: str) -> str:
@@ -94,11 +97,11 @@ def poll_transcription_result(task_id: str, max_wait: int = 300) -> list[dict]:
                 continue
             else:
                 error_msg = f"ASR task failed with status: {status}. Full response: {response.text}"
-                print(error_msg)
+                logger.error(error_msg)
                 raise RuntimeError(error_msg)
         else:
             error_msg = f"ASR task query failed with status {response.status_code}: {response.text}"
-            print(error_msg)
+            logger.error(error_msg)
             raise RuntimeError(error_msg)
 
     raise TimeoutError("ASR task did not complete within timeout")
@@ -149,15 +152,24 @@ async def transcribe_video(video_path: str, audio_path: str, file_serve_url: str
     """
     # Extract audio if not already done
     if not os.path.exists(audio_path):
+        logger.info(f"--- [ASR] Step 1: Extracting audio to {audio_path} ---")
         extract_audio(video_path, audio_path)
 
     # Submit transcription task with the served file URL
+    logger.info(f"--- [ASR] Step 2: Submitting task to Ali DashScope (URL: {file_serve_url}) ---")
     task_id = submit_transcription_task(file_serve_url)
     if not task_id:
         raise RuntimeError("Failed to submit transcription task")
+    logger.info(f"--- [ASR] Step 2: Task submitted successfully. Task ID: {task_id} ---")
 
     # Poll for results
+    logger.info(f"--- [ASR] Step 3: Polling for transcription results (Task: {task_id}) ---")
     results = poll_transcription_result(task_id)
+    logger.info(f"--- [ASR] Step 3: Transcription completed successfully. ---")
 
     # Parse results into segments
-    return parse_asr_results(results)
+    logger.info(f"--- [ASR] Step 4: Parsing ASR results into segments ---")
+    segments = parse_asr_results(results)
+    logger.info(f"--- [ASR] Step 4: Parsing complete. Generated {len(segments)} segments. ---")
+    
+    return segments

@@ -29,4 +29,4 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(AUDIO_DIR, exist_ok=True)
 
 # ----- Server -----
-CORS_ORIGINS = ["http://localhost:3000", "http://127.0.0.1:3000"]
+CORS_ORIGINS = ["*"]
