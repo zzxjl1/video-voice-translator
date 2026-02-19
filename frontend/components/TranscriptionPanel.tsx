@@ -49,7 +49,7 @@ const EditableTextArea: React.FC<{
                     onChange={(e) => onUpdate(e.target.value)}
                     placeholder={placeholder}
                     className={`w-full p-3 text-sm transition-all duration-300 resize-none outline-none leading-relaxed ${isSecondary ? 'bg-[#f9f9f8] text-gray-600 font-serif italic' : 'bg-white text-gray-800 font-sans'
-                        } ${!isEditing ? 'blur-[1.5px] select-none' : 'blur-0'} ${className}`}
+                        } ${!isEditing ? 'group-hover:blur-[2px] transition-all' : 'blur-0'} ${className}`}
                     rows={2}
                 />
 
