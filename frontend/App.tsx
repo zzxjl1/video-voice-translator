@@ -38,16 +38,28 @@ const App: React.FC = () => {
 
   const videoUrl = useMemo(() => (videoFile ? URL.createObjectURL(videoFile) : null), [videoFile]);
 
+  // Handle video URL cleanup
   useEffect(() => {
     return () => {
-      if (videoUrl) URL.revokeObjectURL(videoUrl);
-      segments.forEach(seg => {
-        if (seg.audioUrl?.startsWith('blob:')) {
-          URL.revokeObjectURL(seg.audioUrl);
-        }
+      if (videoUrl) {
+        console.log("Revoking video URL:", videoUrl);
+        URL.revokeObjectURL(videoUrl);
+      }
+    };
+  }, [videoUrl]);
+
+  // Handle segment audio URL cleanup (only when segments change)
+  useEffect(() => {
+    const urlsToRevoke = segments
+      .map(seg => seg.audioUrl)
+      .filter((url): url is string => !!url && url.startsWith('blob:'));
+
+    return () => {
+      urlsToRevoke.forEach(url => {
+        URL.revokeObjectURL(url);
       });
     };
-  }, [videoUrl, segments]);
+  }, [segments]);
 
   const handleTimeUpdate = () => {
     if (!videoRef.current) return;
