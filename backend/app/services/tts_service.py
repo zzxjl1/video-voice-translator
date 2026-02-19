@@ -49,8 +49,26 @@ async def synthesize_speech(video_id: str, segment_id: str, text: str, voice: st
         with open(audio_path, "wb") as f:
             f.write(response.content)
         logger.info(f"Saved synthesized audio to {audio_path}")
+        
+        # Consistent persistence: Update tts_results.json
+        # This keeps a record of which segments have valid audio
+        results_path = os.path.join(video_dir, "tts_results.json")
+        tts_results = {}
+        if os.path.exists(results_path):
+            try:
+                with open(results_path, "r", encoding="utf-8") as f:
+                    tts_results = json.load(f)
+            except Exception:
+                pass
+        
+        # Save relative path or just a flag. Using relative path for robustness.
+        tts_results[segment_id] = f"tts/{segment_id}.mp3"
+        
+        with open(results_path, "w", encoding="utf-8") as f:
+            json.dump(tts_results, f, ensure_ascii=False, indent=2)
+            
     except Exception as e:
-        logger.warning(f"Failed to save synthesized audio: {e}")
+        logger.warning(f"Failed to save synthesized audio or update registry: {e}")
 
     # Return base64 for frontend immediate use
     audio_base64 = base64.b64encode(response.content).decode("utf-8")

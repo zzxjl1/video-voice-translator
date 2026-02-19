@@ -90,6 +90,7 @@ const App: React.FC = () => {
                 endTime: seg.end_time,
                 originalText: seg.text,
                 translatedText: seg.translated_text || '',
+                audioUrl: seg.audio_url || undefined,
                 status: (seg.translated_text ? 'ready' : 'pending') as any,
               }));
 
@@ -201,6 +202,7 @@ const App: React.FC = () => {
           endTime: seg.end_time,
           originalText: seg.text,
           translatedText: seg.translated_text || '',
+          audioUrl: (seg as any).audio_url || undefined,
           status: 'pending' as const,
         };
       });

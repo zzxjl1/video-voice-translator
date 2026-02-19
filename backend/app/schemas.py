@@ -22,6 +22,7 @@ class SegmentOut(BaseModel):
     end_time: float
     text: str
     translated_text: str = ""
+    audio_url: Optional[str] = None
 
 
 class TranscribeResponse(BaseModel):

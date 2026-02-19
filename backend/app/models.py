@@ -157,13 +157,27 @@ def load_state(video_id: str) -> Optional[VideoState]:
                     if s.id in trans_map:
                         s.translated_text = trans_map[s.id]
 
-        # 4. Check for synthesized audio (optional, but good for completeness)
-        tts_dir = os.path.join(video_dir, "tts")
-        if segments and os.path.exists(tts_dir):
+        # 4. Check for synthesized audio via registry or scan
+        tts_results_path = os.path.join(video_dir, "tts_results.json")
+        tts_map = {}
+        if os.path.exists(tts_results_path):
+            try:
+                with open(tts_results_path, "r", encoding="utf-8") as f:
+                    tts_map = json.load(f)
+            except Exception:
+                pass
+                
+        if segments:
             for s in segments:
-                audio_file = f"{s.id}.mp3"
-                if os.path.exists(os.path.join(tts_dir, audio_file)):
-                    s.audio_path = os.path.join(tts_dir, audio_file)
+                # Prioritize registry
+                if s.id in tts_map:
+                    s.audio_path = os.path.join(video_dir, tts_map[s.id])
+                else:
+                    # Fallback to direct scan
+                    audio_file = f"{s.id}.mp3"
+                    disk_path = os.path.join(video_dir, "tts", audio_file)
+                    if os.path.exists(disk_path):
+                        s.audio_path = disk_path
 
         # Assemble
         data["segments"] = segments

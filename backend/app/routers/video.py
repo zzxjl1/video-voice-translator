@@ -315,3 +315,16 @@ async def serve_audio(video_id: str):
         raise HTTPException(status_code=404, detail="Audio file not found on disk")
 
     return FileResponse(state.audio_path, media_type="audio/wav")
+
+
+@router.get("/{video_id}/tts/{segment_id}")
+async def serve_segment_audio(video_id: str, segment_id: str):
+    """Serve synthesized MP3 for a specific segment."""
+    from fastapi.responses import FileResponse
+    video_dir = get_video_dir(video_id)
+    audio_path = os.path.join(video_dir, "tts", f"{segment_id}.mp3")
+    
+    if not os.path.exists(audio_path):
+        raise HTTPException(status_code=404, detail="Segment audio not found")
+        
+    return FileResponse(audio_path, media_type="audio/mp3")
