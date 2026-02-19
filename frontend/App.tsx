@@ -519,6 +519,7 @@ const App: React.FC = () => {
                 speakers={speakers}
                 isTranscribing={isTranscribing}
                 onSegmentUpdate={handleSegmentUpdate}
+                onSynthesize={handleSynthesizeSegment}
               />
             </div>
           </div>

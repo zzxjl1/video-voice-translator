@@ -8,6 +8,7 @@ interface TranscriptionPanelProps {
     speakers: Speaker[];
     isTranscribing: boolean;
     onSegmentUpdate: (segmentId: string, updates: Partial<TranscriptionSegment>) => void;
+    onSynthesize: (segmentId: string) => void;
 }
 
 
@@ -82,7 +83,8 @@ const SegmentCard: React.FC<{
     segment: TranscriptionSegment;
     speaker?: Speaker;
     onSegmentUpdate: (segmentId: string, updates: Partial<TranscriptionSegment>) => void;
-}> = memo(({ segment, speaker, onSegmentUpdate }) => {
+    onSynthesize: (segmentId: string) => void;
+}> = memo(({ segment, speaker, onSegmentUpdate, onSynthesize }) => {
     const speakerColor = speaker ? getSpeakerColor(speaker.id) : '#9ca3af';
 
     return (
@@ -99,7 +101,7 @@ const SegmentCard: React.FC<{
                 </div>
             </div>
 
-            {segment.audioUrl && (
+            {segment.audioUrl ? (
                 <div className="px-1 animate-in fade-in slide-in-from-top-2 duration-500">
                     <audio
                         src={segment.audioUrl}
@@ -107,6 +109,18 @@ const SegmentCard: React.FC<{
                         className="w-full h-8 opacity-70 hover:opacity-100 transition-opacity"
                     />
                 </div>
+            ) : (
+                segment.translatedText && !segment.isSynthesizing && (
+                    <div className="px-1">
+                        <button
+                            onClick={() => onSynthesize(segment.id)}
+                            className="w-full py-2 bg-claude-bg border border-claude-border rounded-xl text-[10px] font-bold uppercase tracking-widest text-[#da7756] hover:bg-claude-paper transition-colors flex items-center justify-center gap-2 shadow-sm"
+                        >
+                            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /></svg>
+                            Generate Voice
+                        </button>
+                    </div>
+                )
             )}
 
             <div className="flex flex-col gap-5">
@@ -142,7 +156,7 @@ const SegmentCard: React.FC<{
 });
 
 export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = memo(({
-    segments, speakers, isTranscribing, onSegmentUpdate
+    segments, speakers, isTranscribing, onSegmentUpdate, onSynthesize
 }) => {
     const speakerMap = new Map(speakers.map(s => [s.id, s]));
 
@@ -181,6 +195,7 @@ export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = memo(({
                                 segment={segment}
                                 speaker={speakerMap.get(segment.speakerId)}
                                 onSegmentUpdate={onSegmentUpdate}
+                                onSynthesize={onSynthesize}
                             />
                         ))}
                         {isTranscribing && (
