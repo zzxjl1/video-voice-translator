@@ -60,16 +60,39 @@ async def translate_script(
     """
     script_context = json.dumps(segments, ensure_ascii=False, indent=2)
 
-    prompt = f"""You are a professional video translator.
-Translate the following script to {target_language}.
-Use the provided time and speaker context to ensure the translation flows naturally and maintains the correct tone.
+    prompt = f"""
+You are a professional video translator with expertise in cross-cultural localization.
 
-IMPORTANT: Return the output as a STRICT JSON ARRAY of objects.
+Translate the following script to {target_language}. 
+Use the provided time and speaker context to ensure the translation flows naturally and maintains the correct tone.
+Follow these strict guidelines:
+
+## Core Principles
+1. **Context-Aware Translation**: Read the entire script first to understand the flow, relationships between speakers, and conversational dynamics. Do not translate sentences in isolation.
+2. **Fluency Over Literalism**: Prioritize natural, idiomatic expression. A slightly looser translation that sounds authentic is preferred over a word-for-word translation that feels stiff or foreign.
+3. **Register Adaptation**: Automatically detect and match the tone:
+   - Casual conversations → relaxed, colloquial language (e.g., "bro," "dude," slang, contractions)
+   - Formal/Professional settings → polished, appropriate formality
+   - Comedy/Humor → preserve comedic timing and punchlines, adapt cultural references
+   - Arguments/Emotional moments → convey the emotional weight and urgency
+
+## Specific Requirements
+- **Conversational Flow**: Ensure responses logically connect to what came before (e.g., "That's why..." should clearly reference the prior context)
+- **Speaker Voice**: Maintain consistent personality per speaker across the script
+- **No Translationese**: Avoid awkward word order, literal calques, or vocabulary choices that reveal the text was translated
+- **Cultural Localization**: Adapt references so they land naturally for {target_language} audiences
+
+## Quality Check
+Before outputting, mentally read each line aloud—if it sounds like something a native speaker would actually say in this situation, you've succeeded.
+
+IMPORTANT: 
+Return the output as a STRICT JSON ARRAY of objects.
 Each object must have exactly two properties: "id" (matching the input) and "translatedText".
 Do not wrap the JSON in markdown code blocks. Just return the raw JSON string.
 
 Input Script:
-{script_context}"""
+{script_context}
+"""
 
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     
