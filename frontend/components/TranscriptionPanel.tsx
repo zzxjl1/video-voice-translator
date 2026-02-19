@@ -117,7 +117,7 @@ const SegmentCard: React.FC<{
         <div
             id={`segment-${segment.id}`}
             className={`p-6 rounded-2xl space-y-5 border transition-all duration-500 bg-white ${isActive ? 'ring-2 ring-claude-accent/30 border-claude-accent shadow-lg scale-[1.01]' :
-                    segment.audioUrl ? 'border-[#d1d1cc] shadow-md ring-1 ring-[#e5e5e0]/50' : 'border-[#e5e5e0] hover:border-[#d1d1cc] shadow-sm'
+                segment.audioUrl ? 'border-[#d1d1cc] shadow-md ring-1 ring-[#e5e5e0]/50' : 'border-[#e5e5e0] hover:border-[#d1d1cc] shadow-sm'
                 }`}
         >
             <div className="flex items-center justify-between">
@@ -152,18 +152,6 @@ const SegmentCard: React.FC<{
                 </div>
             </div>
 
-            {segment.actualDuration && (
-                <div className="flex items-center gap-2 px-3 py-2 bg-claude-paper/50 rounded-xl border border-claude-border/50">
-                    <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wider ${audioRate !== 1.0 ? 'bg-claude-accent/10 text-claude-accent' : 'bg-gray-100 text-gray-400'}`}>
-                        Audio: {audioRate.toFixed(2)}x
-                    </div>
-                    <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wider ${videoRate !== 1.0 ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-400'}`}>
-                        Video: {videoRate.toFixed(2)}x
-                    </div>
-                    <span className="text-[10px] text-gray-400 ml-auto font-medium">Synced Duration</span>
-                </div>
-            )}
-
             <div className="flex flex-col gap-5">
                 <EditableTextArea
                     label="Original (ASR)"
@@ -195,6 +183,17 @@ const SegmentCard: React.FC<{
                             }}
                             className="w-full h-8 opacity-70 hover:opacity-100 transition-opacity"
                         />
+                        {segment.actualDuration && (
+                            <div className="mt-3 flex items-center gap-2 px-3 py-2 bg-claude-paper/50 rounded-xl border border-claude-border/50 animate-in fade-in duration-500">
+                                <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wider ${audioRate !== 1.0 ? 'bg-claude-accent/10 text-claude-accent' : 'bg-gray-100 text-gray-400'}`}>
+                                    Audio: {audioRate.toFixed(2)}x
+                                </div>
+                                <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wider ${videoRate !== 1.0 ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-400'}`}>
+                                    Video: {videoRate.toFixed(2)}x
+                                </div>
+                                <span className="text-[10px] text-gray-400 ml-auto font-medium">Synced Duration</span>
+                            </div>
+                        )}
                     </div>
                 ) : (
                     (segment.translatedText || segment.isTranslating) && (
@@ -246,8 +245,14 @@ export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = memo(({
         const activeSegment = segments.find(s => currentTime >= s.startTime && currentTime < s.endTime);
         if (activeSegment && listRef.current) {
             const el = document.getElementById(`segment-${activeSegment.id}`);
-            if (el) {
-                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            const container = listRef.current;
+            if (el && container) {
+                // Calculate position relative to container
+                const targetTop = el.offsetTop - container.offsetTop - (container.clientHeight / 2) + (el.clientHeight / 2);
+                container.scrollTo({
+                    top: Math.max(0, targetTop),
+                    behavior: 'smooth'
+                });
             }
         }
     }, [currentTime, segments]);
