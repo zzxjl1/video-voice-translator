@@ -175,13 +175,25 @@ async def transcribe_video(video_id: str, video_path: str, audio_path: str, file
     segments = await parse_asr_results(results)
     logger.info(f"--- [ASR] Step 4: Parsing complete. Generated {len(segments)} segments. ---")
     
-    # Save PROCESSED segments to disk (for easy recovery)
+    # Save PROCESSED segments to disk (for easy recovery, ASR ONLY)
     video_dir = get_video_dir(video_id)
     result_path = os.path.join(video_dir, "asr_result.json")
     try:
-        segments_dict = [s.to_dict() for s in segments]
+        # Use explicit dict literal to include only ASR-relevant fields
+        asr_only_segments = [
+            {
+                "id": s.id,
+                "speaker_id": s.speaker_id,
+                "speaker_label": s.speaker_label,
+                "start_time": s.start_time,
+                "end_time": s.end_time,
+                "text": s.text,
+            }
+            for s in segments
+        ]
+            
         with open(result_path, "w", encoding="utf-8") as f:
-            json.dump(segments_dict, f, ensure_ascii=False, indent=2)
+            json.dump(asr_only_segments, f, ensure_ascii=False, indent=2)
         logger.info(f"Saved processed ASR segments to {result_path}")
     except Exception as e:
         logger.warning(f"Failed to save processed ASR segments: {e}")

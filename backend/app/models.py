@@ -86,7 +86,7 @@ def get_video_dir(video_id: str) -> str:
 
 
 def save_state(video_id: str):
-    """Save video state to the filesystem as info.json."""
+    """Save video state to the filesystem. Root info.json only contains metadata."""
     state = video_states.get(video_id)
     if not state:
         return
@@ -94,31 +94,66 @@ def save_state(video_id: str):
     video_dir = get_video_dir(video_id)
     state_path = os.path.join(video_dir, "info.json")
     
+    # Save root info (metadata only, no segments to avoid redundancy)
+    data = state.to_dict()
+    data.pop("segments", None)
+    
     with open(state_path, "w", encoding="utf-8") as f:
-        json.dump(state.to_dict(), f, ensure_ascii=False, indent=2)
-    logger.info(f"Saved state to {state_path}")
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    logger.info(f"Saved metadata to {state_path}")
 
 
 def load_state(video_id: str) -> Optional[VideoState]:
-    """Load video state from the filesystem (info.json)."""
+    """
+    Load video state by merging multiple files:
+    1. info.json (metadata)
+    2. asr_result.json (transcription)
+    3. translation_result.json (translation)
+    """
     video_dir = os.path.join(config.DATA_DIR, video_id)
+    info_path = os.path.join(video_dir, "info.json")
+    asr_path = os.path.join(video_dir, "asr_result.json")
+    trans_path = os.path.join(video_dir, "translation_result.json")
     
-    # Check new filename first, fallback to old for migration if needed
-    state_path = os.path.join(video_dir, "info.json")
-    old_state_path = os.path.join(video_dir, "state.json")
-    
-    if not os.path.exists(state_path) and os.path.exists(old_state_path):
-        state_path = old_state_path
-        
-    if not os.path.exists(state_path):
-        return None
+    if not os.path.exists(info_path):
+            return None
     
     try:
-        with open(state_path, "r", encoding="utf-8") as f:
+        # 1. Load basic info
+        with open(info_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-            return VideoState.from_dict(data)
+            
+        # 2. Load ASR segments if they exist
+        segments = []
+        if os.path.exists(asr_path):
+            with open(asr_path, "r", encoding="utf-8") as f:
+                asr_data = json.load(f)
+                segments = [Segment.from_dict(s) for s in asr_data]
+                
+        # 3. Load Translations and merge
+        if segments and os.path.exists(trans_path):
+            with open(trans_path, "r", encoding="utf-8") as f:
+                trans_data = json.load(f)
+                # trans_data is expected to be list of {id, translatedText}
+                trans_map = {item["id"]: item["translatedText"] for item in trans_data}
+                for s in segments:
+                    if s.id in trans_map:
+                        s.translated_text = trans_map[s.id]
+
+        # 4. Check for synthesized audio (optional, but good for completeness)
+        tts_dir = os.path.join(video_dir, "tts")
+        if segments and os.path.exists(tts_dir):
+            for s in segments:
+                audio_file = f"{s.id}.mp3"
+                if os.path.exists(os.path.join(tts_dir, audio_file)):
+                    s.audio_path = os.path.join(tts_dir, audio_file)
+
+        # Assemble
+        data["segments"] = segments
+        return VideoState.from_dict(data)
+        
     except Exception as e:
-        logger.error(f"Failed to load state from {state_path}: {e}")
+        logger.error(f"Failed to load state for {video_id}: {e}")
         return None
 
 
