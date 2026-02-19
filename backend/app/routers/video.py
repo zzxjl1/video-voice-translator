@@ -80,7 +80,7 @@ async def upload_video(file: UploadFile = File(...)):
 
         # Create/retrieve state
         state = get_or_create_state(video_id, file.filename, final_path)
-        save_state(video_id)
+        save_state(state)
 
         return UploadResponse(video_id=video_id, filename=file.filename)
     except Exception as e:
@@ -137,7 +137,7 @@ async def transcribe_video(video_id: str, request: Request):
     try:
         state.status = VideoStatus.EXTRACTING_AUDIO
         logger.info(f"[{video_id}] Status: {state.status.value}")
-        save_state(video_id)
+        save_state(state)
 
         # Extract audio to the video specific directory
         video_dir = get_video_dir(video_id)
@@ -149,7 +149,7 @@ async def transcribe_video(video_id: str, request: Request):
 
         state.status = VideoStatus.TRANSCRIBING
         logger.info(f"[{video_id}] Status: {state.status.value}")
-        save_state(video_id)
+        save_state(state)
 
         # Build a URL for the audio file that Ali ASR can reach
         base_url = config.SERVER_URL_BASE
@@ -173,7 +173,7 @@ async def transcribe_video(video_id: str, request: Request):
             
         state.status = VideoStatus.TRANSCRIBED
         logger.info(f"[{video_id}] Status: {state.status.value}. Found {len(segments)} segments.")
-        save_state(video_id)
+        save_state(state)
 
         return TranscribeResponse(
             video_id=video_id,
@@ -198,7 +198,7 @@ async def transcribe_video(video_id: str, request: Request):
         logger.error(f"[{video_id}] Transcription error: {str(e)}", exc_info=True)
         state.status = VideoStatus.ERROR
         state.error_message = str(e)
-        save_state(video_id)
+        save_state(state)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -214,7 +214,7 @@ async def translate_video(video_id: str, req: TranslateRequest):
     try:
         state.status = VideoStatus.TRANSLATING
         logger.info(f"[{video_id}] Status: {state.status.value}")
-        save_state(video_id)
+        save_state(state)
 
         # Prepare context payload
         context = [
@@ -244,7 +244,7 @@ async def translate_video(video_id: str, req: TranslateRequest):
 
         state.status = VideoStatus.TRANSLATED
         logger.info(f"[{video_id}] Status: {state.status.value}. Translated {len(translations)} items.")
-        save_state(video_id)
+        save_state(state)
 
         return TranslateResponse(
             video_id=video_id,
@@ -254,7 +254,7 @@ async def translate_video(video_id: str, req: TranslateRequest):
         logger.error(f"[{video_id}] Translation error: {str(e)}", exc_info=True)
         state.status = VideoStatus.ERROR
         state.error_message = str(e)
-        save_state(video_id)
+        save_state(state)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -272,6 +272,12 @@ async def synthesize_speech(video_id: str, req: TTSRequest):
             video_id, req.segment_id, req.text, req.voice
         )
         logger.info(f"[{video_id}] TTS synthesis complete (Segment: {req.segment_id})")
+
+        # Update in-memory state to reflect the new audio path
+        for seg in state.segments:
+            if seg.id == req.segment_id:
+                seg.audio_path = os.path.join(get_video_dir(video_id), "tts", f"{req.segment_id}.mp3")
+                break
 
         return TTSResponse(
             audio_base64=audio_base64,
