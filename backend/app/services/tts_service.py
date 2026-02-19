@@ -3,19 +3,22 @@ TTS service via OpenAI SDK.
 Uses SiliconFlow's TTS endpoint to synthesize speech from text.
 """
 import base64
+import logging
 
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 from app import config
 
+logger = logging.getLogger(__name__)
 
-_client = OpenAI(
+_client = AsyncOpenAI(
     api_key=config.TTS_API_KEY,
     base_url=config.TTS_BASE_URL,
+    timeout=config.TTS_TIMEOUT,
 )
 
 
-def synthesize_speech(text: str, voice: str | None = None) -> tuple[str, str]:
+async def synthesize_speech(text: str, voice: str | None = None) -> tuple[str, str]:
     """
     Synthesize speech from text using OpenAI TTS API.
     
@@ -27,8 +30,10 @@ def synthesize_speech(text: str, voice: str | None = None) -> tuple[str, str]:
         Tuple of (base64_audio_data, content_type)
     """
     voice = voice or config.TTS_VOICE
+    
+    logger.info(f"Submitting TTS task to SiliconFlow ({config.TTS_MODEL}), Voice: {voice}")
 
-    response = _client.audio.speech.create(
+    response = await _client.audio.speech.create(
         model=config.TTS_MODEL,
         voice=voice,
         input=text,

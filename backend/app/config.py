@@ -32,3 +32,9 @@ os.makedirs(AUDIO_DIR, exist_ok=True)
 CORS_ORIGINS = ["*"]
 # Public URL of the server (needed for Ali ASR callbacks/downloads)
 SERVER_URL_BASE = "http://video-voice-translator.idealbroker.cn"
+
+# ----- Timeouts -----
+API_GENERAL_TIMEOUT = 60        # General timeout for HTTP requests (seconds)
+ASR_MAX_WAIT = 600        # Maximum time to poll for ASR success (seconds)
+LLM_TIMEOUT = 120      # Timeout for LLM translation calls (seconds)
+TTS_TIMEOUT = 60        # Timeout for TTS synthesis calls (seconds)

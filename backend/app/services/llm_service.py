@@ -3,21 +3,24 @@ LLM translation service via SiliconFlow (using OpenAI SDK).
 Translates transcript segments with full context awareness.
 """
 import json
+import logging
 
-from openai import OpenAI
+from openai import AsyncOpenAI
 
 from app import config
 
+logger = logging.getLogger(__name__)
 
-_client = OpenAI(
+_client = AsyncOpenAI(
     api_key=config.SILICONFLOW_API_KEY,
     base_url=config.SILICONFLOW_BASE_URL,
+    timeout=config.LLM_TIMEOUT,
 )
 
 
-def translate_single(text: str, target_language: str) -> str:
+async def translate_single(text: str, target_language: str) -> str:
     """Translate a single piece of text."""
-    response = _client.chat.completions.create(
+    response = await _client.chat.completions.create(
         model=config.SILICONFLOW_MODEL,
         messages=[
             {
@@ -34,7 +37,7 @@ def translate_single(text: str, target_language: str) -> str:
     return response.choices[0].message.content.strip()
 
 
-def translate_script(
+async def translate_script(
     segments: list[dict],
     target_language: str = "English",
 ) -> list[dict]:
@@ -61,7 +64,9 @@ Do not wrap the JSON in markdown code blocks. Just return the raw JSON string.
 Input Script:
 {script_context}"""
 
-    response = _client.chat.completions.create(
+    logger.info(f"Submitting translation task to LLM ({config.SILICONFLOW_MODEL})")
+    
+    response = await _client.chat.completions.create(
         model=config.SILICONFLOW_MODEL,
         messages=[
             {
@@ -83,6 +88,7 @@ Input Script:
     start = clean.find("[")
     end = clean.rfind("]")
     if start == -1 or end == -1:
+        logger.error(f"Invalid JSON response from LLM: {result_text}")
         raise ValueError(f"Invalid JSON response from LLM: {result_text[:200]}")
 
     return json.loads(clean[start : end + 1])

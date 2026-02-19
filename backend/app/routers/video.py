@@ -178,7 +178,7 @@ async def translate_video(video_id: str, req: TranslateRequest):
             for seg in req.segments
         ]
 
-        results = llm_service.translate_script(context, req.target_language)
+        results = await llm_service.translate_script(context, req.target_language)
 
         # Update state with translations
         translations = []
@@ -217,7 +217,7 @@ async def synthesize_speech(video_id: str, req: TTSRequest):
         raise HTTPException(status_code=404, detail="Video not found")
 
     try:
-        audio_base64, content_type = tts_service.synthesize_speech(
+        audio_base64, content_type = await tts_service.synthesize_speech(
             req.text, req.voice
         )
         logger.info(f"[{video_id}] TTS synthesis complete.")
