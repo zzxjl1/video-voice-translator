@@ -10,6 +10,16 @@ import { TranscriptionPanel } from './components/TranscriptionPanel';
 import { uploadVideo, transcribeVideo, translateScript, synthesizeSpeech } from './services/apiService';
 import { getAudioWaveform } from './utils/audioProcessor';
 
+const LANGUAGES = [
+  'English',
+  'Chinese',
+  'Japanese',
+  'Korean',
+  'French',
+  'German',
+  'Spanish',
+];
+
 const App: React.FC = () => {
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoId, setVideoId] = useState<string>('');
@@ -303,8 +313,6 @@ const App: React.FC = () => {
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
-        targetLanguage={targetLanguage}
-        onSave={setTargetLanguage}
       />
 
       <StreamingLog
@@ -356,11 +364,29 @@ const App: React.FC = () => {
                 <div className="bg-white border border-claude-border rounded-2xl p-6 shadow-sm hover:shadow-md transition-all">
                   <div className="flex items-center gap-3 mb-2">
                     <div className="w-8 h-8 rounded-full bg-claude-paper flex items-center justify-center text-claude-text font-serif font-bold text-sm border border-claude-border">1</div>
-                    <h3 className="font-serif font-bold text-lg text-gray-800">Context Translation ({targetLanguage})</h3>
+                    <h3 className="font-serif font-bold text-lg text-gray-800">Context Translation</h3>
                   </div>
-                  <p className="text-xs text-gray-500 mb-6 font-sans leading-relaxed">
+
+                  <div className="mb-4">
+                    <label className="text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-1.5 block ml-1">Target Language</label>
+                    <div className="relative">
+                      <select
+                        value={targetLanguage}
+                        onChange={(e) => setTargetLanguage(e.target.value)}
+                        className="w-full bg-claude-paper border border-claude-border rounded-xl px-4 py-2.5 text-sm text-gray-700 focus:outline-none focus:border-claude-accent transition appearance-none font-medium"
+                      >
+                        {LANGUAGES.map(l => <option key={l} value={l}>{l}</option>)}
+                      </select>
+                      <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-4 text-gray-400">
+                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
+                      </div>
+                    </div>
+                  </div>
+
+                  <p className="text-[11px] text-gray-400 mb-6 font-sans leading-relaxed">
                     Sends the entire script for context-aware translation to {targetLanguage}.
                   </p>
+
                   <button
                     onClick={handleBatchTranslate}
                     disabled={isBatchProcessing || isTranscribing || segments.length === 0}
