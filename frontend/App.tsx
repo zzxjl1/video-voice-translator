@@ -411,8 +411,16 @@ const App: React.FC = () => {
   }, []);
 
   return (
-    <div className="min-h-screen flex flex-col bg-claude-bg text-claude-text font-sans selection:bg-claude-accent/20">
-      <Header onOpenSettings={() => setIsSettingsOpen(true)} />
+    <div className="h-screen flex flex-col bg-claude-bg text-claude-text font-sans selection:bg-claude-accent/20 overflow-hidden">
+      <Header
+        onOpenSettings={() => setIsSettingsOpen(true)}
+        onBatchTranslate={handleBatchTranslate}
+        onBatchTTS={handleBatchTTS}
+        targetLanguage={targetLanguage}
+        onLanguageChange={setTargetLanguage}
+        isProcessing={isBatchProcessing}
+        hasSegments={segments.length > 0}
+      />
 
       <SettingsModal
         isOpen={isSettingsOpen}
@@ -426,22 +434,34 @@ const App: React.FC = () => {
         title="Processing Log"
       />
 
-      <main className="flex-grow container mx-auto p-6 lg:p-10">
+      <main className="flex-grow flex flex-col container mx-auto p-4 lg:p-6 pt-24 lg:pt-28 min-h-0">
+        {isBatchProcessing && batchProgress && (
+          <div className="mb-4 bg-claude-accent/10 border border-claude-accent/20 rounded-xl px-4 py-2 flex items-center justify-between animate-in slide-in-from-top-2 duration-300">
+            <div className="flex items-center gap-3">
+              <div className="w-2 h-2 bg-claude-accent rounded-full animate-pulse"></div>
+              <span className="text-xs font-bold uppercase tracking-wider text-claude-accent">{batchProgress}</span>
+            </div>
+            <div className="h-1 bg-claude-accent/20 flex-grow mx-8 rounded-full overflow-hidden">
+              <div className="h-full bg-claude-accent animate-progress" style={{ width: '60%' }}></div>
+            </div>
+          </div>
+        )}
+
         {!videoFile && !videoId ? (
-          <div className="max-w-3xl mx-auto mt-16 animate-in slide-in-from-bottom-8 fade-in duration-700">
+          <div className="max-w-3xl mx-auto mt-16 animate-in slide-in-from-bottom-8 fade-in duration-700 w-full">
             <VideoUpload onVideoSelect={handleVideoSelect} isLoading={isTranscribing} />
           </div>
         ) : (
-          <div className="flex flex-col lg:grid lg:grid-cols-12 gap-8 items-start">
-            <div className="w-full lg:col-span-7 flex flex-col gap-6 lg:sticky lg:top-28">
+          <div className="flex-grow grid grid-cols-1 lg:grid-cols-12 gap-6 min-h-0 items-stretch">
+            <div className="w-full lg:col-span-7 flex flex-col gap-4 min-h-0">
               {/* Video Player */}
-              <div className="aspect-video bg-black rounded-2xl overflow-hidden shadow-xl border border-gray-800">
+              <div className="flex-grow bg-black rounded-2xl overflow-hidden shadow-xl border border-gray-800 relative min-h-[300px]">
                 {videoUrl && (
                   <video
                     ref={videoRef}
                     src={videoUrl}
                     controls
-                    className="w-full h-full"
+                    className="w-full h-full object-contain"
                     onTimeUpdate={handleTimeUpdate}
                     onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
                     onPause={() => {
@@ -452,100 +472,20 @@ const App: React.FC = () => {
                 )}
               </div>
 
-              <Timeline
-                segments={segments}
-                speakers={speakers}
-                duration={duration}
-                currentTime={currentTime}
-                onSeek={handleSeek}
-                waveform={waveform}
-                isLoading={isAudioLoading}
-              />
-
-              {/* Actions Area */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                {/* Step 1: Translation */}
-                <div className="bg-white border border-claude-border rounded-2xl p-6 shadow-sm hover:shadow-md transition-all">
-                  <div className="flex items-center gap-3 mb-2">
-                    <div className="w-8 h-8 rounded-full bg-claude-paper flex items-center justify-center text-claude-text font-serif font-bold text-sm border border-claude-border">1</div>
-                    <h3 className="font-serif font-bold text-lg text-gray-800">Context Translation</h3>
-                  </div>
-
-                  <div className="mb-4">
-                    <label className="text-[10px] font-bold uppercase tracking-widest text-gray-400 mb-1.5 block ml-1">Target Language</label>
-                    <div className="relative">
-                      <select
-                        value={targetLanguage}
-                        onChange={(e) => setTargetLanguage(e.target.value)}
-                        className="w-full bg-claude-paper border border-claude-border rounded-xl px-4 py-2.5 text-sm text-gray-700 focus:outline-none focus:border-claude-accent transition appearance-none font-medium"
-                      >
-                        {LANGUAGES.map(l => <option key={l} value={l}>{l}</option>)}
-                      </select>
-                      <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-4 text-gray-400">
-                        <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path></svg>
-                      </div>
-                    </div>
-                  </div>
-
-                  <p className="text-[11px] text-gray-400 mb-6 font-sans leading-relaxed">
-                    Sends the entire script for context-aware translation to {targetLanguage}.
-                  </p>
-
-                  <button
-                    onClick={handleBatchTranslate}
-                    disabled={isBatchProcessing || isTranscribing || segments.length === 0}
-                    className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-white text-gray-700 rounded-xl text-sm font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed border border-gray-300 hover:border-claude-accent hover:text-claude-accent shadow-sm"
-                  >
-                    {isBatchProcessing && batchProgress.startsWith('Starting') ? (
-                      <>
-                        <div className="w-4 h-4 border-2 border-gray-300 border-t-claude-accent rounded-full animate-spin"></div>
-                        <span>Initializing...</span>
-                      </>
-                    ) : (
-                      <>
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129" /></svg>
-                        Translate Full Script
-                      </>
-                    )}
-                  </button>
-                </div>
-
-                {/* Step 2: Synthesis */}
-                <div className="bg-white border border-claude-border rounded-2xl p-6 shadow-sm hover:shadow-md transition-all">
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-full bg-claude-paper flex items-center justify-center text-claude-text font-serif font-bold text-sm border border-claude-border">2</div>
-                      <h3 className="font-serif font-bold text-lg text-gray-800">Voice Synthesis</h3>
-                    </div>
-                  </div>
-
-                  <p className="text-xs text-gray-500 mb-6 font-sans leading-relaxed">
-                    Generate AI voice audio for all translated segments.
-                  </p>
-
-                  <button
-                    onClick={handleBatchTTS}
-                    disabled={isBatchProcessing || isTranscribing || segments.length === 0}
-                    className="w-full flex items-center justify-center gap-2 px-6 py-3 bg-claude-accent hover:bg-claude-accentHover text-white rounded-xl text-sm font-semibold transition disabled:opacity-50 disabled:cursor-not-allowed shadow-md shadow-claude-accent/20"
-                  >
-                    {isBatchProcessing && batchProgress.startsWith('Synthesizing') ? (
-                      <>
-                        <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
-                        <span>{batchProgress}</span>
-                      </>
-                    ) : (
-                      <>
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /></svg>
-                        Generate Audio
-                      </>
-                    )}
-                  </button>
-                </div>
+              <div className="flex-shrink-0">
+                <Timeline
+                  segments={segments}
+                  speakers={speakers}
+                  duration={duration}
+                  currentTime={currentTime}
+                  onSeek={handleSeek}
+                  waveform={waveform}
+                  isLoading={isAudioLoading}
+                />
               </div>
-
             </div>
 
-            <div className="w-full lg:col-span-5 flex flex-col h-[600px] lg:h-[calc(100vh-110px)]">
+            <div className="w-full lg:col-span-5 flex flex-col min-h-0">
               <TranscriptionPanel
                 segments={segments}
                 speakers={speakers}
