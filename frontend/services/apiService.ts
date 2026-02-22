@@ -115,6 +115,30 @@ export async function synthesizeSpeech(
   return response.json();
 }
 
+export interface SeparationResult {
+  video_id: string;
+  vocals: string;
+  background: string;
+  background_url: string;
+}
+
+/**
+ * Separate audio into vocals and background.
+ */
+export async function separateAudio(videoId: string): Promise<SeparationResult> {
+  const response = await fetch(`${API_BASE}/videos/${videoId}/separate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(err.detail || 'Vocal separation failed');
+  }
+
+  return response.json();
+}
+
 /**
  * Get the current processing status of a video.
  */

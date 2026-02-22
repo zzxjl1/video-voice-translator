@@ -32,7 +32,7 @@ from app.schemas import (
     UploadResponse,
     VideoStatusResponse,
 )
-from app.services import asr_service, llm_service, tts_service
+from app.services import asr_service, llm_service, separation_service, tts_service
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +145,14 @@ async def transcribe_video(video_id: str, request: Request):
         if not os.path.exists(audio_path):
             logger.info(f"[{video_id}] Extracting audio...")
             asr_service.extract_audio(state.file_path, audio_path)
-        state.audio_path = audio_path
+
+        # Use vocals.wav for ASR if available (better accuracy without background noise)
+        vocals_path = os.path.join(video_dir, "vocals.wav")
+        if os.path.exists(vocals_path):
+            logger.info(f"[{video_id}] Using separated vocals for ASR")
+            state.audio_path = vocals_path
+        else:
+            state.audio_path = audio_path
 
         state.status = VideoStatus.TRANSCRIBING
         logger.info(f"[{video_id}] Status: {state.status.value}")
@@ -325,6 +332,56 @@ async def serve_audio(video_id: str):
         raise HTTPException(status_code=404, detail="Audio file not found on disk")
 
     return FileResponse(state.audio_path, media_type="audio/wav")
+
+
+@router.post("/{video_id}/separate")
+async def separate_vocals(video_id: str):
+    """
+    Separate audio into vocals and background.
+    Must be called after upload, before transcription.
+    """
+    logger.info(f"Vocal separation requested for video_id: {video_id}")
+    state = get_state(video_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    try:
+        video_dir = get_video_dir(video_id)
+
+        # Step 1: Extract full audio first (if not done)
+        audio_path = os.path.join(video_dir, "extracted_audio.wav")
+        if not os.path.exists(audio_path):
+            logger.info(f"[{video_id}] Extracting audio for separation...")
+            asr_service.extract_audio(state.file_path, audio_path)
+        state.audio_path = audio_path
+        save_state(state)
+
+        # Step 2: Run vocal separation
+        result = separation_service.separate_audio(audio_path, video_dir)
+
+        return {
+            "video_id": video_id,
+            "vocals": result["vocals"],
+            "background": result["background"],
+            "background_url": f"/api/videos/{video_id}/audio/background",
+        }
+    except Exception as e:
+        logger.error(f"[{video_id}] Separation error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{video_id}/audio/background")
+async def serve_background_audio(video_id: str):
+    """Serve the separated background (instrumental) audio."""
+    from fastapi.responses import FileResponse
+
+    video_dir = get_video_dir(video_id)
+    bg_path = os.path.join(video_dir, "background.wav")
+
+    if not os.path.exists(bg_path):
+        raise HTTPException(status_code=404, detail="Background audio not found")
+
+    return FileResponse(bg_path, media_type="audio/wav")
 
 
 @router.get("/{video_id}/tts/{segment_id}")

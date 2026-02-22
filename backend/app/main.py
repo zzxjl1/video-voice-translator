@@ -1,12 +1,20 @@
 """
 FastAPI application entry point.
 """
+import os
+
+# Fix numba cache issue: set a writable cache dir before any numba/librosa import
+_numba_cache = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".numba_cache")
+os.makedirs(_numba_cache, exist_ok=True)
+os.environ["NUMBA_CACHE_DIR"] = _numba_cache
+
 import logging
 from fastapi import FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import config
 from app.routers import video
+from app.services.separation_service import init_separator
 
 # Configure logging
 logging.basicConfig(
@@ -51,3 +59,11 @@ async def health():
 api_router.include_router(video.router)
 
 app.include_router(api_router)
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Pre-load models at startup so first request is fast."""
+    logger.info("Running startup tasks...")
+    init_separator()
+    logger.info("Startup tasks complete.")

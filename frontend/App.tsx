@@ -7,7 +7,7 @@ import Timeline from './components/Timeline';
 import SettingsModal from './components/SettingsModal';
 import StreamingLog from './components/StreamingLog';
 import { TranscriptionPanel } from './components/TranscriptionPanel';
-import { uploadVideo, transcribeVideo, translateScript, synthesizeSpeech } from './services/apiService';
+import { uploadVideo, transcribeVideo, translateScript, synthesizeSpeech, separateAudio } from './services/apiService';
 import { getAudioWaveform } from './utils/audioProcessor';
 
 const LANGUAGES = [
@@ -55,9 +55,11 @@ const App: React.FC = () => {
   const [rawLog, setRawLog] = useState('');
 
   const videoRef = useRef<HTMLVideoElement>(null);
+  const backgroundAudioRef = useRef<HTMLAudioElement>(null);
   const activeAudiosRef = useRef<Map<string, HTMLAudioElement>>(new Map());
 
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [backgroundAudioUrl, setBackgroundAudioUrl] = useState<string | null>(null);
 
   const isIndexPage = !videoFile && !videoId;
 
@@ -90,6 +92,8 @@ const App: React.FC = () => {
     if (idFromUrl && /^[a-f0-9]{32}$/i.test(idFromUrl)) {
       console.log("Attempting session recovery for:", idFromUrl);
       setVideoId(idFromUrl);
+      // Set background audio URL for recovered sessions
+      setBackgroundAudioUrl(`/api/videos/${idFromUrl}/audio/background`);
 
       import('./services/apiService').then(({ getVideoStatus }) => {
         setIsTranscribing(true);
@@ -135,7 +139,15 @@ const App: React.FC = () => {
     const time = video.currentTime;
     setCurrentTime(time);
 
-    let isAnyAudioPlaying = false;
+    const bgAudio = backgroundAudioRef.current;
+    const hasBgAudio = !!bgAudio && backgroundAudioUrl;
+
+    // If we have background audio, video should always be muted
+    if (hasBgAudio) {
+      video.muted = true;
+    }
+
+    let isAnyTTSPlaying = false;
     let targetVideoRate = 1.0;
 
     segments.forEach(seg => {
@@ -144,7 +156,7 @@ const App: React.FC = () => {
         const existingAudio = activeAudiosRef.current.get(seg.id);
 
         if (shouldBePlaying) {
-          isAnyAudioPlaying = true;
+          isAnyTTSPlaying = true;
 
           // Calculate desired speed factor
           let audioRate = 1.0;
@@ -165,13 +177,12 @@ const App: React.FC = () => {
               const audio = new Audio(seg.audioUrl);
               audio.playbackRate = audioRate;
 
-              // Progress-based sync: (video_progress / video_duration) * audio_duration
+              // Progress-based sync
               const videoDuration = seg.endTime - seg.startTime;
               const progress = (time - seg.startTime) / videoDuration;
               if (seg.actualDuration) {
                 audio.currentTime = Math.max(0, progress * seg.actualDuration);
               } else {
-                // Fallback if actualDuration not yet loaded
                 audio.currentTime = Math.max(0, time - seg.startTime);
               }
 
@@ -181,7 +192,6 @@ const App: React.FC = () => {
               console.error("Failed to start audio segment:", e);
             }
           } else {
-            // Sync existing audio rate just in case
             if (existingAudio.playbackRate !== audioRate) {
               existingAudio.playbackRate = audioRate;
             }
@@ -194,7 +204,20 @@ const App: React.FC = () => {
     });
 
     video.playbackRate = targetVideoRate;
-    video.volume = isAnyAudioPlaying ? 0.1 : 1.0;
+
+    // Sync background audio playback rate with video
+    if (bgAudio && hasBgAudio) {
+      if (bgAudio.playbackRate !== targetVideoRate) {
+        bgAudio.playbackRate = targetVideoRate;
+      }
+      // Keep background audio at constant volume
+      bgAudio.volume = 1.0;
+    }
+
+    // If no background audio, use original behavior for video volume
+    if (!hasBgAudio) {
+      video.volume = isAnyTTSPlaying ? 0.1 : 1.0;
+    }
   };
 
   const handleVideoSelect = useCallback(async (file: File) => {
@@ -217,7 +240,20 @@ const App: React.FC = () => {
       setVideoId(uploadResult.video_id);
       setRawLog(prev => prev + `Upload complete. Video ID: ${uploadResult.video_id}\n`);
 
-      setRawLog(prev => prev + 'Starting Ali ASR transcription...\n');
+      // === Phase 0: Vocal Separation ===
+      setRawLog(prev => prev + '\n--- Starting Vocal Separation ---\n');
+      setRawLog(prev => prev + 'Separating vocals from background audio (this may take a few minutes on CPU)...\n');
+      try {
+        const sepResult = await separateAudio(uploadResult.video_id);
+        setBackgroundAudioUrl(sepResult.background_url);
+        setRawLog(prev => prev + 'Vocal separation complete.\n');
+      } catch (sepErr) {
+        setRawLog(prev => prev + `Vocal separation failed: ${sepErr instanceof Error ? sepErr.message : 'Unknown error'}\n`);
+        setRawLog(prev => prev + 'Continuing without separation (will use original audio)...\n');
+      }
+      
+      // === Phase 1: ASR ===
+      setRawLog(prev => prev + '\nStarting Ali ASR transcription...\n');
       const segmentData = await transcribeVideo(uploadResult.video_id);
       setRawLog(prev => prev + `Transcription complete. Found ${segmentData.length} segments.\n`);
 
@@ -503,9 +539,13 @@ const App: React.FC = () => {
       videoRef.current.currentTime = time;
       activeAudiosRef.current.forEach(a => a.pause());
       activeAudiosRef.current.clear();
-      videoRef.current.volume = 1.0;
+      videoRef.current.volume = backgroundAudioUrl ? 0 : 1.0;
+      // Sync background audio
+      if (backgroundAudioRef.current) {
+        backgroundAudioRef.current.currentTime = time;
+      }
     }
-  }, []);
+  }, [backgroundAudioUrl]);
 
   return (
     <>
@@ -561,13 +601,32 @@ const App: React.FC = () => {
                       ref={videoRef}
                       src={videoUrl}
                       controls
+                      muted={!!backgroundAudioUrl}
                       className="w-full h-full object-contain"
                       onTimeUpdate={handleTimeUpdate}
                       onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
                       onPause={() => {
                         activeAudiosRef.current.forEach(a => a.pause());
+                        backgroundAudioRef.current?.pause();
                       }}
-                      onPlay={() => { }}
+                      onPlay={() => {
+                        backgroundAudioRef.current?.play().catch(() => {});
+                      }}
+                      onSeeked={() => {
+                        if (backgroundAudioRef.current && videoRef.current) {
+                          backgroundAudioRef.current.currentTime = videoRef.current.currentTime;
+                        }
+                      }}
+                    />
+                  )}
+
+                  {/* Hidden background audio element */}
+                  {backgroundAudioUrl && (
+                    <audio
+                      ref={backgroundAudioRef}
+                      src={backgroundAudioUrl}
+                      preload="auto"
+                      className="hidden"
                     />
                   )}
 
