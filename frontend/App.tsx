@@ -434,7 +434,7 @@ const App: React.FC = () => {
         title="Processing Log"
       />
 
-      <main className="flex-grow flex flex-col container mx-auto p-4 lg:p-6 pt-24 lg:pt-28 min-h-0">
+      <main className="flex-grow flex flex-col container mx-auto p-4 lg:p-6 pt-12 lg:pt-14 min-h-0">
         {isBatchProcessing && batchProgress && (
           <div className="mb-4 bg-claude-accent/10 border border-claude-accent/20 rounded-xl px-4 py-2 flex items-center justify-between animate-in slide-in-from-top-2 duration-300">
             <div className="flex items-center gap-3">
