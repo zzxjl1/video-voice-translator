@@ -191,7 +191,7 @@ const SegmentCard: React.FC<{
                                 <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wider ${videoRate !== 1.0 ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-400'}`}>
                                     Video: {videoRate.toFixed(2)}x
                                 </div>
-                                <span className="text-[10px] text-gray-400 ml-auto font-medium">Synced Duration</span>
+                                {/* <span className="text-[10px] text-gray-400 ml-auto font-medium">Synced Duration</span> */}
                             </div>
                         )}
                     </div>

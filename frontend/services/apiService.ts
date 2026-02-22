@@ -7,6 +7,8 @@ const API_BASE = '/api';
 export interface UploadResult {
   video_id: string;
   filename: string;
+  exists: boolean;
+  status: string;
 }
 
 export interface SegmentData {
@@ -123,9 +125,12 @@ export interface SeparationResult {
 }
 
 /**
- * Separate audio into vocals and background.
+ * Separate audio into vocals and background with SSE progress.
  */
-export async function separateAudio(videoId: string): Promise<SeparationResult> {
+export async function separateAudio(
+  videoId: string,
+  onProgress?: (progress: number) => void,
+): Promise<SeparationResult> {
   const response = await fetch(`${API_BASE}/videos/${videoId}/separate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -136,7 +141,54 @@ export async function separateAudio(videoId: string): Promise<SeparationResult> 
     throw new Error(err.detail || 'Vocal separation failed');
   }
 
-  return response.json();
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error('ReadableStream not supported');
+  }
+
+  const decoder = new TextDecoder();
+  let result: SeparationResult | null = null;
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      try {
+        const data = JSON.parse(line.slice(6));
+        if (data.error) {
+          throw new Error(data.error);
+        }
+        if (data.progress !== undefined && onProgress) {
+          onProgress(data.progress);
+        }
+        if (data.done) {
+          result = {
+            video_id: data.video_id,
+            vocals: data.vocals,
+            background: data.background,
+            background_url: data.background_url,
+          };
+        }
+      } catch (e) {
+        if (e instanceof Error && e.message !== 'Unexpected end of JSON input') {
+          throw e;
+        }
+      }
+    }
+  }
+
+  if (!result) {
+    throw new Error('Separation completed but no result received');
+  }
+
+  return result;
 }
 
 /**
@@ -151,4 +203,73 @@ export async function getVideoStatus(videoId: string) {
   }
 
   return response.json();
+}
+
+
+/**
+ * Run the full server-side pipeline (separation → ASR → translation → TTS)
+ * via SSE. Calls onEvent for each SSE message received.
+ */
+export async function processVideo(
+  videoId: string,
+  targetLanguage: string,
+  onEvent: (event: any) => void,
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/videos/${videoId}/process`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ target_language: targetLanguage }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(err.detail || 'Processing failed');
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error('ReadableStream not supported');
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      try {
+        const data = JSON.parse(line.slice(6));
+        onEvent(data);
+        if (data.error) {
+          throw new Error(data.error);
+        }
+      } catch (e) {
+        if (e instanceof Error && e.message !== 'Unexpected end of JSON input') {
+          throw e;
+        }
+      }
+    }
+  }
+}
+
+
+/**
+ * Reset a video's processing data (keeps original video file).
+ */
+export async function resetVideo(videoId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/videos/${videoId}/reset`, {
+    method: 'POST',
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(err.detail || 'Reset failed');
+  }
 }

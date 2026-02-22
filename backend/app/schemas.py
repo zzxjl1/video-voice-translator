@@ -10,6 +10,8 @@ from typing import Optional
 class UploadResponse(BaseModel):
     video_id: str
     filename: str
+    exists: bool = False
+    status: str = "uploaded"
 
 
 # ----- Transcription -----
@@ -84,3 +86,14 @@ class VideoStatusResponse(BaseModel):
     error: Optional[str] = None
     segments: list[SegmentOut] = []
     speakers: list[SpeakerOut] = []
+    has_vocals: bool = False
+    has_background: bool = False
+    has_asr: bool = False
+    has_translation: bool = False
+    has_tts: bool = False
+
+
+# ----- Pipeline -----
+
+class ProcessRequest(BaseModel):
+    target_language: str = "English"

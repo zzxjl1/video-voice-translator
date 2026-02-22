@@ -7,7 +7,7 @@ import Timeline from './components/Timeline';
 import SettingsModal from './components/SettingsModal';
 import StreamingLog from './components/StreamingLog';
 import { TranscriptionPanel } from './components/TranscriptionPanel';
-import { uploadVideo, transcribeVideo, translateScript, synthesizeSpeech, separateAudio } from './services/apiService';
+import { uploadVideo, translateScript, synthesizeSpeech, processVideo, getVideoStatus, resetVideo } from './services/apiService';
 import { getAudioWaveform } from './utils/audioProcessor';
 
 const LANGUAGES = [
@@ -92,44 +92,69 @@ const App: React.FC = () => {
     if (idFromUrl && /^[a-f0-9]{32}$/i.test(idFromUrl)) {
       console.log("Attempting session recovery for:", idFromUrl);
       setVideoId(idFromUrl);
-      // Set background audio URL for recovered sessions
       setBackgroundAudioUrl(`/api/videos/${idFromUrl}/audio/background`);
 
-      import('./services/apiService').then(({ getVideoStatus }) => {
-        setIsTranscribing(true);
-        getVideoStatus(idFromUrl)
-          .then(data => {
-            if (data.segments && data.segments.length > 0) {
-              const recoveredSegments: TranscriptionSegment[] = data.segments.map((seg: any) => ({
-                id: seg.id,
-                speakerId: seg.speaker_label,
-                startTime: seg.start_time,
-                endTime: seg.end_time,
-                originalText: seg.text,
-                translatedText: seg.translated_text || '',
-                audioUrl: seg.audio_url || undefined,
-                status: (seg.translated_text ? 'ready' : 'pending') as any,
-              }));
+      setIsTranscribing(true);
+      getVideoStatus(idFromUrl)
+        .then(data => {
+          const isCompleted = data.status === 'completed';
+          const isError = data.status === 'error';
+          const isUploaded = data.status === 'uploaded';
+          const isIncomplete = !isCompleted && !isError && !isUploaded;
 
-              if (data.speakers && data.speakers.length > 0) {
-                setSpeakers(data.speakers);
-              } else {
-                const uniqueLabels = Array.from(new Set(recoveredSegments.map(s => s.speakerId)));
-                setSpeakers(uniqueLabels.map(label => ({ id: label, name: label })));
-              }
-              setSegments(recoveredSegments);
+          // Always load existing segments/speakers
+          if (data.segments && data.segments.length > 0) {
+            const recoveredSegments: TranscriptionSegment[] = data.segments.map((seg: any) => ({
+              id: seg.id,
+              speakerId: seg.speaker_label,
+              startTime: seg.start_time,
+              endTime: seg.end_time,
+              originalText: seg.text,
+              translatedText: seg.translated_text || '',
+              audioUrl: seg.audio_url || undefined,
+              status: (seg.translated_text ? 'ready' : 'pending') as any,
+            }));
+
+            if (data.speakers && data.speakers.length > 0) {
+              setSpeakers(data.speakers);
+            } else {
+              const uniqueLabels = Array.from(new Set(recoveredSegments.map(s => s.speakerId)));
+              setSpeakers(uniqueLabels.map(label => ({ id: label, name: label })));
             }
-          })
-          .catch(err => console.error("Session recovery failed:", err))
-          .finally(() => setIsTranscribing(false));
-      });
+            setSegments(recoveredSegments);
+          }
+
+          // If error or incomplete — show log and auto-retry
+          if (isError || isIncomplete || isUploaded) {
+            const reason = isError
+              ? `Previous processing failed: ${data.error || 'Unknown error'}`
+              : isUploaded
+              ? 'Processing has not started yet'
+              : `Processing was interrupted at: ${data.status}`;
+
+            setRawLog(`Session recovered for: ${idFromUrl}\n${reason}\n\nAuto-retrying pipeline...\n`);
+            setIsLogOpen(true);
+
+            // Auto-retry pipeline
+            runPipeline(idFromUrl).finally(() => {
+              setIsTranscribing(false);
+            });
+          } else {
+            // Completed — just show editor
+            setIsTranscribing(false);
+          }
+        })
+        .catch(err => {
+          console.error("Session recovery failed:", err);
+          setIsTranscribing(false);
+        });
     }
   }, []);
 
   // Update URL on videoId change
   useEffect(() => {
     if (videoId && !window.location.pathname.includes(videoId)) {
-      window.history.pushState({}, '', `/${videoId}`);
+      window.history.pushState({ videoId }, '', `/${videoId}`);
     }
   }, [videoId]);
 
@@ -220,6 +245,256 @@ const App: React.FC = () => {
     }
   };
 
+  const runPipeline = useCallback(async (vid: string, file?: File) => {
+    setIsTranscribing(true);
+    setRawLog('');
+    setIsLogOpen(true);
+
+    if (file) {
+      setIsAudioLoading(true);
+      getAudioWaveform(file, 300).then(peaks => {
+        setWaveform(peaks);
+        setIsAudioLoading(false);
+      });
+    }
+
+    try {
+      setRawLog(prev => prev + '--- Starting Server-Side Processing ---\n');
+
+      let lastSepPct = -1;
+      let ttsTotal = 0;
+
+      await processVideo(vid, targetLanguage, (event) => {
+        // Resume info
+        if (event.resume_phase) {
+          const phase = event.resume_phase;
+          if (phase !== 'separation') {
+            setRawLog(prev => prev + `Resuming from phase: ${phase}\n`);
+          }
+        }
+
+        // Separation events
+        if (event.phase === 'separation') {
+          if (event.status === 'started') {
+            setRawLog(prev => prev + 'Separating vocals from background audio...\n');
+          } else if (event.status === 'skipped') {
+            if (event.background_url) {
+              setBackgroundAudioUrl(event.background_url);
+            }
+            setRawLog(prev => prev + 'Vocal separation: already done, skipping.\n');
+          } else if (event.progress !== undefined) {
+            const pct = event.progress;
+            if (pct !== lastSepPct) {
+              lastSepPct = pct;
+              setRawLog(prev => {
+                const lines = prev.split('\n');
+                const lastIdx = lines.length - 1;
+                if (lines[lastIdx].startsWith('Separation progress:')) {
+                  lines[lastIdx] = `Separation progress: ${pct}%`;
+                } else {
+                  lines.push(`Separation progress: ${pct}%`);
+                }
+                return lines.join('\n');
+              });
+            }
+          } else if (event.status === 'done') {
+            if (event.background_url) {
+              setBackgroundAudioUrl(event.background_url);
+            }
+            setRawLog(prev => prev + '\nVocal separation complete.\n');
+          }
+        }
+
+        // ASR events
+        if (event.phase === 'asr') {
+          if (event.status === 'started') {
+            setRawLog(prev => prev + '\nStarting ASR transcription...\n');
+          } else if (event.status === 'skipped') {
+            const segs = event.segments || [];
+            const spks = event.speakers || [];
+            const newSegments: TranscriptionSegment[] = segs.map((seg: any) => ({
+              id: seg.id,
+              speakerId: seg.speaker_label,
+              startTime: seg.start_time,
+              endTime: seg.end_time,
+              originalText: seg.text,
+              translatedText: seg.translated_text || '',
+              status: (seg.translated_text ? 'ready' : 'pending') as any,
+            }));
+            setSpeakers(spks.map((s: any) => ({ id: s.id, name: s.name })));
+            setSegments(newSegments);
+            setRawLog(prev => prev + `ASR: already done (${segs.length} segments), skipping.\n`);
+          } else if (event.status === 'done') {
+            const segs = event.segments || [];
+            const spks = event.speakers || [];
+
+            const newSegments: TranscriptionSegment[] = segs.map((seg: any) => ({
+              id: seg.id,
+              speakerId: seg.speaker_label,
+              startTime: seg.start_time,
+              endTime: seg.end_time,
+              originalText: seg.text,
+              translatedText: '',
+              status: 'pending' as const,
+            }));
+
+            setSpeakers(spks.map((s: any) => ({ id: s.id, name: s.name })));
+            setSegments(newSegments);
+            setRawLog(prev => prev + `Transcription complete. Found ${segs.length} segments.\n`);
+          }
+        }
+
+        // Translation events
+        if (event.phase === 'translation') {
+          if (event.status === 'started') {
+            setRawLog(prev => prev + `\n--- Starting Translation (${targetLanguage}) ---\n`);
+            setRawLog(prev => prev + `Sending ${event.count} segments with full context...\n`);
+          } else if (event.status === 'skipped') {
+            const translations = event.translations || [];
+            setSegments(prev => prev.map(seg => {
+              const match = translations.find((r: any) => r.id === seg.id);
+              return match ? { ...seg, translatedText: match.translated_text } : seg;
+            }));
+            setRawLog(prev => prev + `Translation: already done (${translations.length} segments), skipping.\n`);
+          } else if (event.status === 'done') {
+            const translations = event.translations || [];
+            setSegments(prev => prev.map(seg => {
+              const match = translations.find((r: any) => r.id === seg.id);
+              return match ? { ...seg, translatedText: match.translated_text } : seg;
+            }));
+            setRawLog(prev => prev + `Translation complete. ${translations.length} segments translated.\n`);
+          }
+        }
+
+        // TTS events
+        if (event.phase === 'tts') {
+          if (event.status === 'started') {
+            ttsTotal = event.total || 0;
+            const alreadyDone = event.already_done || 0;
+            setRawLog(prev => prev + `\n--- Starting Audio Synthesis (${ttsTotal - alreadyDone} remaining of ${ttsTotal} total) ---\n`);
+          } else if (event.progress !== undefined) {
+            const { progress, total, segment_id, audio_url, tts_error } = event;
+            if (tts_error) {
+              setRawLog(prev => prev + `[${progress}/${total}] Segment ${segment_id}: FAILED.\n`);
+            } else {
+              setRawLog(prev => prev + `[${progress}/${total}] Segment ${segment_id}: Done.\n`);
+              if (audio_url) {
+                setSegments(prev => prev.map(s =>
+                  s.id === segment_id ? { ...s, audioUrl: audio_url } : s
+                ));
+              }
+            }
+          } else if (event.status === 'done') {
+            setRawLog(prev => prev + '\n--- Audio Synthesis Complete ---\n');
+          }
+        }
+
+        // Final done
+        if (event.done) {
+          setRawLog(prev => prev + '\n=== All Processing Complete ===\nClosing in 2 seconds...');
+        }
+
+        // Error
+        if (event.error) {
+          setRawLog(prev => prev + `\nERROR: ${event.error}\n`);
+        }
+      });
+
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      setIsLogOpen(false);
+
+    } catch (err) {
+      console.error(err);
+      setRawLog(prev => prev + `\nERROR: ${err instanceof Error ? err.message : 'Unknown error'}\n`);
+    } finally {
+      setIsTranscribing(false);
+    }
+  }, [targetLanguage]);
+
+  // Handle browser back/forward navigation
+  useEffect(() => {
+    const handlePopState = () => {
+      const pathParts = window.location.pathname.split('/').filter(Boolean);
+      const idFromUrl = pathParts[0];
+
+      if (!idFromUrl || !/^[a-f0-9]{32}$/i.test(idFromUrl)) {
+        // Navigated back to index — reset all state
+        setVideoId('');
+        setVideoFile(null);
+        setVideoUrl(null);
+        setSegments([]);
+        setSpeakers([]);
+        setWaveform([]);
+        setDuration(0);
+        setCurrentTime(0);
+        setIsTranscribing(false);
+        setIsLogOpen(false);
+        setRawLog('');
+        setBackgroundAudioUrl(null);
+        setIsBatchProcessing(false);
+        setBatchProgress('');
+      } else if (idFromUrl !== videoId) {
+        // Forward navigation to a /{md5} page — recover session
+        setVideoId(idFromUrl);
+        setVideoFile(null);
+        setSegments([]);
+        setSpeakers([]);
+        setWaveform([]);
+        setDuration(0);
+        setCurrentTime(0);
+        setBackgroundAudioUrl(`/api/videos/${idFromUrl}/audio/background`);
+
+        setIsTranscribing(true);
+        getVideoStatus(idFromUrl)
+          .then(data => {
+            const isCompleted = data.status === 'completed';
+            const isError = data.status === 'error';
+            const isUploaded = data.status === 'uploaded';
+
+            if (data.segments && data.segments.length > 0) {
+              const recoveredSegments: TranscriptionSegment[] = data.segments.map((seg: any) => ({
+                id: seg.id,
+                speakerId: seg.speaker_label,
+                startTime: seg.start_time,
+                endTime: seg.end_time,
+                originalText: seg.text,
+                translatedText: seg.translated_text || '',
+                audioUrl: seg.audio_url || undefined,
+                status: (seg.translated_text ? 'ready' : 'pending') as any,
+              }));
+              if (data.speakers && data.speakers.length > 0) {
+                setSpeakers(data.speakers);
+              } else {
+                const uniqueLabels = Array.from(new Set(recoveredSegments.map(s => s.speakerId)));
+                setSpeakers(uniqueLabels.map(label => ({ id: label, name: label })));
+              }
+              setSegments(recoveredSegments);
+            }
+
+            if (isError || isUploaded || (!isCompleted && !isError && data.status !== 'uploaded')) {
+              const reason = isError
+                ? `Previous processing failed: ${data.error || 'Unknown error'}`
+                : isUploaded
+                ? 'Processing has not started yet'
+                : `Processing was interrupted at: ${data.status}`;
+              setRawLog(`Session recovered for: ${idFromUrl}\n${reason}\n\nAuto-retrying pipeline...\n`);
+              setIsLogOpen(true);
+              runPipeline(idFromUrl).finally(() => setIsTranscribing(false));
+            } else {
+              setIsTranscribing(false);
+            }
+          })
+          .catch(err => {
+            console.error("Forward navigation recovery failed:", err);
+            setIsTranscribing(false);
+          });
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [videoId, runPipeline]);
+
   const handleVideoSelect = useCallback(async (file: File) => {
     setVideoFile(file);
     setIsAudioLoading(true);
@@ -230,105 +505,81 @@ const App: React.FC = () => {
     setIsLogOpen(true);
 
     try {
-      getAudioWaveform(file, 300).then(peaks => {
-        setWaveform(peaks);
-        setIsAudioLoading(false);
-      });
-
       setRawLog(prev => prev + 'Uploading video to server...\n');
       const uploadResult = await uploadVideo(file);
       setVideoId(uploadResult.video_id);
       setRawLog(prev => prev + `Upload complete. Video ID: ${uploadResult.video_id}\n`);
 
-      // === Phase 0: Vocal Separation ===
-      setRawLog(prev => prev + '\n--- Starting Vocal Separation ---\n');
-      setRawLog(prev => prev + 'Separating vocals from background audio (this may take a few minutes on CPU)...\n');
-      try {
-        const sepResult = await separateAudio(uploadResult.video_id);
-        setBackgroundAudioUrl(sepResult.background_url);
-        setRawLog(prev => prev + 'Vocal separation complete.\n');
-      } catch (sepErr) {
-        setRawLog(prev => prev + `Vocal separation failed: ${sepErr instanceof Error ? sepErr.message : 'Unknown error'}\n`);
-        setRawLog(prev => prev + 'Continuing without separation (will use original audio)...\n');
-      }
-      
-      // === Phase 1: ASR ===
-      setRawLog(prev => prev + '\nStarting Ali ASR transcription...\n');
-      const segmentData = await transcribeVideo(uploadResult.video_id);
-      setRawLog(prev => prev + `Transcription complete. Found ${segmentData.length} segments.\n`);
+      if (uploadResult.exists) {
+        // Video already exists — ask user what to do
+        setIsLogOpen(false);
+        setIsTranscribing(false);
 
-      const uniqueLabels = Array.from(new Set(segmentData.map(seg => seg.speaker_label)));
-      setSpeakers(uniqueLabels.map(label => ({ id: label, name: label })));
+        const statusData = await getVideoStatus(uploadResult.video_id);
+        const isCompleted = statusData.status === 'completed';
+        const isError = statusData.status === 'error';
+        const isInProgress = !isCompleted && !isError && statusData.status !== 'uploaded';
 
-      const newSegments: TranscriptionSegment[] = segmentData.map(seg => {
-        return {
-          id: seg.id,
-          speakerId: seg.speaker_label,
-          startTime: seg.start_time,
-          endTime: seg.end_time,
-          originalText: seg.text,
-          translatedText: seg.translated_text || '',
-          audioUrl: (seg as any).audio_url || undefined,
-          status: 'pending' as const,
-        };
-      });
+        let message = 'This video has been uploaded before.\n\n';
+        if (isCompleted) {
+          message += 'Processing is fully completed.\n\n';
+        } else if (isError) {
+          message += `Previous processing failed: ${statusData.error || 'Unknown error'}\n\n`;
+        } else if (isInProgress) {
+          message += `Processing was interrupted at stage: ${statusData.status}\n\n`;
+        }
+        message += 'Choose an action:\n• OK = Continue / Retry from where it stopped\n• Cancel = Reset and start over';
 
-      setSpeakers(uniqueLabels.map(label => ({ id: label, name: label })));
-      setSegments(newSegments);
+        const continueExisting = window.confirm(message);
 
-      setRawLog(prev => prev + '\n--- Transcription Ready ---\n');
-
-      // === Phase 2: Auto Translate ===
-      setRawLog(prev => prev + `\n--- Starting Translation (${targetLanguage}) ---\n`);
-      setRawLog(prev => prev + `Sending ${newSegments.length} segments with full context...\n`);
-
-      const contextPayload = newSegments.map(s => ({
-        id: s.id,
-        text: s.originalText,
-        speaker_id: s.speakerId,
-        start_time: s.startTime,
-      }));
-
-      const translationResults = await translateScript(uploadResult.video_id, contextPayload, targetLanguage);
-
-      const translatedSegments = newSegments.map(seg => {
-        const match = translationResults.find(r => r.id === seg.id);
-        return match ? { ...seg, translatedText: match.translated_text } : seg;
-      });
-      setSegments(translatedSegments);
-
-      setRawLog(prev => prev + `Translation complete. ${translationResults.length} segments translated.\n`);
-
-      // === Phase 3: Auto TTS ===
-      const withTranslation = translatedSegments.filter(s => s.translatedText);
-      if (withTranslation.length > 0) {
-        setRawLog(prev => prev + `\n--- Starting Audio Synthesis (${withTranslation.length} segments) ---\n`);
-
-        let ttsCount = 0;
-        for (const seg of withTranslation) {
-          ttsCount++;
-          setRawLog(prev => prev + `[${ttsCount}/${withTranslation.length}] Segment ${seg.id}: Synthesizing...`);
-
-          try {
-            const result = await synthesizeSpeech(uploadResult.video_id, seg.id, seg.translatedText);
-            const audioUrl = result.audio_url;
-
-            setSegments(prev => prev.map(s => s.id === seg.id ? { ...s, audioUrl } : s));
-            setRawLog(prev => prev + ` Done.\n`);
-          } catch (e) {
-            console.error(`TTS failed for segment ${seg.id}:`, e);
-            setRawLog(prev => prev + ` FAILED.\n`);
+        if (continueExisting) {
+          // Continue / retry — load existing data first
+          if (statusData.segments && statusData.segments.length > 0) {
+            const recoveredSegments: TranscriptionSegment[] = statusData.segments.map((seg: any) => ({
+              id: seg.id,
+              speakerId: seg.speaker_label,
+              startTime: seg.start_time,
+              endTime: seg.end_time,
+              originalText: seg.text,
+              translatedText: seg.translated_text || '',
+              audioUrl: seg.audio_url || undefined,
+              status: (seg.translated_text ? 'ready' : 'pending') as any,
+            }));
+            if (statusData.speakers && statusData.speakers.length > 0) {
+              setSpeakers(statusData.speakers);
+            }
+            setSegments(recoveredSegments);
+          }
+          if (statusData.has_background) {
+            setBackgroundAudioUrl(`/api/videos/${uploadResult.video_id}/audio/background`);
           }
 
-          await new Promise(r => setTimeout(r, 200));
+          if (isCompleted) {
+            // Already done — just show the editor
+            getAudioWaveform(file, 300).then(peaks => {
+              setWaveform(peaks);
+              setIsAudioLoading(false);
+            });
+            return;
+          }
+
+          // Resume pipeline
+          await runPipeline(uploadResult.video_id, file);
+        } else {
+          // Reset and re-process
+          setRawLog('Resetting video data...\n');
+          setIsLogOpen(true);
+          setIsTranscribing(true);
+          setSegments([]);
+          setSpeakers([]);
+          await resetVideo(uploadResult.video_id);
+          setRawLog(prev => prev + 'Reset complete. Starting fresh...\n');
+          await runPipeline(uploadResult.video_id, file);
         }
-
-        setRawLog(prev => prev + `\n--- Audio Synthesis Complete ---\n`);
+      } else {
+        // New video — run full pipeline
+        await runPipeline(uploadResult.video_id, file);
       }
-
-      setRawLog(prev => prev + '\n=== All Processing Complete ===\nClosing in 2 seconds...');
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      setIsLogOpen(false);
 
     } catch (err) {
       console.error(err);
@@ -336,8 +587,9 @@ const App: React.FC = () => {
       alert("Processing encountered an error. Please check the server logs.");
     } finally {
       setIsTranscribing(false);
+      setIsAudioLoading(false);
     }
-  }, [targetLanguage]);
+  }, [targetLanguage, runPipeline]);
 
   const handleTranslateSegmentImpl = useCallback(async (id: string, textToTranslate?: string) => {
     // Find the latest segment data from state
@@ -559,6 +811,7 @@ const App: React.FC = () => {
         logs={rawLog}
         onClose={() => setIsLogOpen(false)}
         title="Processing Log"
+        isProcessing={isTranscribing}
       />
 
       {isIndexPage ? (
