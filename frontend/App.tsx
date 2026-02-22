@@ -487,6 +487,17 @@ const App: React.FC = () => {
     }
   }, [segments, videoId, handleSynthesizeSegment]);
 
+  // Current subtitle based on video time
+  const currentSubtitle = useMemo(() => {
+    if (segments.length === 0) return null;
+    const seg = segments.find(s => currentTime >= s.startTime && currentTime < s.endTime);
+    if (!seg) return null;
+    return {
+      translated: seg.translatedText,
+      original: seg.originalText,
+    };
+  }, [segments, currentTime]);
+
   const handleSeek = useCallback((time: number) => {
     if (videoRef.current) {
       videoRef.current.currentTime = time;
@@ -558,6 +569,22 @@ const App: React.FC = () => {
                       }}
                       onPlay={() => { }}
                     />
+                  )}
+
+                  {/* Subtitle Overlay */}
+                  {currentSubtitle && (
+                    <div className="absolute bottom-10 left-0 right-0 flex flex-col items-center pointer-events-none px-4 z-10">
+                      {currentSubtitle.translated && (
+                        <div className="bg-black/80 text-white text-base font-bold px-5 py-2 rounded-lg max-w-[90%] text-center leading-relaxed shadow-lg backdrop-blur-sm">
+                          {currentSubtitle.translated}
+                        </div>
+                      )}
+                      {currentSubtitle.original && (
+                        <div className="bg-black/60 text-gray-300 text-xs px-4 py-1 rounded-md max-w-[85%] text-center leading-relaxed mt-1">
+                          {currentSubtitle.original}
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
 
