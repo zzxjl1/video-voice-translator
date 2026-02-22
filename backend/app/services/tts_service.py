@@ -1,4 +1,3 @@
-import base64
 import json
 import logging
 import os
@@ -16,7 +15,7 @@ _client = AsyncOpenAI(
 )
 
 
-async def synthesize_speech(video_id: str, segment_id: str, text: str, voice: str | None = None) -> tuple[str, str]:
+async def synthesize_speech(video_id: str, segment_id: str, text: str, voice: str | None = None) -> str:
     """
     Synthesize speech from text using OpenAI TTS API and save to disk.
     
@@ -27,7 +26,7 @@ async def synthesize_speech(video_id: str, segment_id: str, text: str, voice: st
         voice: Voice name (optional, uses config default)
     
     Returns:
-        Tuple of (base64_audio_data, content_type)
+        Path to the saved audio file
     """
     voice = voice or config.TTS_VOICE
     
@@ -52,7 +51,6 @@ async def synthesize_speech(video_id: str, segment_id: str, text: str, voice: st
         logger.info(f"Saved synthesized audio to {audio_path}")
         
         # Consistent persistence: Update tts_results.json
-        # This keeps a record of which segments have valid audio
         results_path = os.path.join(video_dir, "tts_results.json")
         tts_results = {}
         if os.path.exists(results_path):
@@ -62,7 +60,6 @@ async def synthesize_speech(video_id: str, segment_id: str, text: str, voice: st
             except Exception:
                 pass
         
-        # Save relative path or just a flag. Using relative path for robustness.
         tts_results[segment_id] = f"tts/{segment_id}.mp3"
         
         with open(results_path, "w", encoding="utf-8") as f:
@@ -71,6 +68,4 @@ async def synthesize_speech(video_id: str, segment_id: str, text: str, voice: st
     except Exception as e:
         logger.warning(f"Failed to save synthesized audio or update registry: {e}")
 
-    # Return base64 for frontend immediate use
-    audio_base64 = base64.b64encode(response.content).decode("utf-8")
-    return audio_base64, "audio/mp3"
+    return audio_path

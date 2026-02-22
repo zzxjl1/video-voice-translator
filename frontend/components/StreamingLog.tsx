@@ -20,7 +20,7 @@ const StreamingLog: React.FC<StreamingLogProps> = ({ logs, isOpen, title = "Proc
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-sm p-4">
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/90 backdrop-blur-sm p-4">
       <div className="w-full max-w-4xl h-[80vh] bg-gray-950 border border-gray-800 rounded-lg shadow-2xl flex flex-col overflow-hidden font-mono text-sm">
         <div className="bg-gray-900 px-4 py-2 border-b border-gray-800 flex items-center justify-between">
             <div className="flex items-center gap-2">

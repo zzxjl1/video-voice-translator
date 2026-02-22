@@ -32,16 +32,7 @@ const Header: React.FC<HeaderProps> = ({
   const [isScrolled, setIsScrolled] = useState(false);
   const [isVisible, setIsVisible] = useState(true);
   const [isHovered, setIsHovered] = useState(false);
-  const [isInitialWait, setIsInitialWait] = useState(true);
   const [lastScrollY, setLastScrollY] = useState(0);
-
-  // 5-second auto-shrink on mount
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setIsInitialWait(false);
-    }, 5000);
-    return () => clearTimeout(timer);
-  }, []);
 
   useEffect(() => {
     const handleScroll = () => {
@@ -65,7 +56,7 @@ const Header: React.FC<HeaderProps> = ({
     return () => window.removeEventListener('scroll', handleScroll);
   }, [lastScrollY, isHovered]);
 
-  const expanded = (isInitialWait || isHovered);
+  const expanded = isHovered;
 
   return (
     <div className="fixed top-0 left-0 right-0 z-50 flex justify-center pointer-events-auto">

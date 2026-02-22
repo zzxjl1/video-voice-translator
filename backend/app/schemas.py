@@ -66,7 +66,7 @@ class TTSRequest(BaseModel):
 
 
 class TTSResponse(BaseModel):
-    audio_base64: str
+    audio_url: str
     content_type: str = "audio/mp3"
 
 

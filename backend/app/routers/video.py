@@ -268,20 +268,23 @@ async def synthesize_speech(video_id: str, req: TTSRequest):
         raise HTTPException(status_code=404, detail="Video not found")
 
     try:
-        audio_base64, content_type = await tts_service.synthesize_speech(
+        await tts_service.synthesize_speech(
             video_id, req.segment_id, req.text, req.voice
         )
         logger.info(f"[{video_id}] TTS synthesis complete (Segment: {req.segment_id})")
 
         # Update in-memory state to reflect the new audio path
+        audio_path = os.path.join(get_video_dir(video_id), "tts", f"{req.segment_id}.mp3")
         for seg in state.segments:
             if seg.id == req.segment_id:
-                seg.audio_path = os.path.join(get_video_dir(video_id), "tts", f"{req.segment_id}.mp3")
+                seg.audio_path = audio_path
                 break
+        save_state(state)
 
+        audio_url = f"/api/videos/{video_id}/tts/{req.segment_id}"
         return TTSResponse(
-            audio_base64=audio_base64,
-            content_type=content_type,
+            audio_url=audio_url,
+            content_type="audio/mp3",
         )
     except Exception as e:
         logger.error(f"[{video_id}] TTS error: {str(e)}", exc_info=True)

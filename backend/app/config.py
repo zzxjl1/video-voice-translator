@@ -30,7 +30,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 # ----- Server -----
 CORS_ORIGINS = ["*"]
 # Public URL of the server (needed for Ali ASR callbacks/downloads)
-SERVER_URL_BASE = "http://video-voice-translator.idealbroker.cn"
+SERVER_URL_BASE = "http://119.45.51.201"
 
 # ----- Timeouts -----
 API_GENERAL_TIMEOUT = 120       # General timeout for HTTP requests (seconds)

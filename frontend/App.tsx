@@ -20,6 +20,17 @@ const LANGUAGES = [
   'Spanish',
 ];
 
+function detectBrowserLanguage(): string {
+  const lang = (navigator.language || '').toLowerCase();
+  if (lang.startsWith('zh')) return 'Chinese';
+  if (lang.startsWith('ja')) return 'Japanese';
+  if (lang.startsWith('ko')) return 'Korean';
+  if (lang.startsWith('fr')) return 'French';
+  if (lang.startsWith('de')) return 'German';
+  if (lang.startsWith('es')) return 'Spanish';
+  return 'English';
+}
+
 const App: React.FC = () => {
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoId, setVideoId] = useState<string>('');
@@ -37,7 +48,7 @@ const App: React.FC = () => {
 
   // Settings State
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [targetLanguage, setTargetLanguage] = useState<string>('English');
+  const [targetLanguage, setTargetLanguage] = useState<string>(detectBrowserLanguage);
 
   // Streaming Log State
   const [isLogOpen, setIsLogOpen] = useState(false);
@@ -47,6 +58,8 @@ const App: React.FC = () => {
   const activeAudiosRef = useRef<Map<string, HTMLAudioElement>>(new Map());
 
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
+
+  const isIndexPage = !videoFile && !videoId;
 
   // Management of video source URL
   useEffect(() => {
@@ -115,19 +128,6 @@ const App: React.FC = () => {
       window.history.pushState({}, '', `/${videoId}`);
     }
   }, [videoId]);
-
-  // Handle segment audio URL cleanup (only when segments change)
-  useEffect(() => {
-    const urlsToRevoke = segments
-      .map(seg => seg.audioUrl)
-      .filter((url): url is string => !!url && url.startsWith('blob:'));
-
-    return () => {
-      urlsToRevoke.forEach(url => {
-        URL.revokeObjectURL(url);
-      });
-    };
-  }, [segments]);
 
   const handleTimeUpdate = () => {
     if (!videoRef.current) return;
@@ -241,7 +241,57 @@ const App: React.FC = () => {
       setSegments(newSegments);
 
       setRawLog(prev => prev + '\n--- Transcription Ready ---\n');
-      await new Promise(resolve => setTimeout(resolve, 1500));
+
+      // === Phase 2: Auto Translate ===
+      setRawLog(prev => prev + `\n--- Starting Translation (${targetLanguage}) ---\n`);
+      setRawLog(prev => prev + `Sending ${newSegments.length} segments with full context...\n`);
+
+      const contextPayload = newSegments.map(s => ({
+        id: s.id,
+        text: s.originalText,
+        speaker_id: s.speakerId,
+        start_time: s.startTime,
+      }));
+
+      const translationResults = await translateScript(uploadResult.video_id, contextPayload, targetLanguage);
+
+      const translatedSegments = newSegments.map(seg => {
+        const match = translationResults.find(r => r.id === seg.id);
+        return match ? { ...seg, translatedText: match.translated_text } : seg;
+      });
+      setSegments(translatedSegments);
+
+      setRawLog(prev => prev + `Translation complete. ${translationResults.length} segments translated.\n`);
+
+      // === Phase 3: Auto TTS ===
+      const withTranslation = translatedSegments.filter(s => s.translatedText);
+      if (withTranslation.length > 0) {
+        setRawLog(prev => prev + `\n--- Starting Audio Synthesis (${withTranslation.length} segments) ---\n`);
+
+        let ttsCount = 0;
+        for (const seg of withTranslation) {
+          ttsCount++;
+          setRawLog(prev => prev + `[${ttsCount}/${withTranslation.length}] Segment ${seg.id}: Synthesizing...`);
+
+          try {
+            const result = await synthesizeSpeech(uploadResult.video_id, seg.id, seg.translatedText);
+            const audioUrl = result.audio_url;
+
+            setSegments(prev => prev.map(s => s.id === seg.id ? { ...s, audioUrl } : s));
+            setRawLog(prev => prev + ` Done.\n`);
+          } catch (e) {
+            console.error(`TTS failed for segment ${seg.id}:`, e);
+            setRawLog(prev => prev + ` FAILED.\n`);
+          }
+
+          await new Promise(r => setTimeout(r, 200));
+        }
+
+        setRawLog(prev => prev + `\n--- Audio Synthesis Complete ---\n`);
+      }
+
+      setRawLog(prev => prev + '\n=== All Processing Complete ===\nClosing in 2 seconds...');
+      await new Promise(resolve => setTimeout(resolve, 2000));
       setIsLogOpen(false);
 
     } catch (err) {
@@ -251,7 +301,7 @@ const App: React.FC = () => {
     } finally {
       setIsTranscribing(false);
     }
-  }, []);
+  }, [targetLanguage]);
 
   const handleTranslateSegmentImpl = useCallback(async (id: string, textToTranslate?: string) => {
     // Find the latest segment data from state
@@ -300,11 +350,7 @@ const App: React.FC = () => {
 
     try {
       const result = await synthesizeSpeech(videoId, targetSegment.id, text);
-      const audioBlob = new Blob(
-        [Uint8Array.from(atob(result.audio_base64), c => c.charCodeAt(0))],
-        { type: result.content_type }
-      );
-      const audioUrl = URL.createObjectURL(audioBlob);
+      const audioUrl = result.audio_url;
       setSegments(prev => prev.map(s => s.id === id ? { ...s, audioUrl, isSynthesizing: false } : s));
     } catch (e) {
       console.error("Synthesis failed:", e);
@@ -316,10 +362,8 @@ const App: React.FC = () => {
   const handleSegmentUpdate = useCallback((id: string, updates: Partial<TranscriptionSegment>) => {
     setSegments(prev => prev.map(s => {
       if (s.id === id) {
-        // Revoke old audio URL if text is changing
-        if ((updates.originalText !== undefined || updates.translatedText !== undefined) && s.audioUrl && s.audioUrl.startsWith('blob:')) {
-          console.log(`Revoking old audio for segment ${id}`);
-          URL.revokeObjectURL(s.audioUrl);
+        // Clear audio URL if text is changing (will be re-synthesized)
+        if ((updates.originalText !== undefined || updates.translatedText !== undefined) && s.audioUrl) {
           return { ...s, ...updates, audioUrl: undefined };
         }
         return { ...s, ...updates };
@@ -342,8 +386,18 @@ const App: React.FC = () => {
   }, [handleTranslateSegmentImpl, handleSynthesizeSegment]);
 
   const handleBatchTranslate = useCallback(async () => {
-    const toProcess = segments.filter(s => !s.translatedText);
-    if (toProcess.length === 0 || !videoId) return;
+    if (!videoId || segments.length === 0) return;
+
+    // If all segments already have translations, ask user to confirm re-translation
+    const untranslated = segments.filter(s => !s.translatedText);
+    const toProcess = untranslated.length > 0 ? untranslated : segments;
+
+    if (untranslated.length === 0) {
+      const confirmRetranslate = window.confirm(
+        'All segments are already translated. Do you want to re-translate the entire script?'
+      );
+      if (!confirmRetranslate) return;
+    }
 
     setIsBatchProcessing(true);
     setBatchProgress('Starting batch translation...');
@@ -387,18 +441,50 @@ const App: React.FC = () => {
 
   const handleBatchTTS = useCallback(async () => {
     if (!videoId) return;
-    setIsBatchProcessing(true);
-    let count = 0;
-    const toProcess = segments.filter(s => s.translatedText && !s.audioUrl);
 
-    for (const seg of toProcess) {
-      setBatchProgress(`Synthesizing ${count + 1}/${toProcess.length}`);
-      await handleSynthesizeSegment(seg.id);
-      count++;
-      await new Promise(r => setTimeout(r, 300));
+    const withTranslation = segments.filter(s => s.translatedText);
+    if (withTranslation.length === 0) {
+      alert('No translated segments found. Please translate first.');
+      return;
     }
-    setBatchProgress('');
-    setIsBatchProcessing(false);
+
+    const unsynced = withTranslation.filter(s => !s.audioUrl);
+    let toProcess = unsynced;
+
+    if (unsynced.length === 0) {
+      const confirmRegenerate = window.confirm(
+        'All segments already have audio. Do you want to re-generate audio for the entire script?'
+      );
+      if (!confirmRegenerate) return;
+      toProcess = withTranslation;
+    }
+
+    setIsBatchProcessing(true);
+    setIsLogOpen(true);
+    setRawLog('Initializing Audio Synthesis...\n');
+    let count = 0;
+
+    try {
+      for (const seg of toProcess) {
+        count++;
+        const label = `[${count}/${toProcess.length}] Segment ${seg.id}`;
+        setRawLog(prev => prev + `\n${label}: Synthesizing...`);
+        setBatchProgress(`Synthesizing ${count}/${toProcess.length}`);
+        await handleSynthesizeSegment(seg.id);
+        setRawLog(prev => prev + ` Done.`);
+        await new Promise(r => setTimeout(r, 300));
+      }
+
+      setRawLog(prev => prev + '\n\n--- Audio Synthesis Complete ---\nClosing in 1.5 seconds...');
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      setIsLogOpen(false);
+    } catch (error) {
+      console.error("Batch TTS failed:", error);
+      setRawLog(prev => prev + `\n\nERROR: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setBatchProgress('');
+      setIsBatchProcessing(false);
+    }
   }, [segments, videoId, handleSynthesizeSegment]);
 
   const handleSeek = useCallback((time: number) => {
@@ -411,17 +497,7 @@ const App: React.FC = () => {
   }, []);
 
   return (
-    <div className="h-screen flex flex-col bg-claude-bg text-claude-text font-sans selection:bg-claude-accent/20 overflow-hidden">
-      <Header
-        onOpenSettings={() => setIsSettingsOpen(true)}
-        onBatchTranslate={handleBatchTranslate}
-        onBatchTTS={handleBatchTTS}
-        targetLanguage={targetLanguage}
-        onLanguageChange={setTargetLanguage}
-        isProcessing={isBatchProcessing}
-        hasSegments={segments.length > 0}
-      />
-
+    <>
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
@@ -434,72 +510,86 @@ const App: React.FC = () => {
         title="Processing Log"
       />
 
-      <main className="flex-grow flex flex-col container mx-auto p-4 lg:p-6 pt-12 lg:pt-14 min-h-0">
-        {isBatchProcessing && batchProgress && (
-          <div className="mb-4 bg-claude-accent/10 border border-claude-accent/20 rounded-xl px-4 py-2 flex items-center justify-between animate-in slide-in-from-top-2 duration-300">
-            <div className="flex items-center gap-3">
-              <div className="w-2 h-2 bg-claude-accent rounded-full animate-pulse"></div>
-              <span className="text-xs font-bold uppercase tracking-wider text-claude-accent">{batchProgress}</span>
-            </div>
-            <div className="h-1 bg-claude-accent/20 flex-grow mx-8 rounded-full overflow-hidden">
-              <div className="h-full bg-claude-accent animate-progress" style={{ width: '60%' }}></div>
-            </div>
-          </div>
-        )}
+      {isIndexPage ? (
+        <VideoUpload
+          onVideoSelect={handleVideoSelect}
+          isLoading={isTranscribing}
+          targetLanguage={targetLanguage}
+          onLanguageChange={setTargetLanguage}
+        />
+      ) : (
+        <div className="h-screen flex flex-col bg-claude-bg text-claude-text font-sans selection:bg-claude-accent/20 overflow-hidden">
+          <Header
+            onOpenSettings={() => setIsSettingsOpen(true)}
+            onBatchTranslate={handleBatchTranslate}
+            onBatchTTS={handleBatchTTS}
+            targetLanguage={targetLanguage}
+            onLanguageChange={setTargetLanguage}
+            isProcessing={isBatchProcessing}
+            hasSegments={segments.length > 0}
+          />
 
-        {!videoFile && !videoId ? (
-          <div className="max-w-3xl mx-auto mt-16 animate-in slide-in-from-bottom-8 fade-in duration-700 w-full">
-            <VideoUpload onVideoSelect={handleVideoSelect} isLoading={isTranscribing} />
-          </div>
-        ) : (
-          <div className="flex-grow grid grid-cols-1 lg:grid-cols-12 gap-6 min-h-0 items-stretch">
-            <div className="w-full lg:col-span-7 flex flex-col gap-4 min-h-0">
-              {/* Video Player */}
-              <div className="flex-grow bg-black rounded-2xl overflow-hidden shadow-xl border border-gray-800 relative min-h-[300px]">
-                {videoUrl && (
-                  <video
-                    ref={videoRef}
-                    src={videoUrl}
-                    controls
-                    className="w-full h-full object-contain"
-                    onTimeUpdate={handleTimeUpdate}
-                    onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
-                    onPause={() => {
-                      activeAudiosRef.current.forEach(a => a.pause());
-                    }}
-                    onPlay={() => { }}
+          <main className="flex-grow flex flex-col container mx-auto p-4 lg:p-6 pt-12 lg:pt-14 min-h-0">
+            {isBatchProcessing && batchProgress && (
+              <div className="mb-4 bg-claude-accent/10 border border-claude-accent/20 rounded-xl px-4 py-2 flex items-center justify-between animate-in slide-in-from-top-2 duration-300">
+                <div className="flex items-center gap-3">
+                  <div className="w-2 h-2 bg-claude-accent rounded-full animate-pulse"></div>
+                  <span className="text-xs font-bold uppercase tracking-wider text-claude-accent">{batchProgress}</span>
+                </div>
+                <div className="h-1 bg-claude-accent/20 flex-grow mx-8 rounded-full overflow-hidden">
+                  <div className="h-full bg-claude-accent animate-progress" style={{ width: '60%' }}></div>
+                </div>
+              </div>
+            )}
+
+            <div className="flex-grow grid grid-cols-1 lg:grid-cols-12 gap-6 min-h-0 items-stretch">
+              <div className="w-full lg:col-span-7 flex flex-col gap-4 min-h-0">
+                <div className="flex-grow bg-black rounded-2xl overflow-hidden shadow-xl border border-gray-800 relative min-h-[300px]">
+                  {videoUrl && (
+                    <video
+                      ref={videoRef}
+                      src={videoUrl}
+                      controls
+                      className="w-full h-full object-contain"
+                      onTimeUpdate={handleTimeUpdate}
+                      onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
+                      onPause={() => {
+                        activeAudiosRef.current.forEach(a => a.pause());
+                      }}
+                      onPlay={() => { }}
+                    />
+                  )}
+                </div>
+
+                <div className="flex-shrink-0">
+                  <Timeline
+                    segments={segments}
+                    speakers={speakers}
+                    duration={duration}
+                    currentTime={currentTime}
+                    onSeek={handleSeek}
+                    waveform={waveform}
+                    isLoading={isAudioLoading}
                   />
-                )}
+                </div>
               </div>
 
-              <div className="flex-shrink-0">
-                <Timeline
+              <div className="w-full lg:col-span-5 flex flex-col min-h-0">
+                <TranscriptionPanel
                   segments={segments}
                   speakers={speakers}
-                  duration={duration}
+                  isTranscribing={isTranscribing}
+                  onSegmentUpdate={handleSegmentUpdate}
+                  onSynthesize={handleSynthesizeSegment}
                   currentTime={currentTime}
                   onSeek={handleSeek}
-                  waveform={waveform}
-                  isLoading={isAudioLoading}
                 />
               </div>
             </div>
-
-            <div className="w-full lg:col-span-5 flex flex-col min-h-0">
-              <TranscriptionPanel
-                segments={segments}
-                speakers={speakers}
-                isTranscribing={isTranscribing}
-                onSegmentUpdate={handleSegmentUpdate}
-                onSynthesize={handleSynthesizeSegment}
-                currentTime={currentTime}
-                onSeek={handleSeek}
-              />
-            </div>
-          </div>
-        )}
-      </main>
-    </div>
+          </main>
+        </div>
+      )}
+    </>
   );
 };
 

@@ -24,7 +24,7 @@ export interface TranslateResult {
 }
 
 export interface TTSResult {
-  audio_base64: string;
+  audio_url: string;
   content_type: string;
 }
 
