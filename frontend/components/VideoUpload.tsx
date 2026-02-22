@@ -1,5 +1,5 @@
 
-import React, { useRef } from 'react';
+import React, { useRef, useState } from 'react';
 
 const LANGUAGES = [
   'English',
@@ -16,9 +16,36 @@ interface VideoUploadProps {
   isLoading: boolean;
   targetLanguage: string;
   onLanguageChange: (lang: string) => void;
+  enableVoiceClone: boolean;
+  onVoiceCloneChange: (v: boolean) => void;
+  enableBgmSeparation: boolean;
+  onBgmSeparationChange: (v: boolean) => void;
 }
 
-const VideoUpload: React.FC<VideoUploadProps> = ({ onVideoSelect, isLoading, targetLanguage, onLanguageChange }) => {
+const InfoTooltip: React.FC<{ text: string }> = ({ text }) => {
+  const [show, setShow] = useState(false);
+  return (
+    <span className="relative inline-flex items-center ml-1.5">
+      <span
+        className="w-4 h-4 rounded-full border border-gray-300 text-gray-400 text-[10px] font-bold flex items-center justify-center cursor-help hover:border-claude-accent hover:text-claude-accent transition-colors"
+        onMouseEnter={() => setShow(true)}
+        onMouseLeave={() => setShow(false)}
+      >
+        i
+      </span>
+      {show && (
+        <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50 pointer-events-none">
+          <div className="bg-gray-800 text-white text-[11px] leading-relaxed rounded-lg px-3 py-2 shadow-lg whitespace-normal w-52 text-center">
+            {text}
+            <div className="absolute left-1/2 -translate-x-1/2 top-full w-0 h-0 border-l-[5px] border-l-transparent border-r-[5px] border-r-transparent border-t-[5px] border-t-gray-800"></div>
+          </div>
+        </div>
+      )}
+    </span>
+  );
+};
+
+const VideoUpload: React.FC<VideoUploadProps> = ({ onVideoSelect, isLoading, targetLanguage, onLanguageChange, enableVoiceClone, onVoiceCloneChange, enableBgmSeparation, onBgmSeparationChange }) => {
   const inputRef = useRef<HTMLInputElement>(null);
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -128,9 +155,37 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onVideoSelect, isLoading, tar
           </div>
 
           <h2 className="text-xl font-serif font-bold mb-2 text-claude-text">Upload Your Video</h2>
-          <p className="text-sm text-gray-500 mb-6 leading-relaxed max-w-sm">
+          <p className="text-sm text-gray-500 mb-5 leading-relaxed max-w-sm">
             We'll transcribe, translate to <span className="font-bold text-claude-accent">{targetLanguage}</span>, and re-voice your video with AI.
           </p>
+
+          {/* Processing Options */}
+          <div className="w-full space-y-3 mb-6">
+            <div className="flex items-center justify-between py-2 px-3 bg-gray-50 rounded-xl">
+              <div className="flex items-center">
+                <span className="text-sm font-medium text-gray-700">BGM Separation</span>
+                <InfoTooltip text="Separate background music from vocals before processing. Produces cleaner results but takes longer. Recommended for videos with music." />
+              </div>
+              <button
+                onClick={() => onBgmSeparationChange(!enableBgmSeparation)}
+                className={`relative w-10 h-[22px] rounded-full transition-colors duration-200 ${enableBgmSeparation ? 'bg-claude-accent' : 'bg-gray-300'}`}
+              >
+                <span className={`absolute top-[2px] left-[2px] w-[18px] h-[18px] bg-white rounded-full shadow transition-transform duration-200 ${enableBgmSeparation ? 'translate-x-[18px]' : ''}`} />
+              </button>
+            </div>
+            <div className="flex items-center justify-between py-2 px-3 bg-gray-50 rounded-xl">
+              <div className="flex items-center">
+                <span className="text-sm font-medium text-gray-700">Voice Cloning</span>
+                <InfoTooltip text="Clone the original speaker's voice for synthesis. The translated audio will sound like the original speaker. Requires more processing time." />
+              </div>
+              <button
+                onClick={() => onVoiceCloneChange(!enableVoiceClone)}
+                className={`relative w-10 h-[22px] rounded-full transition-colors duration-200 ${enableVoiceClone ? 'bg-claude-accent' : 'bg-gray-300'}`}
+              >
+                <span className={`absolute top-[2px] left-[2px] w-[18px] h-[18px] bg-white rounded-full shadow transition-transform duration-200 ${enableVoiceClone ? 'translate-x-[18px]' : ''}`} />
+              </button>
+            </div>
+          </div>
 
           <input
             type="file"

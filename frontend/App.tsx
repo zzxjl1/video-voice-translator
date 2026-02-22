@@ -8,17 +8,7 @@ import SettingsModal from './components/SettingsModal';
 import StreamingLog from './components/StreamingLog';
 import { TranscriptionPanel } from './components/TranscriptionPanel';
 import { uploadVideo, translateScript, synthesizeSpeech, processVideo, getVideoStatus, resetVideo } from './services/apiService';
-import { getAudioWaveform } from './utils/audioProcessor';
-
-const LANGUAGES = [
-  'English',
-  'Chinese',
-  'Japanese',
-  'Korean',
-  'French',
-  'German',
-  'Spanish',
-];
+import { getAudioWaveform, getAudioWaveformFromUrl } from './utils/audioProcessor';
 
 function detectBrowserLanguage(): string {
   const lang = (navigator.language || '').toLowerCase();
@@ -49,6 +39,8 @@ const App: React.FC = () => {
   // Settings State
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [targetLanguage, setTargetLanguage] = useState<string>(detectBrowserLanguage);
+  const [enableVoiceClone, setEnableVoiceClone] = useState(false);
+  const [enableBgmSeparation, setEnableBgmSeparation] = useState(true);
 
   // Streaming Log State
   const [isLogOpen, setIsLogOpen] = useState(false);
@@ -64,22 +56,29 @@ const App: React.FC = () => {
   const isIndexPage = !videoFile && !videoId;
 
   // Management of video source URL
+  // Use a ref to track the current blob URL to avoid recreating it when videoId changes
+  const blobUrlRef = useRef<string | null>(null);
+
   useEffect(() => {
-    // If we have a local file, it's our source
     if (videoFile) {
-      const url = URL.createObjectURL(videoFile);
-      setVideoUrl(url);
-      console.log("Created stable local video URL:", url);
+      // Only create a new blob URL if we don't already have one for this file
+      if (!blobUrlRef.current) {
+        const url = URL.createObjectURL(videoFile);
+        blobUrlRef.current = url;
+        setVideoUrl(url);
+      }
       return () => {
-        URL.revokeObjectURL(url);
-        console.log("Revoked local video URL:", url);
+        if (blobUrlRef.current) {
+          URL.revokeObjectURL(blobUrlRef.current);
+          blobUrlRef.current = null;
+        }
       };
     }
-    // If no local file but we have an ID (session recovery), use the server URL
     else if (videoId) {
       const serverUrl = `/api/videos/${videoId}/video`;
       setVideoUrl(serverUrl);
     } else {
+      blobUrlRef.current = null;
       setVideoUrl(null);
     }
   }, [videoFile, videoId]);
@@ -140,8 +139,13 @@ const App: React.FC = () => {
               setIsTranscribing(false);
             });
           } else {
-            // Completed — just show editor
+            // Completed — just show editor, generate waveform from server audio
             setIsTranscribing(false);
+            setIsAudioLoading(true);
+            getAudioWaveformFromUrl(`/api/videos/${idFromUrl}/audio`, 300).then(peaks => {
+              setWaveform(peaks);
+              setIsAudioLoading(false);
+            });
           }
         })
         .catch(err => {
@@ -482,6 +486,11 @@ const App: React.FC = () => {
               runPipeline(idFromUrl).finally(() => setIsTranscribing(false));
             } else {
               setIsTranscribing(false);
+              setIsAudioLoading(true);
+              getAudioWaveformFromUrl(`/api/videos/${idFromUrl}/audio`, 300).then(peaks => {
+                setWaveform(peaks);
+                setIsAudioLoading(false);
+              });
             }
           })
           .catch(err => {
@@ -673,107 +682,65 @@ const App: React.FC = () => {
     }
   }, [handleTranslateSegmentImpl, handleSynthesizeSegment]);
 
-  const handleBatchTranslate = useCallback(async () => {
+  const handleReprocess = useCallback(async () => {
     if (!videoId || segments.length === 0) return;
 
-    // If all segments already have translations, ask user to confirm re-translation
-    const untranslated = segments.filter(s => !s.translatedText);
-    const toProcess = untranslated.length > 0 ? untranslated : segments;
-
-    if (untranslated.length === 0) {
-      const confirmRetranslate = window.confirm(
-        'All segments are already translated. Do you want to re-translate the entire script?'
-      );
-      if (!confirmRetranslate) return;
-    }
+    const confirmReprocess = window.confirm(
+      'This will re-translate the entire script and re-generate all audio. Continue?'
+    );
+    if (!confirmReprocess) return;
 
     setIsBatchProcessing(true);
-    setBatchProgress('Starting batch translation...');
     setIsLogOpen(true);
-    setRawLog('Initializing Translation for entire script...\n');
+    setRawLog('');
+    setBatchProgress('Translating...');
 
     try {
-      const contextPayload = toProcess.map(s => ({
+      // Phase 1: Re-translate all
+      setRawLog('=== Re-translating Full Script ===\n');
+      const contextPayload = segments.map(s => ({
         id: s.id,
         text: s.originalText,
         speaker_id: s.speakerId,
         start_time: s.startTime,
       }));
 
-      setRawLog(prev => prev + `\n--- Sending ${toProcess.length} segments with full context ---\n`);
-
+      setRawLog(prev => prev + `Sending ${segments.length} segments with full context...\n`);
       const results = await translateScript(videoId, contextPayload, targetLanguage);
 
       setSegments(prev => prev.map(seg => {
         const match = results.find(r => r.id === seg.id);
-        if (match) {
-          return { ...seg, translatedText: match.translated_text };
-        }
-        return seg;
+        return match ? { ...seg, translatedText: match.translated_text, audioUrl: undefined } : seg;
       }));
 
-      setRawLog(prev => prev + '\n\n--- Translation Complete ---\nClosing in 1.5 seconds...');
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      setIsLogOpen(false);
+      setRawLog(prev => prev + `Translation complete. ${results.length} segments translated.\n`);
 
-    } catch (error) {
-      console.error("Batch translation failed:", error);
-      setRawLog(prev => prev + `\n\nERROR: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      await new Promise(resolve => setTimeout(resolve, 5000));
-      alert("Batch translation failed. Check the log for details.");
-    } finally {
-      setBatchProgress('');
-      setIsBatchProcessing(false);
-    }
-  }, [segments, videoId, targetLanguage]);
+      // Phase 2: Re-synthesize all
+      setRawLog(prev => prev + '\n=== Re-synthesizing All Audio ===\n');
+      const toSynthesize = results.map(r => r.id);
+      let count = 0;
 
-  const handleBatchTTS = useCallback(async () => {
-    if (!videoId) return;
-
-    const withTranslation = segments.filter(s => s.translatedText);
-    if (withTranslation.length === 0) {
-      alert('No translated segments found. Please translate first.');
-      return;
-    }
-
-    const unsynced = withTranslation.filter(s => !s.audioUrl);
-    let toProcess = unsynced;
-
-    if (unsynced.length === 0) {
-      const confirmRegenerate = window.confirm(
-        'All segments already have audio. Do you want to re-generate audio for the entire script?'
-      );
-      if (!confirmRegenerate) return;
-      toProcess = withTranslation;
-    }
-
-    setIsBatchProcessing(true);
-    setIsLogOpen(true);
-    setRawLog('Initializing Audio Synthesis...\n');
-    let count = 0;
-
-    try {
-      for (const seg of toProcess) {
+      for (const segId of toSynthesize) {
         count++;
-        const label = `[${count}/${toProcess.length}] Segment ${seg.id}`;
-        setRawLog(prev => prev + `\n${label}: Synthesizing...`);
-        setBatchProgress(`Synthesizing ${count}/${toProcess.length}`);
-        await handleSynthesizeSegment(seg.id);
-        setRawLog(prev => prev + ` Done.`);
-        await new Promise(r => setTimeout(r, 300));
+        const label = `[${count}/${toSynthesize.length}] Segment ${segId}`;
+        setRawLog(prev => prev + `${label}: Synthesizing...`);
+        setBatchProgress(`Synthesizing ${count}/${toSynthesize.length}`);
+        await handleSynthesizeSegment(segId);
+        setRawLog(prev => prev + ` Done.\n`);
+        await new Promise(r => setTimeout(r, 200));
       }
 
-      setRawLog(prev => prev + '\n\n--- Audio Synthesis Complete ---\nClosing in 1.5 seconds...');
+      setRawLog(prev => prev + '\n=== All Processing Complete ===\nClosing in 1.5 seconds...');
       await new Promise(resolve => setTimeout(resolve, 1500));
       setIsLogOpen(false);
     } catch (error) {
-      console.error("Batch TTS failed:", error);
+      console.error("Reprocess failed:", error);
       setRawLog(prev => prev + `\n\nERROR: ${error instanceof Error ? error.message : 'Unknown error'}`);
     } finally {
       setBatchProgress('');
       setIsBatchProcessing(false);
     }
-  }, [segments, videoId, handleSynthesizeSegment]);
+  }, [segments, videoId, targetLanguage, handleSynthesizeSegment]);
 
   // Current subtitle based on video time
   const currentSubtitle = useMemo(() => {
@@ -804,6 +771,10 @@ const App: React.FC = () => {
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
+        enableVoiceClone={enableVoiceClone}
+        onVoiceCloneChange={setEnableVoiceClone}
+        enableBgmSeparation={enableBgmSeparation}
+        onBgmSeparationChange={setEnableBgmSeparation}
       />
 
       <StreamingLog
@@ -820,13 +791,16 @@ const App: React.FC = () => {
           isLoading={isTranscribing}
           targetLanguage={targetLanguage}
           onLanguageChange={setTargetLanguage}
+          enableVoiceClone={enableVoiceClone}
+          onVoiceCloneChange={setEnableVoiceClone}
+          enableBgmSeparation={enableBgmSeparation}
+          onBgmSeparationChange={setEnableBgmSeparation}
         />
       ) : (
         <div className="h-screen flex flex-col bg-claude-bg text-claude-text font-sans selection:bg-claude-accent/20 overflow-hidden">
           <Header
             onOpenSettings={() => setIsSettingsOpen(true)}
-            onBatchTranslate={handleBatchTranslate}
-            onBatchTTS={handleBatchTTS}
+            onReprocess={handleReprocess}
             targetLanguage={targetLanguage}
             onLanguageChange={setTargetLanguage}
             isProcessing={isBatchProcessing}

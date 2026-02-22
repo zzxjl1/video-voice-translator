@@ -358,9 +358,10 @@ async def synthesize_speech(video_id: str, req: TTSRequest):
 
 
 @router.get("/{video_id}/video")
-async def serve_video(video_id: str):
-    """Serve the original video file."""
-    from fastapi.responses import FileResponse
+async def serve_video(video_id: str, request: Request):
+    """Serve the original video file with Range request support for seeking."""
+    from fastapi.responses import Response, StreamingResponse
+    import mimetypes
 
     state = get_state(video_id)
     if not state or not state.file_path:
@@ -369,7 +370,51 @@ async def serve_video(video_id: str):
     if not os.path.exists(state.file_path):
         raise HTTPException(status_code=404, detail="Video file not found on disk")
 
-    return FileResponse(state.file_path, media_type="video/mp4")
+    file_path = state.file_path
+    file_size = os.path.getsize(file_path)
+    content_type = mimetypes.guess_type(file_path)[0] or "video/mp4"
+
+    range_header = request.headers.get("range")
+
+    if range_header:
+        # Parse Range header: "bytes=start-end"
+        range_spec = range_header.strip().split("=")[1]
+        range_parts = range_spec.split("-")
+        start = int(range_parts[0]) if range_parts[0] else 0
+        end = int(range_parts[1]) if range_parts[1] else file_size - 1
+        end = min(end, file_size - 1)
+        content_length = end - start + 1
+
+        def iter_file():
+            with open(file_path, "rb") as f:
+                f.seek(start)
+                remaining = content_length
+                while remaining > 0:
+                    chunk_size = min(8192, remaining)
+                    data = f.read(chunk_size)
+                    if not data:
+                        break
+                    remaining -= len(data)
+                    yield data
+
+        return StreamingResponse(
+            iter_file(),
+            status_code=206,
+            media_type=content_type,
+            headers={
+                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(content_length),
+            },
+        )
+    else:
+        # No range requested — serve full file
+        from fastapi.responses import FileResponse
+        return FileResponse(
+            file_path,
+            media_type=content_type,
+            headers={"Accept-Ranges": "bytes"},
+        )
 
 
 @router.get("/{video_id}/audio")

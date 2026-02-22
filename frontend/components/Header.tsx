@@ -2,8 +2,7 @@ import React, { useState, useEffect } from 'react';
 
 interface HeaderProps {
   onOpenSettings: () => void;
-  onBatchTranslate: () => void;
-  onBatchTTS: () => void;
+  onReprocess: () => void;
   targetLanguage: string;
   onLanguageChange: (lang: string) => void;
   isProcessing: boolean;
@@ -22,8 +21,7 @@ const LANGUAGES = [
 
 const Header: React.FC<HeaderProps> = ({
   onOpenSettings,
-  onBatchTranslate,
-  onBatchTTS,
+  onReprocess,
   targetLanguage,
   onLanguageChange,
   isProcessing,
@@ -134,36 +132,22 @@ const Header: React.FC<HeaderProps> = ({
             </div>
           </div>
 
-          {/* Action Cards */}
-          <div className="flex items-center gap-4">
-            <button
-              onClick={onBatchTranslate}
-              disabled={isProcessing || !hasSegments}
-              className="flex flex-col items-start gap-1 p-4 bg-white border border-gray-200 hover:border-claude-accent hover:shadow-[0_20px_40px_rgba(0,0,0,0.08)] hover:-translate-y-0.5 transition-all duration-300 rounded-2xl w-44 group/btn disabled:opacity-40 active:scale-[0.98] active:translate-y-0"
-            >
-              <div className="flex items-center gap-2 group-hover/btn:text-claude-accent transition-colors">
-                <div className="w-8 h-8 rounded-lg bg-gray-50 flex items-center justify-center group-hover/btn:bg-claude-accent/10 transition-colors">
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129" /></svg>
-                </div>
-                <span className="text-[10px] font-black uppercase tracking-[0.15em] text-gray-400 group-hover/btn:text-claude-accent/70 transition-colors">Translate</span>
+          {/* Reprocess Button */}
+          <button
+            onClick={onReprocess}
+            disabled={isProcessing || !hasSegments}
+            className="flex flex-col items-start gap-1 p-4 bg-claude-accent hover:bg-claude-accentHover shadow-xl shadow-claude-accent/20 hover:shadow-2xl hover:shadow-claude-accent/30 hover:-translate-y-0.5 transition-all duration-300 rounded-2xl w-52 group/btn text-white disabled:opacity-40 active:scale-[0.98] active:translate-y-0"
+          >
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-lg bg-white/20 flex items-center justify-center">
+                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
               </div>
-              <span className="text-sm font-bold text-gray-800 mt-1 ml-1">Full Script</span>
-            </button>
-
-            <button
-              onClick={onBatchTTS}
-              disabled={isProcessing || !hasSegments}
-              className="flex flex-col items-start gap-1 p-4 bg-claude-accent hover:bg-claude-accentHover shadow-xl shadow-claude-accent/20 hover:shadow-2xl hover:shadow-claude-accent/30 hover:-translate-y-0.5 transition-all duration-300 rounded-2xl w-44 group/btn-sync text-white disabled:opacity-40 active:scale-[0.98] active:translate-y-0"
-            >
-              <div className="flex items-center gap-2">
-                <div className="w-8 h-8 rounded-lg bg-white/20 flex items-center justify-center">
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" /></svg>
-                </div>
-                <span className="text-[10px] font-black uppercase tracking-[0.15em] text-white/70">Synthesis</span>
-              </div>
-              <span className="text-sm font-bold mt-1 ml-1 text-white">Generate Audio</span>
-            </button>
-          </div>
+              <span className="text-[10px] font-black uppercase tracking-[0.15em] text-white/70">Reprocess</span>
+            </div>
+            <span className="text-sm font-bold mt-1 ml-1 text-white">Translate & Synthesize</span>
+          </button>
         </div>
 
         {/* Right Side: Settings & Affordance */}
