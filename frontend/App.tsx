@@ -101,6 +101,10 @@ const App: React.FC = () => {
           const isUploaded = data.status === 'uploaded';
           const isIncomplete = !isCompleted && !isError && !isUploaded;
 
+          // Restore switch settings from server
+          if (data.enable_bgm_separation !== undefined) setEnableBgmSeparation(data.enable_bgm_separation);
+          if (data.enable_voice_clone !== undefined) setEnableVoiceClone(data.enable_voice_clone);
+
           // Always load existing segments/speakers
           if (data.segments && data.segments.length > 0) {
             const recoveredSegments: TranscriptionSegment[] = data.segments.map((seg: any) => ({
@@ -402,7 +406,7 @@ const App: React.FC = () => {
         if (event.error) {
           setRawLog(prev => prev + `\nERROR: ${event.error}\n`);
         }
-      });
+      }, { enableBgmSeparation, enableVoiceClone });
 
       await new Promise(resolve => setTimeout(resolve, 2000));
       setIsLogOpen(false);
@@ -413,7 +417,7 @@ const App: React.FC = () => {
     } finally {
       setIsTranscribing(false);
     }
-  }, [targetLanguage]);
+  }, [targetLanguage, enableBgmSeparation, enableVoiceClone]);
 
   // Handle browser back/forward navigation
   useEffect(() => {
@@ -454,6 +458,10 @@ const App: React.FC = () => {
             const isCompleted = data.status === 'completed';
             const isError = data.status === 'error';
             const isUploaded = data.status === 'uploaded';
+
+            // Restore switch settings from server
+            if (data.enable_bgm_separation !== undefined) setEnableBgmSeparation(data.enable_bgm_separation);
+            if (data.enable_voice_clone !== undefined) setEnableVoiceClone(data.enable_voice_clone);
 
             if (data.segments && data.segments.length > 0) {
               const recoveredSegments: TranscriptionSegment[] = data.segments.map((seg: any) => ({
@@ -525,6 +533,11 @@ const App: React.FC = () => {
         setIsTranscribing(false);
 
         const statusData = await getVideoStatus(uploadResult.video_id);
+
+        // Restore switch settings from server
+        if (statusData.enable_bgm_separation !== undefined) setEnableBgmSeparation(statusData.enable_bgm_separation);
+        if (statusData.enable_voice_clone !== undefined) setEnableVoiceClone(statusData.enable_voice_clone);
+
         const isCompleted = statusData.status === 'completed';
         const isError = statusData.status === 'error';
         const isInProgress = !isCompleted && !isError && statusData.status !== 'uploaded';

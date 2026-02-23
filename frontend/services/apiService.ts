@@ -214,11 +214,16 @@ export async function processVideo(
   videoId: string,
   targetLanguage: string,
   onEvent: (event: any) => void,
+  options?: { enableBgmSeparation?: boolean; enableVoiceClone?: boolean },
 ): Promise<void> {
   const response = await fetch(`${API_BASE}/videos/${videoId}/process`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ target_language: targetLanguage }),
+    body: JSON.stringify({
+      target_language: targetLanguage,
+      enable_bgm_separation: options?.enableBgmSeparation ?? true,
+      enable_voice_clone: options?.enableVoiceClone ?? false,
+    }),
   });
 
   if (!response.ok) {

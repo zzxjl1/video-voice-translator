@@ -91,9 +91,13 @@ class VideoStatusResponse(BaseModel):
     has_asr: bool = False
     has_translation: bool = False
     has_tts: bool = False
+    enable_bgm_separation: bool = True
+    enable_voice_clone: bool = False
 
 
 # ----- Pipeline -----
 
 class ProcessRequest(BaseModel):
     target_language: str = "English"
+    enable_bgm_separation: bool = True
+    enable_voice_clone: bool = False

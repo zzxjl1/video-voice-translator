@@ -68,6 +68,8 @@ class VideoState:
     error_message: Optional[str] = None
     segments: list[Segment] = field(default_factory=list)
     speakers: list[Speaker] = field(default_factory=list)
+    enable_bgm_separation: bool = True
+    enable_voice_clone: bool = False
     created_at: str = field(default_factory=lambda: datetime.datetime.now().isoformat())
 
     def to_dict(self):

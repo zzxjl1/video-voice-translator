@@ -135,6 +135,8 @@ async def get_video_status(video_id: str):
         has_asr=os.path.exists(os.path.join(video_dir, "asr_result.json")),
         has_translation=os.path.exists(os.path.join(video_dir, "translation_result.json")),
         has_tts=os.path.exists(os.path.join(video_dir, "tts_results.json")),
+        enable_bgm_separation=state.enable_bgm_separation,
+        enable_voice_clone=state.enable_voice_clone,
     )
 
 
@@ -326,7 +328,7 @@ async def translate_video(video_id: str, req: TranslateRequest):
 
 @router.post("/{video_id}/tts", response_model=TTSResponse)
 async def synthesize_speech(video_id: str, req: TTSRequest):
-    """Synthesize speech for a text segment using OpenAI TTS."""
+    """Synthesize speech for a text segment using DashScope CosyVoice3."""
     logger.info(f"TTS requested for video_id: {video_id}")
     state = get_state(video_id)
     if not state:
@@ -536,6 +538,8 @@ async def process_video(video_id: str, req: ProcessRequest):
                     target_language=req.target_language,
                     server_url_base=config.SERVER_URL_BASE,
                     emit=emit,
+                    enable_bgm_separation=req.enable_bgm_separation,
+                    enable_voice_clone=req.enable_voice_clone,
                 )
             except Exception as e:
                 logger.error(f"[{video_id}] Pipeline error: {e}", exc_info=True)

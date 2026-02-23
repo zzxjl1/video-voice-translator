@@ -51,6 +51,8 @@ async def run_pipeline(
     target_language: str,
     server_url_base: str,
     emit: Callable,
+    enable_bgm_separation: bool = True,
+    enable_voice_clone: bool = False,
 ):
     """
     Execute the full processing pipeline for a video.
@@ -66,6 +68,11 @@ async def run_pipeline(
     if not state:
         await emit({"error": "Video not found"})
         return
+
+    # Persist switch settings into state
+    state.enable_bgm_separation = enable_bgm_separation
+    state.enable_voice_clone = enable_voice_clone
+    save_state(state)
 
     video_dir = get_video_dir(video_id)
 
@@ -86,7 +93,14 @@ async def run_pipeline(
         vocals_path = os.path.join(video_dir, "vocals.wav")
         background_path = os.path.join(video_dir, "background.wav")
 
-        if resume_phase == "separation":
+        if not enable_bgm_separation:
+            # Skip separation entirely — just extract audio
+            if not os.path.exists(audio_path):
+                asr_service.extract_audio(state.file_path, audio_path)
+            state.audio_path = audio_path
+            save_state(state)
+            await emit({"phase": "separation", "status": "skipped"})
+        elif resume_phase == "separation":
             await emit({"phase": "separation", "status": "started"})
 
             if not os.path.exists(audio_path):
@@ -289,10 +303,19 @@ async def run_pipeline(
         state.status = VideoStatus.SYNTHESIZING
         save_state(state)
 
+        # Pre-assign voices to all speakers so each speaker gets a unique voice
+        for seg in state.segments:
+            tts_service.assign_voice_for_speaker(video_id, seg.speaker_id)
+
+        voice_map = tts_service.get_speaker_voice_map(video_id)
+        logger.info(f"[{video_id}] Speaker-voice mapping: {voice_map}")
+
         for i, seg in enumerate(to_synthesize):
             try:
+                # Use the voice assigned to this segment's speaker
+                voice = tts_service.assign_voice_for_speaker(video_id, seg.speaker_id)
                 audio_file_path = await tts_service.synthesize_speech(
-                    video_id, seg.id, seg.translated_text
+                    video_id, seg.id, seg.translated_text, voice=voice
                 )
                 seg.audio_path = audio_file_path
                 audio_url = f"/api/videos/{video_id}/tts/{seg.id}"
