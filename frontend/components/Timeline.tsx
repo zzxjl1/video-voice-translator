@@ -65,7 +65,7 @@ const Timeline: React.FC<TimelineProps> = ({ segments, speakers, duration, curre
         onClick={handleSeek}
       >
         {/* Waveform bars */}
-        <div className="absolute inset-0 flex items-center justify-around px-0.5 gap-[1px] z-10 overflow-hidden rounded-lg">
+        <div className="absolute inset-0 z-10 overflow-hidden rounded-lg">
           {waveform.length > 0 ? waveform.map((peak, idx) => {
             const progress = idx / waveform.length;
             const time = progress * duration;
@@ -74,9 +74,12 @@ const Timeline: React.FC<TimelineProps> = ({ segments, speakers, duration, curre
             return (
               <div
                 key={idx}
-                className="w-[2px] rounded-full shrink-0"
+                className="absolute w-[2px] rounded-full"
                 style={{
+                  left: `${progress * 100}%`,
+                  top: '50%',
                   height: `${Math.max(6, peak * 75)}%`,
+                  transform: 'translateY(-50%)',
                   backgroundColor: color,
                   opacity: 0.5,
                 }}
