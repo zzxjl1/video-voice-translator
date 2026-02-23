@@ -18,7 +18,7 @@ from app.models import (
     get_video_dir,
     save_state,
 )
-from app.services import asr_service, llm_service, separation_service, tts_service
+from app.services import asr_service, llm_service, separation_service, tts_service, voice_clone_service
 
 logger = logging.getLogger(__name__)
 
@@ -287,6 +287,50 @@ async def run_pipeline(
             })
 
         # =====================================================
+        # Phase 2.5: Voice Cloning (if enabled)
+        # =====================================================
+        if enable_voice_clone:
+            unique_speakers = sorted(set(seg.speaker_id for seg in state.segments))
+            await emit({"phase": "voice_clone", "status": "started", "total": len(unique_speakers)})
+
+            for i, spk_id in enumerate(unique_speakers):
+                try:
+                    logger.info(f"[{video_id}] Cloning voice for speaker {spk_id}")
+                    await emit({
+                        "phase": "voice_clone",
+                        "progress": i + 1,
+                        "total": len(unique_speakers),
+                        "speaker_id": spk_id,
+                        "status": "cloning",
+                    })
+                    voice_id = await voice_clone_service.clone_voice_for_speaker(
+                        video_id=video_id,
+                        speaker_id=spk_id,
+                        segments=state.segments,
+                        server_url_base=server_url_base,
+                    )
+                    await emit({
+                        "phase": "voice_clone",
+                        "progress": i + 1,
+                        "total": len(unique_speakers),
+                        "speaker_id": spk_id,
+                        "voice_id": voice_id,
+                        "status": "done",
+                    })
+                except Exception as e:
+                    logger.error(f"[{video_id}] Voice clone failed for {spk_id}: {e}")
+                    await emit({
+                        "phase": "voice_clone",
+                        "progress": i + 1,
+                        "total": len(unique_speakers),
+                        "speaker_id": spk_id,
+                        "status": "failed",
+                        "error": str(e),
+                    })
+
+            await emit({"phase": "voice_clone", "status": "complete"})
+
+        # =====================================================
         # Phase 3: TTS Synthesis
         # =====================================================
         to_synthesize = [seg for seg in state.segments if seg.translated_text]
@@ -304,7 +348,12 @@ async def run_pipeline(
         save_state(state)
 
         # Pre-assign voices to all speakers so each speaker gets a unique voice
+        # If voice cloning is enabled, use cloned voices; otherwise use random preset voices
         for seg in state.segments:
+            if enable_voice_clone:
+                cloned = voice_clone_service.get_cloned_voice(video_id, seg.speaker_id)
+                if cloned:
+                    continue  # Will use cloned voice below
             tts_service.assign_voice_for_speaker(video_id, seg.speaker_id)
 
         voice_map = tts_service.get_speaker_voice_map(video_id)
@@ -312,8 +361,12 @@ async def run_pipeline(
 
         for i, seg in enumerate(to_synthesize):
             try:
-                # Use the voice assigned to this segment's speaker
-                voice = tts_service.assign_voice_for_speaker(video_id, seg.speaker_id)
+                # Use cloned voice if available, otherwise fall back to assigned preset voice
+                voice = None
+                if enable_voice_clone:
+                    voice = voice_clone_service.get_cloned_voice(video_id, seg.speaker_id)
+                if not voice:
+                    voice = tts_service.assign_voice_for_speaker(video_id, seg.speaker_id)
                 audio_file_path = await tts_service.synthesize_speech(
                     video_id, seg.id, seg.translated_text, voice=voice
                 )

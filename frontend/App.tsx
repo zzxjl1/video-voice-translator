@@ -7,7 +7,7 @@ import Timeline from './components/Timeline';
 import SettingsModal from './components/SettingsModal';
 import StreamingLog from './components/StreamingLog';
 import { TranscriptionPanel } from './components/TranscriptionPanel';
-import { uploadVideo, translateScript, synthesizeSpeech, processVideo, getVideoStatus, resetVideo } from './services/apiService';
+import { uploadVideo, translateScript, synthesizeSpeech, processVideo, getVideoStatus, resetVideo, getVoiceCloneStatus, generateVoicePreview } from './services/apiService';
 import { getAudioWaveform, getAudioWaveformFromUrl } from './utils/audioProcessor';
 
 function detectBrowserLanguage(): string {
@@ -35,6 +35,10 @@ const App: React.FC = () => {
   // Batch processing state
   const [isBatchProcessing, setIsBatchProcessing] = useState<boolean>(false);
   const [batchProgress, setBatchProgress] = useState<string>('');
+
+  // Voice clone state
+  const [clonedVoices, setClonedVoices] = useState<Record<string, string>>({});
+  const [previewingSpeaker, setPreviewingSpeaker] = useState<string>('');
 
   // Settings State
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -159,6 +163,12 @@ const App: React.FC = () => {
               setWaveform(peaks);
               setIsAudioLoading(false);
             });
+            // Load cloned voice map if any
+            getVoiceCloneStatus(idFromUrl).then(res => {
+              if (res.cloned_voices && Object.keys(res.cloned_voices).length > 0) {
+                setClonedVoices(res.cloned_voices);
+              }
+            }).catch(() => {});
           }
         })
         .catch(err => {
@@ -383,6 +393,22 @@ const App: React.FC = () => {
           }
         }
 
+        // Voice Clone events
+        if (event.phase === 'voice_clone') {
+          if (event.status === 'started') {
+            setRawLog(prev => prev + `\n--- Voice Cloning (${event.total} speakers) ---\n`);
+          } else if (event.status === 'cloning') {
+            setRawLog(prev => prev + `[${event.progress}/${event.total}] Cloning voice for ${event.speaker_id}...\n`);
+          } else if (event.status === 'done' && event.voice_id) {
+            setClonedVoices(prev => ({ ...prev, [event.speaker_id]: event.voice_id }));
+            setRawLog(prev => prev + `[${event.progress}/${event.total}] ${event.speaker_id}: ${event.voice_id}\n`);
+          } else if (event.status === 'failed') {
+            setRawLog(prev => prev + `[${event.progress}/${event.total}] ${event.speaker_id}: FAILED (${event.error})\n`);
+          } else if (event.status === 'complete') {
+            setRawLog(prev => prev + 'Voice cloning complete.\n');
+          }
+        }
+
         // TTS events
         if (event.phase === 'tts') {
           if (event.status === 'started') {
@@ -508,6 +534,11 @@ const App: React.FC = () => {
                 setWaveform(peaks);
                 setIsAudioLoading(false);
               });
+              getVoiceCloneStatus(idFromUrl).then(res => {
+                if (res.cloned_voices && Object.keys(res.cloned_voices).length > 0) {
+                  setClonedVoices(res.cloned_voices);
+                }
+              }).catch(() => {});
             }
           })
           .catch(err => {
@@ -591,6 +622,11 @@ const App: React.FC = () => {
               setWaveform(peaks);
               setIsAudioLoading(false);
             });
+            getVoiceCloneStatus(uploadResult.video_id).then(res => {
+              if (res.cloned_voices && Object.keys(res.cloned_voices).length > 0) {
+                setClonedVoices(res.cloned_voices);
+              }
+            }).catch(() => {});
             return;
           }
 
@@ -775,6 +811,20 @@ const App: React.FC = () => {
     };
   }, [segments, currentTime]);
 
+  const handlePreviewVoice = useCallback(async (speakerId: string) => {
+    if (!videoId || previewingSpeaker) return;
+    setPreviewingSpeaker(speakerId);
+    try {
+      const audioUrl = await generateVoicePreview(videoId, speakerId);
+      const audio = new Audio(audioUrl + '?t=' + Date.now());
+      audio.play().catch(e => console.warn("Preview play blocked:", e));
+      audio.onended = () => setPreviewingSpeaker('');
+    } catch (e) {
+      console.error("Voice preview failed:", e);
+      setPreviewingSpeaker('');
+    }
+  }, [videoId, previewingSpeaker]);
+
   const handleSeek = useCallback((time: number) => {
     if (videoRef.current) {
       videoRef.current.currentTime = time;
@@ -920,6 +970,9 @@ const App: React.FC = () => {
                   onSynthesize={handleSynthesizeSegment}
                   currentTime={currentTime}
                   onSeek={handleSeek}
+                  clonedVoices={clonedVoices}
+                  onPreviewVoice={handlePreviewVoice}
+                  previewingSpeaker={previewingSpeaker}
                 />
               </div>
             </div>

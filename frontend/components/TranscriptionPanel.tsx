@@ -11,6 +11,9 @@ interface TranscriptionPanelProps {
     onSegmentUpdate: (segmentId: string, updates: Partial<TranscriptionSegment>) => void;
     onSynthesize: (segmentId: string) => void;
     onSeek: (time: number) => void;
+    clonedVoices?: Record<string, string>;
+    onPreviewVoice?: (speakerId: string) => void;
+    previewingSpeaker?: string;
 }
 
 
@@ -100,7 +103,10 @@ const SegmentCard: React.FC<{
     onSegmentUpdate: (segmentId: string, updates: Partial<TranscriptionSegment>) => void;
     onSynthesize: (segmentId: string) => void;
     onSeek: (time: number) => void;
-}> = memo(({ segment, speaker, isActive, onSegmentUpdate, onSynthesize, onSeek }) => {
+    hasClonedVoice?: boolean;
+    onPreviewVoice?: (speakerId: string) => void;
+    isPreviewingVoice?: boolean;
+}> = memo(({ segment, speaker, isActive, onSegmentUpdate, onSynthesize, onSeek, hasClonedVoice, onPreviewVoice, isPreviewingVoice }) => {
     const speakerColor = speaker ? getSpeakerColor(speaker.id) : '#9ca3af';
 
     // Calculate speed stats
@@ -126,6 +132,33 @@ const SegmentCard: React.FC<{
                     <span className="text-[11px] font-bold uppercase tracking-[0.1em] text-gray-500">
                         {speaker?.name || '...'}
                     </span>
+                    {hasClonedVoice && onPreviewVoice && (
+                        <button
+                            onClick={() => onPreviewVoice(segment.speakerId)}
+                            disabled={isPreviewingVoice}
+                            className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider transition-all ${
+                                isPreviewingVoice
+                                    ? 'bg-purple-100 text-purple-400 cursor-wait'
+                                    : 'bg-purple-50 text-purple-600 hover:bg-purple-100 hover:scale-105 active:scale-95'
+                            } border border-purple-200`}
+                            title="Preview cloned voice"
+                        >
+                            {isPreviewingVoice ? (
+                                <>
+                                    <span className="w-1 h-1 bg-purple-400 rounded-full animate-bounce [animation-delay:-0.15s]"></span>
+                                    <span className="w-1 h-1 bg-purple-400 rounded-full animate-bounce"></span>
+                                    <span>Generating...</span>
+                                </>
+                            ) : (
+                                <>
+                                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                                    </svg>
+                                    Cloned
+                                </>
+                            )}
+                        </button>
+                    )}
                 </div>
                 <div className="flex items-center gap-3">
                     {segment.actualDuration && (segment.actualDuration / (segment.endTime - segment.startTime) > 1.875 || segment.actualDuration / (segment.endTime - segment.startTime) < 0.5) && (
@@ -235,7 +268,8 @@ const SegmentCard: React.FC<{
 });
 
 export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = memo(({
-    segments, speakers, isTranscribing, currentTime, onSegmentUpdate, onSynthesize, onSeek
+    segments, speakers, isTranscribing, currentTime, onSegmentUpdate, onSynthesize, onSeek,
+    clonedVoices, onPreviewVoice, previewingSpeaker
 }) => {
     const speakerMap = new Map(speakers.map(s => [s.id, s]));
     const listRef = React.useRef<HTMLDivElement>(null);
@@ -298,6 +332,9 @@ export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = memo(({
                                 onSegmentUpdate={onSegmentUpdate}
                                 onSynthesize={onSynthesize}
                                 onSeek={onSeek}
+                                hasClonedVoice={!!(clonedVoices && clonedVoices[segment.speakerId])}
+                                onPreviewVoice={onPreviewVoice}
+                                isPreviewingVoice={previewingSpeaker === segment.speakerId}
                             />
                         ))}
                         {isTranscribing && (

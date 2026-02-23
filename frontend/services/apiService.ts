@@ -278,3 +278,36 @@ export async function resetVideo(videoId: string): Promise<void> {
     throw new Error(err.detail || 'Reset failed');
   }
 }
+
+
+/**
+ * Get voice clone status for all speakers.
+ */
+export async function getVoiceCloneStatus(videoId: string): Promise<{ cloned_voices: Record<string, string> }> {
+  const response = await fetch(`${API_BASE}/videos/${videoId}/voice-clone/status`);
+
+  if (!response.ok) {
+    return { cloned_voices: {} };
+  }
+
+  return response.json();
+}
+
+
+/**
+ * Generate a voice clone preview for a speaker (POST triggers generation).
+ * Returns the audio URL for playback.
+ */
+export async function generateVoicePreview(videoId: string, speakerId: string): Promise<string> {
+  const response = await fetch(`${API_BASE}/videos/${videoId}/voice-clone/${encodeURIComponent(speakerId)}/preview`, {
+    method: 'POST',
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(err.detail || 'Voice preview generation failed');
+  }
+
+  // The POST returns the audio file directly — use the GET URL for playback
+  return `${API_BASE}/videos/${videoId}/voice-clone/${encodeURIComponent(speakerId)}/preview`;
+}

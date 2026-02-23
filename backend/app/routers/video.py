@@ -35,6 +35,7 @@ from app.schemas import (
 )
 from app.services import asr_service, llm_service, separation_service, tts_service
 from app.services import pipeline_service
+from app.services import voice_clone_service
 
 logger = logging.getLogger(__name__)
 
@@ -336,8 +337,19 @@ async def synthesize_speech(video_id: str, req: TTSRequest):
         raise HTTPException(status_code=404, detail="Video not found")
 
     try:
+        # Resolve voice: explicit request > cloned voice > speaker-assigned voice
+        voice = req.voice
+        if not voice:
+            # Find which speaker this segment belongs to
+            seg_obj = next((s for s in state.segments if s.id == req.segment_id), None)
+            if seg_obj:
+                cloned = voice_clone_service.get_cloned_voice(video_id, seg_obj.speaker_id)
+                if cloned:
+                    voice = cloned
+                    logger.info(f"[{video_id}] Using cloned voice {voice} for segment {req.segment_id} (speaker {seg_obj.speaker_id})")
+
         await tts_service.synthesize_speech(
-            video_id, req.segment_id, req.text, req.voice
+            video_id, req.segment_id, req.text, voice
         )
         logger.info(f"[{video_id}] TTS synthesis complete (Segment: {req.segment_id})")
 
@@ -583,3 +595,75 @@ async def serve_segment_audio(video_id: str, segment_id: str):
         raise HTTPException(status_code=404, detail="Segment audio not found")
         
     return FileResponse(audio_path, media_type="audio/mp3")
+
+
+@router.get("/{video_id}/voice-sample/{speaker_id}")
+async def serve_voice_sample(video_id: str, speaker_id: str):
+    """Serve extracted voice sample WAV for DashScope voice enrollment."""
+    from fastapi.responses import FileResponse
+
+    video_dir = get_video_dir(video_id)
+    sample_path = os.path.join(video_dir, "voice_clone", speaker_id, "sample.wav")
+
+    if not os.path.exists(sample_path):
+        raise HTTPException(status_code=404, detail="Voice sample not found")
+
+    return FileResponse(sample_path, media_type="audio/wav")
+
+
+@router.get("/{video_id}/voice-clone/status")
+async def get_voice_clone_status(video_id: str):
+    """Get voice clone status for all speakers of a video."""
+    import json as _json
+
+    video_dir = get_video_dir(video_id)
+    clone_map_path = os.path.join(video_dir, "voice_clone", "voice_clone_map.json")
+
+    if not os.path.exists(clone_map_path):
+        return {"video_id": video_id, "cloned_voices": {}}
+
+    try:
+        with open(clone_map_path, "r") as f:
+            clone_map = _json.load(f)
+        return {"video_id": video_id, "cloned_voices": clone_map}
+    except Exception:
+        return {"video_id": video_id, "cloned_voices": {}}
+
+
+@router.post("/{video_id}/voice-clone/{speaker_id}/preview")
+async def preview_cloned_voice(video_id: str, speaker_id: str):
+    """Generate and serve a short TTS preview using the cloned voice."""
+    from fastapi.responses import FileResponse
+
+    state = get_state(video_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # Determine target language from state or default
+    target_language = "Chinese"  # default
+
+    try:
+        preview_path = await voice_clone_service.preview_cloned_voice(
+            video_id, speaker_id, target_language
+        )
+        if not preview_path or not os.path.exists(preview_path):
+            raise HTTPException(status_code=404, detail="No cloned voice available for this speaker")
+
+        return FileResponse(preview_path, media_type="audio/mp3")
+    except Exception as e:
+        logger.error(f"[{video_id}] Voice preview failed for {speaker_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{video_id}/voice-clone/{speaker_id}/preview")
+async def serve_voice_preview(video_id: str, speaker_id: str):
+    """Serve previously generated voice preview audio."""
+    from fastapi.responses import FileResponse
+
+    video_dir = get_video_dir(video_id)
+    preview_path = os.path.join(video_dir, "voice_clone", speaker_id, "preview.mp3")
+
+    if not os.path.exists(preview_path):
+        raise HTTPException(status_code=404, detail="Voice preview not found. Generate one first via POST.")
+
+    return FileResponse(preview_path, media_type="audio/mp3")
