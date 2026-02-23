@@ -8,6 +8,7 @@ interface SettingsModalProps {
     onVoiceCloneChange: (v: boolean) => void;
     enableBgmSeparation: boolean;
     onBgmSeparationChange: (v: boolean) => void;
+    bgmSeparationLocked?: boolean;
 }
 
 const InfoTooltip: React.FC<{ text: string }> = ({ text }) => {
@@ -33,7 +34,7 @@ const InfoTooltip: React.FC<{ text: string }> = ({ text }) => {
     );
 };
 
-const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, enableVoiceClone, onVoiceCloneChange, enableBgmSeparation, onBgmSeparationChange }) => {
+const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, enableVoiceClone, onVoiceCloneChange, enableBgmSeparation, onBgmSeparationChange, bgmSeparationLocked }) => {
     if (!isOpen) return null;
 
     return (
@@ -60,12 +61,12 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, enableVo
 
                     <div className="flex items-center justify-between py-3 px-4 bg-gray-50 rounded-xl">
                         <div className="flex items-center">
-                            <span className="text-sm font-medium text-gray-700">BGM Separation</span>
-                            <InfoTooltip text="Separate background music from vocals before processing. Produces cleaner results but takes longer. Recommended for videos with music." />
+                            <span className={`text-sm font-medium ${bgmSeparationLocked ? 'text-gray-400' : 'text-gray-700'}`}>BGM Separation</span>
+                            <InfoTooltip text={bgmSeparationLocked ? "BGM Separation is required when Voice Cloning is enabled." : "Separate background music from vocals before processing. Produces cleaner results but takes longer. Recommended for videos with music."} />
                         </div>
                         <button
-                            onClick={() => onBgmSeparationChange(!enableBgmSeparation)}
-                            className={`relative w-10 h-[22px] rounded-full transition-colors duration-200 ${enableBgmSeparation ? 'bg-claude-accent' : 'bg-gray-300'}`}
+                            onClick={() => !bgmSeparationLocked && onBgmSeparationChange(!enableBgmSeparation)}
+                            className={`relative w-10 h-[22px] rounded-full transition-colors duration-200 ${bgmSeparationLocked ? 'bg-claude-accent/50 cursor-not-allowed' : enableBgmSeparation ? 'bg-claude-accent' : 'bg-gray-300'}`}
                         >
                             <span className={`absolute top-[2px] left-[2px] w-[18px] h-[18px] bg-white rounded-full shadow transition-transform duration-200 ${enableBgmSeparation ? 'translate-x-[18px]' : ''}`} />
                         </button>

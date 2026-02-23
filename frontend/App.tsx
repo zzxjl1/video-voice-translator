@@ -42,6 +42,15 @@ const App: React.FC = () => {
   const [enableVoiceClone, setEnableVoiceClone] = useState(false);
   const [enableBgmSeparation, setEnableBgmSeparation] = useState(true);
 
+  const handleVoiceCloneChange = (v: boolean) => {
+    setEnableVoiceClone(v);
+    if (v) setEnableBgmSeparation(true);
+  };
+  const handleBgmSeparationChange = (v: boolean) => {
+    if (enableVoiceClone) return;
+    setEnableBgmSeparation(v);
+  };
+
   // Streaming Log State
   const [isLogOpen, setIsLogOpen] = useState(false);
   const [rawLog, setRawLog] = useState('');
@@ -785,9 +794,10 @@ const App: React.FC = () => {
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         enableVoiceClone={enableVoiceClone}
-        onVoiceCloneChange={setEnableVoiceClone}
+        onVoiceCloneChange={handleVoiceCloneChange}
         enableBgmSeparation={enableBgmSeparation}
-        onBgmSeparationChange={setEnableBgmSeparation}
+        onBgmSeparationChange={handleBgmSeparationChange}
+        bgmSeparationLocked={enableVoiceClone}
       />
 
       <StreamingLog
@@ -805,9 +815,10 @@ const App: React.FC = () => {
           targetLanguage={targetLanguage}
           onLanguageChange={setTargetLanguage}
           enableVoiceClone={enableVoiceClone}
-          onVoiceCloneChange={setEnableVoiceClone}
+          onVoiceCloneChange={handleVoiceCloneChange}
           enableBgmSeparation={enableBgmSeparation}
-          onBgmSeparationChange={setEnableBgmSeparation}
+          onBgmSeparationChange={handleBgmSeparationChange}
+          bgmSeparationLocked={enableVoiceClone}
         />
       ) : (
         <div className="h-screen flex flex-col bg-claude-bg text-claude-text font-sans selection:bg-claude-accent/20 overflow-hidden">
