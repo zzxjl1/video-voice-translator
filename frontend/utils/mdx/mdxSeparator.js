@@ -29,32 +29,59 @@
 import { hannWindow, istft, planChunks, stft } from './mdxDsp.js';
 
 /**
- * Defaults for UVR-MDX-NET-Inst_HQ_3.onnx.
+ * DSP parameters are deliberately NOT defined here.
  *
- * `nFft`/`dimF`/`segmentSize` are pinned by the ONNX graph, whose input is
- * `[batch, 4, 3072, 256]` (4 = 2 channels x real/imag, 3072 = dim_f,
- * 256 = dim_t). `compensate` comes from audio-separator's model data and only
- * affects the derived (secondary) stem.
+ * They are owned by the server (`GET /api/models/separator`, produced from
+ * `config.SEPARATOR_PARAMS`) and validated by `validateSeparatorParams()`
+ * below. Keeping them out of the bundle means:
+ *   - shipping no readable tuning constants to the client,
+ *   - being able to retune (e.g. `overlap` for speed/quality) without
+ *     rebuilding or redeploying the frontend, and
+ *   - a single source of truth, so the client can never silently disagree
+ *     with the model the server hands out.
  *
- * `nFft = 6144` follows from UVR's convention `dim_f = n_fft / 2` and was
- * confirmed empirically against the model —
- * see `frontend/scripts/test-mdx-model.mjs`.
- *
- * The server sends these via `GET /api/models/separator`, so nothing here is
- * authoritative; this is only a fallback default.
+ * @typedef {object} SeparatorParams
+ * @property {number} nFft        STFT size (pinned by the model graph)
+ * @property {number} dimF        retained frequency bins
+ * @property {number} segmentSize spectrogram frames per chunk (model input)
+ * @property {number} [overlap]   chunk overlap, 0..0.9
+ * @property {number} [compensate] secondary-stem scaling
+ * @property {string} [primaryStem] 'instrumental' | 'vocals'
+ * @property {number} [zeroLowBins] lowest bins zeroed before inference
+ * @property {number} [normalizationThreshold] peak normalisation target
  */
-export const MDX_INST_HQ_3_PARAMS = {
-  nFft: 6144,
-  dimF: 3072,
-  segmentSize: 256,
-  overlap: 0.25,
-  compensate: 1.035,
-  primaryStem: 'instrumental',
-  // audio-separator zeroes the lowest 3 frequency bins before inference.
-  zeroLowBins: 3,
-  // Peak normalisation target used by CommonSeparator.
-  normalizationThreshold: 1.0,
-};
+
+/**
+ * Reject incomplete or nonsensical parameters instead of silently falling back
+ * to a hardcoded constant — a wrong `nFft` would not crash, it would just
+ * produce subtly broken audio.
+ *
+ * @param {any} params
+ * @returns {SeparatorParams}
+ */
+export function validateSeparatorParams(params) {
+  const required = ['nFft', 'dimF', 'segmentSize'];
+  if (!params || typeof params !== 'object') {
+    throw new Error('Separator parameters are missing (expected them from /api/models/separator)');
+  }
+  for (const key of required) {
+    const value = params[key];
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+      throw new Error(`Separator parameter "${key}" is missing or invalid: ${JSON.stringify(value)}`);
+    }
+  }
+  const { nFft, dimF, segmentSize, overlap } = params;
+  if (dimF > nFft / 2 + 1) {
+    throw new Error(`Separator parameter dimF (${dimF}) exceeds nFft/2+1 (${nFft / 2 + 1})`);
+  }
+  if (segmentSize < 2) {
+    throw new Error(`Separator parameter segmentSize must be >= 2, got ${segmentSize}`);
+  }
+  if (overlap !== undefined && (typeof overlap !== 'number' || overlap < 0 || overlap >= 1)) {
+    throw new Error(`Separator parameter overlap must be in [0, 1), got ${overlap}`);
+  }
+  return params;
+}
 
 /**
  * Zero the first `count` frequency bins of a UVR-layout spectrogram.
@@ -76,15 +103,16 @@ function zeroLowFrequencyBins(data, dimF, frames, count) {
  *
  * @param {(spec: Float32Array, frames: number, dimF: number) => Promise<Float32Array>} runModel
  * @param {ArrayLike<number>[]} inputChannels
- * @param {object} [params]
+ * @param {SeparatorParams} params server-supplied, see validateSeparatorParams
  * @param {{onProgress?: (done: number, total: number) => void, signal?: {aborted: boolean}}} [opts]
  * @returns {Promise<{instrumental: Float32Array[], vocals: Float32Array[], stats: object}>}
  */
-export async function separateStems(runModel, inputChannels, params = MDX_INST_HQ_3_PARAMS, opts = {}) {
+export async function separateStems(runModel, inputChannels, params, opts = {}) {
+  validateSeparatorParams(params);
   const { onProgress, signal } = opts;
   const nFft = params.nFft;
   const dimF = params.dimF;
-  const segmentSize = params.segmentSize ?? 256;
+  const segmentSize = params.segmentSize;
   const overlap = params.overlap ?? 0.25;
   const compensate = params.compensate ?? 1.0;
 
@@ -215,12 +243,13 @@ export async function separateStems(runModel, inputChannels, params = MDX_INST_H
  *
  * @param {(spec: Float32Array, frames: number, dimF: number) => Promise<Float32Array>} runModel
  * @param {Float32Array[]} channels
- * @param {object} [params]
+ * @param {SeparatorParams} params server-supplied
  * @param {{sampleRate?: number, windowSeconds?: number, fadeSeconds?: number,
  *          onProgress?: (done: number, total: number, window: number, windows: number) => void,
  *          signal?: {aborted: boolean}}} [opts]
  */
-export async function separateTrack(runModel, channels, params = MDX_INST_HQ_3_PARAMS, opts = {}) {
+export async function separateTrack(runModel, channels, params, opts = {}) {
+  validateSeparatorParams(params);
   const sampleRate = opts.sampleRate ?? 44100;
   const windowSeconds = opts.windowSeconds ?? 45;
   const fadeSeconds = opts.fadeSeconds ?? 0.75;

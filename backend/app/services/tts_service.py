@@ -24,10 +24,20 @@ _speaker_voice_map: dict[str, dict[str, str]] = {}
 _registry_lock = threading.Lock()
 
 
-def assign_voice_for_speaker(video_id: str, speaker_id: str) -> str:
+def assign_voice_for_speaker(
+    video_id: str,
+    speaker_id: str,
+    language: str | None = None,
+) -> str:
     """
     Assign a unique voice to a speaker within a video.
-    Uses random selection without replacement so different speakers get different voices.
+
+    Voices are drawn from the pool that can actually synthesize `language`.
+    System voice IDs are model- *and* language-specific: most of the
+    `qwen-audio-3.1-tts-flash` "精品中文" voices only speak Mandarin, and
+    handing one of those to an English dub is rejected by the service rather
+    than silently ignored. Selection is random without replacement so
+    different speakers get different voices.
     """
     if video_id not in _speaker_voice_map:
         _speaker_voice_map[video_id] = {}
@@ -37,17 +47,21 @@ def assign_voice_for_speaker(video_id: str, speaker_id: str) -> str:
     if speaker_id in mapping:
         return mapping[speaker_id]
 
-    # Find voices not yet assigned in this video
+    pool = config.voices_for_language(language)
     used_voices = set(mapping.values())
-    available = [v for v in config.TTS_VOICES if v not in used_voices]
+    available = [v for v in pool if v not in used_voices]
 
     if not available:
-        # All voices used, allow reuse
-        available = list(config.TTS_VOICES)
+        # More speakers than voices — reuse, the caller usually has voice
+        # cloning enabled for multi-speaker videos anyway.
+        available = list(pool)
 
     voice = random.choice(available)
     mapping[speaker_id] = voice
-    logger.info(f"[{video_id}] Assigned voice '{voice}' to speaker '{speaker_id}'")
+    logger.info(
+        f"[{video_id}] Assigned voice '{voice}' to speaker '{speaker_id}' "
+        f"(language={language or 'any'}, pool size={len(pool)})"
+    )
     return voice
 
 

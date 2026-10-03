@@ -1,12 +1,31 @@
 """
-Voice Cloning Service using DashScope CosyVoice VoiceEnrollment.
+Voice Cloning Service using DashScope voice enrollment.
 
 Flow:
 1. For each speaker, collect all vocal segments sorted by time
-2. Concatenate them with 2s silence gaps into a sample audio (stop when max duration reached)
+2. Concatenate them with silence gaps into a sample audio (stop when max duration reached)
 3. Upload to public URL, call DashScope voice enrollment API
 4. Poll until voice is ready (status=OK)
-5. Return voice_id for use in TTS synthesis
+5. Persist the voice_id *and the model it was enrolled for*
+
+Voice ids are model-scoped
+--------------------------
+The official docs are explicit: "音色在创建时通过 target_model 绑定到特定的语音
+合成模型，不能跨模型使用" — a voice created for one model cannot be synthesized
+with another. Reusing one raises `InvalidParameter` / `Engine error [411]`, and
+because `tts_results.json` caches per-segment audio, a model switch could
+otherwise keep shipping voice ids that no longer work.
+
+`voice_clone_map.json` therefore records `target_model` next to every voice id:
+
+    {"Speaker 1": {"voice_id": "...", "target_model": "qwen-audio-3.1-tts-flash",
+                   "created_at": 1759536000}}
+
+Entries written by older versions are plain strings
+(`{"Speaker 1": "voice-id"}`); those carry no model, so they are treated as
+invalid and re-cloned. That costs one extra enrollment per speaker after an
+upgrade — voice creation is free for Qwen-Audio-TTS — and is far better than
+silently producing broken audio.
 """
 import asyncio
 import json
@@ -26,10 +45,133 @@ logger = logging.getLogger(__name__)
 dashscope.api_key = config.DASHSCOPE_API_KEY
 
 # In-memory cache: {video_id: {speaker_id: voice_id}}
+#
+# Only ever populated with voices whose target_model matches the current TTS
+# model, so a model switch cannot leak a stale voice id into synthesis.
 _cloned_voice_map: dict[str, dict[str, str]] = {}
 
-# Target model for voice cloning — must match TTS model
-CLONE_TARGET_MODEL = config.TTS_MODEL  # cosyvoice-v3-flash
+CLONE_MAP_FILENAME = "voice_clone_map.json"
+
+
+def clone_target_model() -> str:
+    """
+    The model cloned voices are enrolled against.
+
+    Always follows `config.TTS_MODEL` so the enrollment model and the synthesis
+    model can never drift apart (they must match exactly, or synthesis fails).
+    """
+    return config.TTS_MODEL
+
+
+def _clone_map_path(video_dir: str) -> str:
+    return os.path.join(video_dir, "voice_clone", CLONE_MAP_FILENAME)
+
+
+def load_clone_map(video_dir: str) -> dict[str, dict]:
+    """
+    Read `voice_clone_map.json`, normalising the legacy shape.
+
+    Current: `{"Speaker 1": {"voice_id": ..., "target_model": ..., "created_at": ...}}`
+    Legacy:  `{"Speaker 1": "voice-id"}`
+
+    Legacy entries get `target_model = None`, which `_cached_voice_for_model`
+    treats as invalid so they are re-cloned rather than reused against an
+    unknown model.
+    """
+    path = _clone_map_path(video_dir)
+    if not os.path.exists(path):
+        return {}
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except Exception as e:
+        logger.warning(f"[Clone] Failed to read {path}: {e}")
+        return {}
+
+    if not isinstance(raw, dict):
+        logger.warning(f"[Clone] Unexpected clone map shape in {path}, ignoring")
+        return {}
+
+    normalised: dict[str, dict] = {}
+    for speaker_id, entry in raw.items():
+        if isinstance(entry, str):
+            normalised[speaker_id] = {"voice_id": entry, "target_model": None}
+        elif isinstance(entry, dict) and entry.get("voice_id"):
+            normalised[speaker_id] = {
+                "voice_id": entry["voice_id"],
+                "target_model": entry.get("target_model"),
+                "created_at": entry.get("created_at"),
+            }
+        else:
+            logger.warning(f"[Clone] Skipping malformed clone entry for {speaker_id}")
+    return normalised
+
+
+def save_clone_entry(
+    video_dir: str, speaker_id: str, voice_id: str, target_model: str
+) -> None:
+    """Persist one speaker -> voice_id mapping, tagged with its target model."""
+    path = _clone_map_path(video_dir)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    raw: dict = {}
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                raw = loaded
+        except Exception:
+            raw = {}
+
+    raw[speaker_id] = {
+        "voice_id": voice_id,
+        "target_model": target_model,
+        "created_at": int(time.time()),
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(raw, f, ensure_ascii=False, indent=2)
+
+    logger.info(
+        f"[Clone] Saved {speaker_id} -> {voice_id} "
+        f"(target_model={target_model}) to {path}"
+    )
+
+
+def _cached_voice_for_model(video_dir: str, speaker_id: str) -> Optional[str]:
+    """
+    Cached voice id for a speaker, but ONLY when it was created for the model
+    currently configured. Returns None otherwise, which triggers a re-clone.
+
+    Cheap on purpose (one small file read, no network): this runs once per
+    segment via `get_cloned_voice`.
+    """
+    entry = load_clone_map(video_dir).get(speaker_id)
+    if not entry:
+        return None
+
+    voice_id = entry.get("voice_id")
+    entry_model = entry.get("target_model")
+    current_model = clone_target_model()
+
+    if not entry_model:
+        logger.info(
+            f"[Clone] Cached voice for {speaker_id} predates model tracking; "
+            f"re-cloning against '{current_model}'."
+        )
+        return None
+
+    if entry_model != current_model:
+        logger.info(
+            f"[Clone] Cached voice for {speaker_id} was created for "
+            f"'{entry_model}' but the TTS model is now '{current_model}'; "
+            "re-cloning (cloned voices cannot be used across models)."
+        )
+        return None
+
+    return voice_id
+
 
 # Sample constraints
 SAMPLE_MAX_DURATION = 30.0   # stop appending after this
@@ -259,37 +401,38 @@ async def clone_voice_for_speaker(
         logger.info(f"[Clone] Hit memory cache for {speaker_id}: {voice_id}")
         return voice_id
 
-    # Check disk cache
     video_dir = get_video_dir(video_id)
-    clone_dir = os.path.join(video_dir, "voice_clone")
-    clone_map_path = os.path.join(clone_dir, "voice_clone_map.json")
-    if os.path.exists(clone_map_path):
+
+    # Check disk cache. The model-mismatch check happens first because it is a
+    # cheap local read; the remote liveness probe is only worth paying for a
+    # voice that is actually usable with the current model.
+    cached_voice_id = _cached_voice_for_model(video_dir, speaker_id)
+    if cached_voice_id:
+        logger.info(
+            f"[Clone] Disk cache hit for {speaker_id}: {cached_voice_id}, verifying..."
+        )
         try:
-            with open(clone_map_path, "r") as f:
-                disk_map = json.load(f)
-            logger.info(f"[Clone] Disk cache found: {clone_map_path}, entries={list(disk_map.keys())}")
-            if speaker_id in disk_map:
-                voice_id = disk_map[speaker_id]
-                logger.info(f"[Clone] Found {speaker_id} in disk cache: {voice_id}, verifying...")
-                # Verify voice is still valid
-                try:
-                    service = VoiceEnrollmentService()
-                    info = service.query_voice(voice_id=voice_id)
-                    status = info.get("status", "UNKNOWN")
-                    logger.info(f"[Clone] Voice {voice_id} status={status}")
-                    if status == "OK":
-                        if video_id not in _cloned_voice_map:
-                            _cloned_voice_map[video_id] = {}
-                        _cloned_voice_map[video_id][speaker_id] = voice_id
-                        logger.info(f"[Clone] Restored cloned voice from disk for {speaker_id}: {voice_id}")
-                        return voice_id
-                    else:
-                        logger.warning(f"[Clone] Cached voice {voice_id} status={status}, re-cloning...")
-                except Exception as e:
-                    logger.warning(f"[Clone] Failed to verify cached voice {voice_id}: {e}, re-cloning...")
+            service = VoiceEnrollmentService()
+            info = service.query_voice(voice_id=cached_voice_id)
+            status = info.get("status", "UNKNOWN")
+            logger.info(f"[Clone] Voice {cached_voice_id} status={status}")
+            if status == "OK":
+                _cloned_voice_map.setdefault(video_id, {})[speaker_id] = cached_voice_id
+                logger.info(
+                    f"[Clone] Restored cloned voice from disk for {speaker_id}: "
+                    f"{cached_voice_id}"
+                )
+                return cached_voice_id
+            # Voices idle for over a year are deleted server-side, so a
+            # non-OK status is expected occasionally and means re-clone.
+            logger.warning(
+                f"[Clone] Cached voice {cached_voice_id} status={status}, re-cloning..."
+            )
         except Exception as e:
-            logger.warning(f"[Clone] Failed to read disk cache: {e}")
-            pass
+            logger.warning(
+                f"[Clone] Failed to verify cached voice {cached_voice_id}: {e}, "
+                "re-cloning..."
+            )
 
     # Step 1: Select segments and build sample audio
     vocals_path = os.path.join(video_dir, "vocals.wav")
@@ -342,15 +485,18 @@ async def clone_voice_for_speaker(
     # Prefix: only lowercase letters and digits, max 10 chars
     prefix = "".join(c for c in prefix if c.isalnum())[:10]
 
+    # Enroll against the current TTS model: the id returned here can only be
+    # synthesized by that exact model.
+    target_model = clone_target_model()
     logger.info(
         f"[Clone] Step 3: DashScope voice enrollment — "
-        f"model={CLONE_TARGET_MODEL}, prefix={prefix}, url={sample_url}"
+        f"model={target_model}, prefix={prefix}, url={sample_url}"
     )
 
     def _create_voice():
         service = VoiceEnrollmentService()
         voice_id = service.create_voice(
-            target_model=CLONE_TARGET_MODEL,
+            target_model=target_model,
             prefix=prefix,
             url=sample_url,
         )
@@ -423,55 +569,34 @@ async def clone_voice_for_speaker(
     await loop.run_in_executor(None, _poll_voice)
     logger.info(f"[Clone] Step 4 done: voice ready! voice_id={voice_id}")
 
-    # Step 5: Cache and persist
-    logger.info(f"[Clone] Step 5: Saving voice_id to cache and disk")
-    if video_id not in _cloned_voice_map:
-        _cloned_voice_map[video_id] = {}
-    _cloned_voice_map[video_id][speaker_id] = voice_id
-
-    # Save to disk
-    clone_dir = os.path.join(video_dir, "voice_clone")
-    os.makedirs(clone_dir, exist_ok=True)
-    clone_map_path = os.path.join(clone_dir, "voice_clone_map.json")
-    disk_map = {}
-    if os.path.exists(clone_map_path):
-        try:
-            with open(clone_map_path, "r") as f:
-                disk_map = json.load(f)
-        except Exception:
-            pass
-    disk_map[speaker_id] = voice_id
-    with open(clone_map_path, "w") as f:
-        json.dump(disk_map, f, indent=2)
-    logger.info(f"[Clone] Saved to {clone_map_path}: {disk_map}")
+    # Step 5: Cache and persist, tagged with the model it was created for
+    logger.info("[Clone] Step 5: Saving voice_id to cache and disk")
+    _cloned_voice_map.setdefault(video_id, {})[speaker_id] = voice_id
+    save_clone_entry(video_dir, speaker_id, voice_id, target_model)
     logger.info(
         f"[Clone] ========== Voice cloning COMPLETE for {speaker_id}: "
-        f"voice_id={voice_id} =========="
+        f"voice_id={voice_id} (target_model={target_model}) =========="
     )
 
     return voice_id
 
 
 def get_cloned_voice(video_id: str, speaker_id: str) -> Optional[str]:
-    """Get cached cloned voice_id for a speaker, or None."""
-    if video_id in _cloned_voice_map:
-        return _cloned_voice_map[video_id].get(speaker_id)
+    """
+    Cached cloned voice_id for a speaker, or None.
 
-    # Try disk
-    video_dir = get_video_dir(video_id)
-    clone_map_path = os.path.join(video_dir, "voice_clone", "voice_clone_map.json")
-    if os.path.exists(clone_map_path):
-        try:
-            with open(clone_map_path, "r") as f:
-                disk_map = json.load(f)
-            if speaker_id in disk_map:
-                if video_id not in _cloned_voice_map:
-                    _cloned_voice_map[video_id] = {}
-                _cloned_voice_map[video_id][speaker_id] = disk_map[speaker_id]
-                return disk_map[speaker_id]
-        except Exception:
-            pass
-    return None
+    Only returns a voice that was enrolled against the *current* TTS model:
+    cloned voices cannot cross models, so a stale id would be rejected at
+    synthesis time. Deliberately a cheap disk lookup with no network call —
+    the pipeline calls this once per segment.
+    """
+    if video_id in _cloned_voice_map and speaker_id in _cloned_voice_map[video_id]:
+        return _cloned_voice_map[video_id][speaker_id]
+
+    voice_id = _cached_voice_for_model(get_video_dir(video_id), speaker_id)
+    if voice_id:
+        _cloned_voice_map.setdefault(video_id, {})[speaker_id] = voice_id
+    return voice_id
 
 
 async def preview_cloned_voice(
@@ -508,7 +633,7 @@ async def preview_cloned_voice(
 
     def _synthesize():
         synthesizer = SpeechSynthesizer(
-            model=CLONE_TARGET_MODEL,
+            model=clone_target_model(),
             voice=voice_id,
         )
         audio = synthesizer.call(text)

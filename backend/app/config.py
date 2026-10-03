@@ -181,7 +181,10 @@ def speech_rate_value(language: str) -> float:
 # ASR (Ali DashScope, async file transcription)
 # =====================================================================
 
-ASR_MODEL = _env("ASR_MODEL", "fun-asr")
+# Model Studio's own ASR guide recommends `qwen-audio-3.1-asr-flash-filetrans`
+# for "who said what" (its exact wording), and it is the current generation:
+# 30 languages + 10 Chinese dialects, <=12h / <=2GB per file, diarization on.
+ASR_MODEL = _env("ASR_MODEL", "qwen-audio-3.1-asr-flash-filetrans")
 
 # Verified against Alibaba Cloud Model Studio docs (non-realtime ASR):
 # `diarization_enabled` is supported by Fun-ASR, Paraformer series and
@@ -197,7 +200,8 @@ ASR_DIARIZATION_MODELS = {
     if m.strip()
 }
 ASR_DIARIZATION_ENABLED = _env_bool("ASR_DIARIZATION_ENABLED", True)
-# Used when the configured model rejects `diarization_enabled`.
+# Used when the configured model rejects `diarization_enabled`. Deliberately a
+# different model family so a provider-side outage of one line still works.
 ASR_FALLBACK_MODEL = _env("ASR_FALLBACK_MODEL", "fun-asr")
 
 ASR_SERVICE_URL = _env(
@@ -212,10 +216,25 @@ ASR_MAX_WAIT = _env_int("ASR_MAX_WAIT", 600)
 
 
 # =====================================================================
-# TTS (Ali DashScope CosyVoice)
+# TTS (Ali DashScope Qwen-Audio-TTS)
 # =====================================================================
-
-TTS_MODEL = _env("TTS_MODEL", "cosyvoice-v3-flash")
+#
+# Model choice constrains the voices in two ways:
+#
+#   1. System voice IDs are MODEL-SPECIFIC. For `qwen-audio-3.1-tts-flash`
+#      every system voice carries a `_v3.1` suffix and IDs are
+#      case-sensitive. Reusing a CosyVoice voice (e.g. `longanyang`) with this
+#      model fails with `InvalidParameter` / `Engine error [411]`.
+#   2. Voice samples must match the model's language support. Most of the
+#      "精品中文" voices only synthesize Mandarin, so an English dub assigned
+#      one of them fails. That is why the pool below is grouped by language
+#      instead of being one flat list.
+#
+# Cloned voices are bound to the model they were enrolled against and cannot
+# be used with a different model (official docs). `voice_clone_service` stores
+# the model alongside each voice id so a model switch invalidates the cache
+# instead of silently shipping broken audio.
+TTS_MODEL = _env("TTS_MODEL", "qwen-audio-3.1-tts-flash")
 TTS_TIMEOUT = _env_int("TTS_TIMEOUT", 60)
 
 # Number of concurrent synthesis calls. This is I/O bound (blocking SDK call
@@ -225,20 +244,109 @@ TTS_CONCURRENCY = _env_int("TTS_CONCURRENCY", 4)
 TTS_MAX_RETRIES = _env_int("TTS_MAX_RETRIES", 2)
 
 # Audio format used for the synthesized files and the export timeline.
+# The SDK binds the sample rate to its `format` enum (default mp3 22.05 kHz);
+# export re-samples with ffmpeg, so this only sizes the mixing timeline.
 TTS_SAMPLE_RATE = _env_int("TTS_SAMPLE_RATE", 24000)
 
-# Voice pool for multi-speaker random assignment (only used when voice
-# cloning is disabled and no explicit voice is given).
+# `qwen-audio-3.1-tts-flash` voices, grouped by supported language.
+# Source: Model Studio "Qwen-Audio-TTS voice list". These four handle
+# Mandarin plus 8 dialects and 8 foreign languages, so they are the safe
+# choice for anything that is not plain Chinese or English.
+TTS_MULTILINGUAL_VOICES = [
+    "longanhuan_v3.1",      # female
+    "longanlingxin_v3.1",   # female
+    "longanfengyue_v3.1",   # female
+    "xunanchuan_v3.1",      # male
+]
+
+# 精品中文: Mandarin only.
+_TTS_VOICES_ZH = [
+    "yuxiaoyun_v3.1",
+    "qiaoxiaojiao_v3.1",
+    "xiaxiaochen_v3.1",
+    "anmingyuan_v3.1",
+    "wenhuaiqing_v3.1",
+    "anxiaolan_v3.1",
+    "xieshurou_v3.1",
+    "baiqinglan_v3.1",
+    "xuyuyuan_v3.1",
+    "anruorou_v3.1",
+    "wenhuaizhi_v3.1",
+    "xiaoxingzhi_v3.1",
+    "guyunshu_v3.1",
+    "huozhuoshi_v3.1",
+    "yeqinghe_v3.1",
+    "yunhuanhuan_v3.1",
+    "xuxiaoqiao_v3.1",
+    "baianran_v3.1",
+    "xuyanchu_v3.1",
+    "yezhiqing_v3.1",
+    "andi_v3.1",
+    "anyuqing_v3.1",
+]
+
+# 精品英文: English only.
+_TTS_VOICES_EN = [
+    "Emily_v3.1",
+    "Luna_v3.1",
+    "Eric_v3.1",
+    "Luca_v3.1",
+    "Abby_v3.1",
+    "Annie_v3.1",
+    "Ava_v3.1",
+    "Beth_v3.1",
+    "Betty_v3.1",
+    "Cally_v3.1",
+    "Cindy_v3.1",
+    "Donna_v3.1",
+    "Andy_v3.1",
+    "Brian_v3.1",
+    "David_v3.1",
+]
+
+TTS_VOICES_BY_LANGUAGE: dict[str, list[str]] = {
+    "Chinese": _TTS_VOICES_ZH + TTS_MULTILINGUAL_VOICES,
+    "English": _TTS_VOICES_EN,
+    # The multilingual set covers these; no per-language "精品" voices exist.
+    "Japanese": TTS_MULTILINGUAL_VOICES,
+    "Korean": TTS_MULTILINGUAL_VOICES,
+    "French": TTS_MULTILINGUAL_VOICES,
+    "German": TTS_MULTILINGUAL_VOICES,
+    "Portuguese": TTS_MULTILINGUAL_VOICES,
+    "Italian": TTS_MULTILINGUAL_VOICES,
+    "Vietnamese": TTS_MULTILINGUAL_VOICES,
+    "Indonesian": TTS_MULTILINGUAL_VOICES,
+    # KNOWN GAP: the four multilingual *system* voices are documented for
+    # Japanese/Korean/French/German/Portuguese/Italian/Vietnamese/Indonesian —
+    # Spanish is NOT among them, and the UI offers Spanish. Spanish therefore
+    # falls back to the multilingual pool, which may mispronounce (the docs
+    # warn "可能发音错误或语音不自然" for unsupported pairs; it is a quality
+    # issue, not an error). Voice *cloning* does cover Spanish, so for Spanish
+    # output prefer enabling voice cloning, or drop Spanish from the UI list.
+    "Spanish": TTS_MULTILINGUAL_VOICES,
+}
+
+# Fallback pool / manual override. Defaults to the multilingual set because it
+# is the only one that is safe for an unknown target language.
 TTS_VOICES = [
     v.strip()
-    for v in _env(
-        "TTS_VOICES",
-        "longanyang,longanhuan,longxiaochun_v3,longcheng_v3,longze_v3,longhua_v3,"
-        "longtian_v3,longyan_v3,longshuo_v3,longwan_v3,longanyun_v3,longanwen_v3",
-    ).split(",")
+    for v in _env("TTS_VOICES", ",".join(TTS_MULTILINGUAL_VOICES)).split(",")
     if v.strip()
 ]
-TTS_DEFAULT_VOICE = _env("TTS_DEFAULT_VOICE", "longanyang")
+TTS_DEFAULT_VOICE = _env("TTS_DEFAULT_VOICE", "longanhuan_v3.1")
+
+
+def voices_for_language(language: Optional[str]) -> list[str]:
+    """
+    Voice pool that is actually able to synthesize `language`.
+
+    Falls back to the configured `TTS_VOICES` pool when the language is unknown,
+    which prevents assigning (say) a Mandarin-only voice to an English dub —
+    that combination is rejected by the service rather than gracefully ignored.
+    """
+    if not language:
+        return TTS_VOICES
+    return TTS_VOICES_BY_LANGUAGE.get(language) or TTS_VOICES
 
 
 # =====================================================================
@@ -267,6 +375,26 @@ SEPARATION_MODEL_NAME = _env("SEPARATION_MODEL_NAME", "2_HP-UVR.pth")
 # JavaScript never has to hardcode them.
 MODELS_DIR = os.path.join(BASE_DIR, "models")
 SEPARATOR_MODEL_FILE = _env("SEPARATOR_MODEL_FILE", "UVR-MDX-NET-Inst_HQ_3.onnx")
+
+# ----- Capability tokens for the client-side compute endpoints -----
+# Signs the short-lived tokens that gate the 64 MB model download and the
+# stem upload. Set a stable value in .env; otherwise an ephemeral one is
+# generated and tokens break on every restart.
+SIGNING_SECRET = (os.environ.get("SIGNING_SECRET") or "").strip()
+if not SIGNING_SECRET:
+    import secrets as _secrets
+
+    SIGNING_SECRET = _secrets.token_urlsafe(32)
+    logger.warning(
+        "SIGNING_SECRET is not set: generated an ephemeral one. Separator tokens "
+        "will be invalidated on restart and will not work across multiple "
+        "workers. Set SIGNING_SECRET in backend/.env."
+    )
+TOKEN_TTL_SECONDS = _env_int("TOKEN_TTL_SECONDS", 1800)
+TOKEN_ISSUE_LIMIT = _env_int("TOKEN_ISSUE_LIMIT", 30)
+TOKEN_ISSUE_WINDOW = _env_int("TOKEN_ISSUE_WINDOW", 300)
+# Set false only for local debugging; the client-compute endpoints are then open.
+REQUIRE_SEPARATOR_TOKEN = _env_bool("REQUIRE_SEPARATOR_TOKEN", True)
 SEPARATOR_PARAMS = {
     # The ONNX graph fixes dim_f=3072 and dim_t=256. n_fft=6144 follows from
     # UVR's convention dim_f = n_fft/2 (verified empirically against the model:

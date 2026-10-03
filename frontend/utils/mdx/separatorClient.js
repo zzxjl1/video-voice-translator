@@ -24,14 +24,73 @@
  *   clear error and the caller can fall back to running without separation.
  */
 import { loadOrt } from './onnxRuntime.js';
-import { separateTrack } from './mdxSeparator.js';
+import { separateTrack, validateSeparatorParams } from './mdxSeparator.js';
 
 export const MODEL_SAMPLE_RATE = 44100;
 const CACHE_NAME = 'vvt-separator-models-v1';
 
 /* ------------------------------------------------------------------ *
+ * Memory hygiene
+ * ------------------------------------------------------------------ */
+
+/**
+ * Best-effort wipe of audio buffers once they are no longer needed.
+ *
+ * JavaScript gives no guarantee that this actually erases the bytes (the GC
+ * may have copied them, and the engine may keep the backing store), so treat
+ * this as hygiene rather than a security boundary. What it does guarantee is
+ * that we stop holding tens of megabytes of the user's audio alive after the
+ * work is done.
+ *
+ * @param {...any} values Float32Array / Uint8Array / ArrayBuffer instances
+ */
+export function zeroBuffers(...values) {
+  for (const value of values) {
+    if (!value) continue;
+    if (Array.isArray(value)) {
+      zeroBuffers(...value);
+      continue;
+    }
+    try {
+      if (ArrayBuffer.isView(value)) {
+        value.fill(0);
+      } else if (value instanceof ArrayBuffer) {
+        new Uint8Array(value).fill(0);
+      }
+    } catch {
+      /* detached or already released — nothing to do */
+    }
+  }
+}
+
+/* ------------------------------------------------------------------ *
  * Model download
  * ------------------------------------------------------------------ */
+
+/**
+ * Cache key deliberately excludes the token so repeated downloads with
+ * different tokens share one cache entry.
+ * @param {{download_url: string, fingerprint: string}} info
+ */
+function modelCacheKey(info) {
+  return `${info.download_url}?v=${info.fingerprint}`;
+}
+
+/** Is the model already cached? Used to size up the first-run download. */
+export async function isModelCached(info) {
+  if (typeof caches === 'undefined') return false;
+  try {
+    const cache = await caches.open(CACHE_NAME);
+    return Boolean(await cache.match(modelCacheKey(info)));
+  } catch {
+    return false;
+  }
+}
+
+export async function clearModelCache() {
+  if (typeof caches === 'undefined') return;
+  await caches.delete(CACHE_NAME);
+}
 
 /**
  * Download the model weights, streaming progress and caching the result so
@@ -39,16 +98,16 @@ const CACHE_NAME = 'vvt-separator-models-v1';
  *
  * @param {{download_url: string, fingerprint: string, size_bytes: number}} info
  * @param {(loaded: number, total: number, fromCache: boolean) => void} [onProgress]
+ * @param {string} [token] short-lived token issued by the server
  * @returns {Promise<ArrayBuffer>}
  */
-export async function fetchModelBuffer(info, onProgress) {
-  // Fingerprint in the URL so a replaced model is not served from the cache.
-  const url = `${info.download_url}?v=${info.fingerprint}`;
+export async function fetchModelBuffer(info, onProgress, token) {
+  const cacheKey = modelCacheKey(info);
 
   if (typeof caches !== 'undefined') {
     try {
       const cache = await caches.open(CACHE_NAME);
-      const hit = await cache.match(url);
+      const hit = await cache.match(cacheKey);
       if (hit) {
         const buf = await hit.arrayBuffer();
         onProgress?.(buf.byteLength, buf.byteLength, true);
@@ -59,9 +118,14 @@ export async function fetchModelBuffer(info, onProgress) {
     }
   }
 
+  const url = token ? `${cacheKey}&token=${encodeURIComponent(token)}` : cacheKey;
   const response = await fetch(url);
   if (!response.ok) {
-    throw new Error(`Model download failed: HTTP ${response.status}`);
+    throw new Error(
+      response.status === 401 || response.status === 403
+        ? 'Model download was rejected (token missing, expired, or not valid for this video).'
+        : `Model download failed: HTTP ${response.status}`
+    );
   }
 
   const total = Number(response.headers.get('content-length')) || info.size_bytes || 0;
@@ -87,8 +151,10 @@ export async function fetchModelBuffer(info, onProgress) {
   if (typeof caches !== 'undefined') {
     try {
       const cache = await caches.open(CACHE_NAME);
+      // Stored under the token-free key so the next run (with a fresh token)
+      // hits the cache instead of downloading again.
       await cache.put(
-        url,
+        cacheKey,
         new Response(buffer.slice(0), { headers: { 'Content-Type': 'application/octet-stream' } })
       );
     } catch (e) {
@@ -97,22 +163,6 @@ export async function fetchModelBuffer(info, onProgress) {
   }
 
   return buffer;
-}
-
-/** Is cached already? Used to decide whether to warn about a big download. */
-export async function isModelCached(info) {
-  if (typeof caches === 'undefined') return false;
-  try {
-    const cache = await caches.open(CACHE_NAME);
-    return Boolean(await cache.match(`${info.download_url}?v=${info.fingerprint}`));
-  } catch {
-    return false;
-  }
-}
-
-export async function clearModelCache() {
-  if (typeof caches === 'undefined') return;
-  await caches.delete(CACHE_NAME);
 }
 
 /* ------------------------------------------------------------------ *
@@ -296,71 +346,107 @@ export function encodeWav(channels, sampleRate, opts = {}) {
 /**
  * Download + separate + encode + upload, with progress reporting.
  *
+ * The browser is used purely as a compute node: it holds no pipeline state,
+ * finishes by pushing the stems straight back to the server, and then wipes
+ * every audio buffer it touched.
+ *
  * @param {object} args
  * @param {{channels: Float32Array[], sampleRate: number, duration: number}} args.audio
  *        as returned by `decodeAudio()`
- * @param {object} args.info   response of GET /api/models/separator
+ * @param {{params: object, size_mb: number, fingerprint: string, download_url: string,
+ *          size_bytes: number}} args.info response of GET /api/models/separator
+ * @param {string} [args.token]      short-lived token issued by the server
  * @param {(msg: string) => void} [args.onLog]
  * @param {(stage: string, payload: any) => void} [args.onProgress]
  * @param {(vocalsBlob: Blob, backgroundBlob: Blob) => Promise<any>} args.upload
  * @param {{aborted: boolean}} [args.signal]
  */
-export async function separateAndUpload({ audio, info, onLog, onProgress, upload, signal }) {
-  const params = { ...info.params };
+export async function separateAndUpload({
+  audio,
+  info,
+  token,
+  onLog,
+  onProgress,
+  upload,
+  signal,
+}) {
   const log = (m) => onLog?.(m);
 
-  log(`Fetching separation model (${info.size_mb} MB)...`);
-  const modelBuffer = await fetchModelBuffer(info, (loaded, total, fromCache) => {
-    if (fromCache) {
-      log('Separation model loaded from browser cache.');
-    } else if (total > 0) {
-      onProgress?.('model', { loaded, total, percent: (loaded / total) * 100 });
-    }
-  });
-  if (signal?.aborted) throw new Error('aborted');
+  // Params come from the server only — see validateSeparatorParams().
+  const params = validateSeparatorParams(info.params);
 
-  log('Creating inference session...');
-  const session = await createSeparatorSession(modelBuffer, (backend, err) => {
-    if (backend === 'webgpu') log('Using WebGPU backend.');
-    else log(`Using WASM backend${err ? ` (WebGPU unavailable: ${err.message})` : ''}.`);
-  });
-  if (signal?.aborted) throw new Error('aborted');
+  let modelBuffer = null;
+  let session = null;
 
-  const runModel = makeRunModel(session, params);
-
-  const started = Date.now();
-  const result = await separateTrack(runModel, audio.channels, params, {
-    sampleRate: audio.sampleRate,
-    onProgress: (done, total, window, windows) => {
-      onProgress?.('separate', { done, total, window, windows });
-    },
-    signal,
-  });
-  const elapsed = (Date.now() - started) / 1000;
-
-  const minutes = audio.channels[0].length / audio.sampleRate / 60;
-  log(
-    `Separation finished in ${elapsed.toFixed(1)}s for ${minutes.toFixed(1)} min of audio ` +
-      `(${(minutes * 60 / elapsed).toFixed(1)}x realtime).`
-  );
-
-  // Background keeps stereo; vocals only feed ASR and cloning, so mono halves
-  // the upload size at no practical cost.
-  const vocalsBlob = encodeWav([result.vocals[0]], audio.sampleRate, { mono: true });
-  const backgroundBlob = encodeWav(result.instrumental, audio.sampleRate, { mono: false });
-
-  log(
-    `Uploading stems (vocals ${(vocalsBlob.size / 1048576).toFixed(1)} MB, ` +
-      `background ${(backgroundBlob.size / 1048576).toFixed(1)} MB)...`
-  );
-  const uploadResult = await upload(vocalsBlob, backgroundBlob);
-
-  // Release GPU/CPU memory held by the session.
   try {
-    await session.release?.();
-  } catch {
-    /* ignore */
-  }
+    log(`Fetching separation model (${info.size_mb} MB)...`);
+    modelBuffer = await fetchModelBuffer(
+      info,
+      (loaded, total, fromCache) => {
+        if (fromCache) {
+          log('Separation model loaded from browser cache.');
+        } else if (total > 0) {
+          onProgress?.('model', { loaded, total, percent: (loaded / total) * 100 });
+        }
+      },
+      token
+    );
+    if (signal?.aborted) throw new Error('aborted');
 
-  return { uploadResult, elapsed, stats: result.stats };
+    log('Creating inference session...');
+    session = await createSeparatorSession(modelBuffer, (backend, err) => {
+      if (backend === 'webgpu') log('Using WebGPU backend.');
+      else log(`Using WASM backend${err ? ` (WebGPU unavailable: ${err.message})` : ''}.`);
+    });
+    if (signal?.aborted) throw new Error('aborted');
+
+    const runModel = makeRunModel(session, params);
+
+    const started = Date.now();
+    const result = await separateTrack(runModel, audio.channels, params, {
+      sampleRate: audio.sampleRate,
+      onProgress: (done, total, window, windows) => {
+        onProgress?.('separate', { done, total, window, windows });
+      },
+      signal,
+    });
+    const elapsed = (Date.now() - started) / 1000;
+
+    const minutes = audio.channels[0].length / audio.sampleRate / 60;
+    log(
+      `Separation finished in ${elapsed.toFixed(1)}s for ${minutes.toFixed(1)} min of audio ` +
+        `(${((minutes * 60) / elapsed).toFixed(1)}x realtime).`
+    );
+
+    // Background keeps stereo; vocals only feed ASR and cloning, so mono halves
+    // the upload size at no practical cost.
+    const vocalsBlob = encodeWav([result.vocals[0]], audio.sampleRate, { mono: true });
+    const backgroundBlob = encodeWav(result.instrumental, audio.sampleRate, { mono: false });
+
+    log(
+      `Uploading stems (vocals ${(vocalsBlob.size / 1048576).toFixed(1)} MB, ` +
+        `background ${(backgroundBlob.size / 1048576).toFixed(1)} MB)...`
+    );
+    const uploadResult = await upload(vocalsBlob, backgroundBlob);
+    log('Stems delivered to the server.');
+
+    // ---- Release everything as soon as the server has the result ----
+    zeroBuffers(result.instrumental, result.vocals, audio.channels);
+    modelBuffer = null;
+
+    return { uploadResult, elapsed, stats: result.stats };
+  } finally {
+    // Runs on success, failure and abort alike: never leave a GPU session or
+    // the user's audio resident in the tab.
+    try {
+      await session?.release?.();
+    } catch {
+      /* ignore */
+    }
+    zeroBuffers(audio.channels);
+    if (modelBuffer) {
+      zeroBuffers(modelBuffer);
+      modelBuffer = null;
+    }
+  }
 }

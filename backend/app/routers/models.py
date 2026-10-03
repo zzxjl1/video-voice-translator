@@ -15,6 +15,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from app import config
+from app.deps import enforce_separator_token
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +79,12 @@ async def download_separator_model(request: Request):
     """
     Serve the ONNX weights with `Range` support so the browser can resume an
     interrupted 64 MB download and cache it aggressively (`immutable`).
+
+    Gated by a short-lived token (see `app/services/token_service.py`) so the
+    endpoint cannot be used as an open model CDN.
     """
+    enforce_separator_token(request)
+
     path = separator_model_path()
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="Separator model not found")

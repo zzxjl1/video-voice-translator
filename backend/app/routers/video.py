@@ -8,9 +8,11 @@ import os
 import shutil
 import uuid
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 
 from app import config
+from app.deps import enforce_separator_token
+from app.services import token_service
 from app.models import (
     Speaker,
     VideoState,
@@ -626,21 +628,29 @@ async def serve_voice_sample(video_id: str, speaker_id: str):
 
 @router.get("/{video_id}/voice-clone/status")
 async def get_voice_clone_status(video_id: str):
-    """Get voice clone status for all speakers of a video."""
-    import json as _json
+    """
+    Cloned voices for a video, keyed by speaker: `{speaker_id: voice_id}`.
 
+    Only voices enrolled against the currently configured TTS model are
+    reported. Cloned voices cannot be used across models, so returning a stale
+    one would make the UI show a speaker as "ready" while synthesis would
+    actually fail with `InvalidParameter`.
+    """
     video_dir = get_video_dir(video_id)
-    clone_map_path = os.path.join(video_dir, "voice_clone", "voice_clone_map.json")
+    current_model = voice_clone_service.clone_target_model()
+    clone_map = voice_clone_service.load_clone_map(video_dir)
 
-    if not os.path.exists(clone_map_path):
-        return {"video_id": video_id, "cloned_voices": {}}
+    usable = {
+        speaker_id: entry["voice_id"]
+        for speaker_id, entry in clone_map.items()
+        if entry.get("voice_id") and entry.get("target_model") == current_model
+    }
 
-    try:
-        with open(clone_map_path, "r") as f:
-            clone_map = _json.load(f)
-        return {"video_id": video_id, "cloned_voices": clone_map}
-    except Exception:
-        return {"video_id": video_id, "cloned_voices": {}}
+    return {
+        "video_id": video_id,
+        "cloned_voices": usable,
+        "target_model": current_model,
+    }
 
 
 @router.post("/{video_id}/voice-clone/{speaker_id}/preview")
@@ -682,7 +692,40 @@ async def serve_voice_preview(video_id: str, speaker_id: str):
     return FileResponse(preview_path, media_type="audio/mp3")
 
 
-@router.post("/{video_id}/stems")
+@router.post("/{video_id}/separator-token")
+async def issue_separator_token(video_id: str, request: Request):
+    """
+    Issue a short-lived token authorising the client-compute endpoints for this
+    video (`GET /api/models/separator/onnx`, `POST /api/videos/{id}/stems`).
+
+    Requires a video that already exists, and issuance is rate limited per
+    client address, so the heavy endpoints cannot be used as an open CDN.
+
+    Note: this is an abuse speed bump, not authentication — there are no user
+    accounts in this app.
+    """
+    state = get_state(video_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    client_key = request.client.host if request.client else "unknown"
+    if not token_service.check_issue_rate(client_key):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many token requests. Please retry later.",
+        )
+
+    token, ttl = token_service.issue_token(video_id)
+    logger.info(f"[{video_id}] Issued separator token (ttl={ttl}s, client={client_key})")
+    return {
+        "video_id": video_id,
+        "token": token,
+        "expires_in": ttl,
+        "model_download_url": "/api/models/separator/onnx",
+    }
+
+
+@router.post("/{video_id}/stems", dependencies=[Depends(enforce_separator_token)])
 async def upload_stems(
     video_id: str,
     vocals: UploadFile = File(...),

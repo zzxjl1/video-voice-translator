@@ -423,10 +423,12 @@ async def run_pipeline(
 
         # Pre-assign voices to all speakers so each speaker gets a unique voice.
         # If voice cloning is enabled, cloned voices take precedence.
+        # The target language matters: system voice IDs are language-specific,
+        # so the pool must match the language being synthesized.
         for seg in state.segments:
             if enable_voice_clone and voice_clone_service.get_cloned_voice(video_id, seg.speaker_id):
                 continue
-            tts_service.assign_voice_for_speaker(video_id, seg.speaker_id)
+            tts_service.assign_voice_for_speaker(video_id, seg.speaker_id, target_language)
 
         voice_map = tts_service.get_speaker_voice_map(video_id)
         logger.info(f"[{video_id}] Speaker-voice mapping: {voice_map}")
@@ -442,7 +444,9 @@ async def run_pipeline(
                 if enable_voice_clone:
                     voice = voice_clone_service.get_cloned_voice(video_id, seg.speaker_id)
                 if not voice:
-                    voice = tts_service.assign_voice_for_speaker(video_id, seg.speaker_id)
+                    voice = tts_service.assign_voice_for_speaker(
+                        video_id, seg.speaker_id, target_language
+                    )
 
                 try:
                     audio_file_path = await tts_service.synthesize_speech(

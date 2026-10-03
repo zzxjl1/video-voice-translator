@@ -407,8 +407,12 @@ export function istft(spec, opts) {
  */
 export function planChunks(totalSamples, opts) {
   const { nFft } = opts;
-  const segmentSize = opts.segmentSize ?? 256;
-  const overlap = opts.overlap ?? 0.25;
+  // No defaults: these come from the server (config.SEPARATOR_PARAMS), so the
+  // bundle carries no tuning constants of its own.
+  const { segmentSize, overlap } = opts;
+  if (!Number.isFinite(segmentSize) || !Number.isFinite(overlap)) {
+    throw new Error('planChunks requires explicit segmentSize and overlap');
+  }
 
   const hop = nFft >> 2; // audio-separator uses n_fft // 4
   const trim = nFft >> 1;

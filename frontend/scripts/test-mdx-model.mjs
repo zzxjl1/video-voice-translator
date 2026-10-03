@@ -23,7 +23,24 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import * as ort from 'onnxruntime-web';
-import { MDX_INST_HQ_3_PARAMS, separateStems } from '../utils/mdx/mdxSeparator.js';
+import { separateStems } from '../utils/mdx/mdxSeparator.js';
+
+/**
+ * Candidate parameters to compare. These live HERE (not in the library) on
+ * purpose: the app gets its parameters from `GET /api/models/separator`, so the
+ * shipped bundle contains no tuning constants. This script's whole job is to
+ * pin down which values are correct, so it owns its own table.
+ */
+const CANDIDATE_PARAMS = {
+  nFft: 6144,
+  dimF: 3072,
+  segmentSize: 256,
+  overlap: 0.25,
+  compensate: 1.035,
+  primaryStem: 'instrumental',
+  zeroLowBins: 3,
+  normalizationThreshold: 1.0,
+};
 
 ort.env.wasm.numThreads = 1;
 ort.env.wasm.wasmPaths = path.join(process.cwd(), 'node_modules/onnxruntime-web/dist/');
@@ -102,7 +119,7 @@ const musicRms = rms(musicL);
 
 const results = [];
 for (const nFft of nFftList) {
-  const params = { ...MDX_INST_HQ_3_PARAMS, nFft };
+  const params = { ...CANDIDATE_PARAMS, nFft };
   const runner = makeRunner(session);
 
   const t0 = Date.now();

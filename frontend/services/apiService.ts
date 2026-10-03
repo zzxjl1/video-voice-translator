@@ -274,6 +274,30 @@ export async function getSeparatorInfo(): Promise<SeparatorInfo> {
 }
 
 
+export interface SeparatorToken {
+  video_id: string;
+  token: string;
+  expires_in: number;
+  model_download_url: string;
+}
+
+/**
+ * Obtain a short-lived token authorising the client-compute endpoints for this
+ * video (model download + stem upload). The server only issues one for a video
+ * that already exists, and rate limits issuance per client.
+ */
+export async function getSeparatorToken(videoId: string): Promise<SeparatorToken> {
+  const response = await fetch(`${API_BASE}/videos/${videoId}/separator-token`, {
+    method: 'POST',
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(err.detail || 'Could not obtain a separator token');
+  }
+  return response.json();
+}
+
+
 export interface StemsResult {
   video_id: string;
   stems: { file: string; bytes: number }[];
@@ -288,13 +312,18 @@ export async function uploadStems(
   videoId: string,
   vocals: Blob,
   background: Blob,
+  token?: string,
 ): Promise<StemsResult> {
   const form = new FormData();
   form.append('vocals', vocals, 'vocals.wav');
   form.append('background', background, 'background.wav');
 
+  const headers: Record<string, string> = {};
+  if (token) headers['X-Separator-Token'] = token;
+
   const response = await fetch(`${API_BASE}/videos/${videoId}/stems`, {
     method: 'POST',
+    headers,
     body: form,
   });
 

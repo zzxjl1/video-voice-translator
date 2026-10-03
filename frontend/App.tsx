@@ -19,6 +19,7 @@ import {
   exportVideo,
   getExportDownloadUrl,
   getSeparatorInfo,
+  getSeparatorToken,
   uploadStems,
   type SeparatorInfo,
 } from './services/apiService';
@@ -598,6 +599,10 @@ const App: React.FC = () => {
 
       setRawLog(prev => prev + '\n--- Separating vocals in the browser ---\n');
 
+      // Short-lived, video-bound token: the model download and the stem upload
+      // are both gated, so this server cannot be used as an open CDN.
+      const { token } = await getSeparatorToken(vid);
+
       if (!(await isModelCached(info))) {
         setRawLog(prev => prev + `Downloading the ${info.size_mb} MB model (cached for next time)...\n`);
       }
@@ -611,6 +616,7 @@ const App: React.FC = () => {
       await separateAndUpload({
         audio,
         info,
+        token,
         onLog: (message) => setRawLog(prev => prev + message + '\n'),
         onProgress: (stage, payload) => {
           if (stage === 'model') {
@@ -631,7 +637,12 @@ const App: React.FC = () => {
             );
           }
         },
-        upload: (vocals, background) => uploadStems(vid, vocals, background),
+        // Fetch a fresh token for the upload: separation of a long video can
+        // outlive the token issued for the model download.
+        upload: async (vocals, background) => {
+          const fresh = await getSeparatorToken(vid);
+          return uploadStems(vid, vocals, background, fresh.token);
+        },
       });
 
       setBackgroundAudioUrl(`/api/videos/${vid}/audio/background`);
