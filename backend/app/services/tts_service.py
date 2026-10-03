@@ -1,7 +1,9 @@
+import asyncio
 import json
 import logging
 import os
 import random
+import threading
 
 import dashscope
 from dashscope.audio.tts_v2 import SpeechSynthesizer
@@ -16,6 +18,10 @@ dashscope.api_key = config.DASHSCOPE_API_KEY
 
 # Speaker -> voice mapping cache (per video)
 _speaker_voice_map: dict[str, dict[str, str]] = {}
+
+# `tts_results.json` is read-modify-written for every segment. The pipeline
+# now synthesizes segments concurrently, so guard those writes with a lock.
+_registry_lock = threading.Lock()
 
 
 def assign_voice_for_speaker(video_id: str, speaker_id: str) -> str:
@@ -50,11 +56,41 @@ def get_speaker_voice_map(video_id: str) -> dict[str, str]:
     return _speaker_voice_map.get(video_id, {})
 
 
+def _register_segment_audio(video_dir: str, segment_id: str, rel_path: str) -> None:
+    """Thread-safe registration of a synthesized segment in tts_results.json."""
+    results_path = os.path.join(video_dir, "tts_results.json")
+    with _registry_lock:
+        tts_results = {}
+        if os.path.exists(results_path):
+            try:
+                with open(results_path, "r", encoding="utf-8") as f:
+                    tts_results = json.load(f)
+            except Exception:
+                pass
+
+        tts_results[segment_id] = rel_path
+
+        try:
+            with open(results_path, "w", encoding="utf-8") as f:
+                json.dump(tts_results, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to update tts registry for {segment_id}: {e}")
+
+
+def _synthesize_blocking(text: str, voice: str) -> bytes:
+    synthesizer = SpeechSynthesizer(
+        model=config.TTS_MODEL,
+        voice=voice,
+    )
+    return synthesizer.call(text)
+
+
 async def synthesize_speech(
     video_id: str,
     segment_id: str,
     text: str,
     voice: str | None = None,
+    write_registry: bool = True,
 ) -> str:
     """
     Synthesize speech using Alibaba DashScope CosyVoice3-flash.
@@ -65,30 +101,43 @@ async def synthesize_speech(
         segment_id: Unique ID for the segment
         text: Text to synthesize
         voice: Voice name (optional, uses config default)
+        write_registry: Whether to update tts_results.json (set False when the
+            caller batches the registry write itself).
 
     Returns:
         Path to the saved audio file
     """
     voice = voice or config.TTS_DEFAULT_VOICE
 
-    logger.info(f"Submitting TTS task to DashScope ({config.TTS_MODEL}), Voice: {voice} for {segment_id}")
+    logger.info(
+        f"Submitting TTS task to DashScope ({config.TTS_MODEL}), Voice: {voice} for {segment_id}"
+    )
 
-    import asyncio
     loop = asyncio.get_event_loop()
 
-    def _do_tts():
-        synthesizer = SpeechSynthesizer(
-            model=config.TTS_MODEL,
-            voice=voice,
-        )
-        audio = synthesizer.call(text)
-        return audio
+    # The SDK call is blocking -> run it in the thread pool so the event loop
+    # (and other concurrent segment jobs) keep making progress.
+    audio = None
+    last_error: Exception | None = None
+    for attempt in range(1, config.TTS_MAX_RETRIES + 2):
+        try:
+            audio = await loop.run_in_executor(
+                None, _synthesize_blocking, text, voice
+            )
+            if audio:
+                break
+            last_error = RuntimeError("TTS returned empty audio")
+        except Exception as e:
+            last_error = e
 
-    # Run blocking DashScope call in thread pool
-    audio = await loop.run_in_executor(None, _do_tts)
+        if attempt <= config.TTS_MAX_RETRIES:
+            logger.warning(
+                f"TTS attempt {attempt} failed for {segment_id}: {last_error}. Retrying..."
+            )
+            await asyncio.sleep(1.0 * attempt)
 
     if not audio:
-        raise RuntimeError(f"TTS returned empty audio for segment {segment_id}")
+        raise RuntimeError(f"TTS failed for segment {segment_id}: {last_error}")
 
     # Save to disk in tts/ subfolder
     video_dir = get_video_dir(video_id)
@@ -101,8 +150,20 @@ async def synthesize_speech(
             f.write(audio)
         logger.info(f"Saved synthesized audio to {audio_path}")
 
-        # Consistent persistence: Update tts_results.json
-        results_path = os.path.join(video_dir, "tts_results.json")
+        if write_registry:
+            _register_segment_audio(video_dir, segment_id, f"tts/{segment_id}.mp3")
+    except Exception as e:
+        logger.warning(f"Failed to save synthesized audio or update registry: {e}")
+
+    return audio_path
+
+
+def sync_registry(video_id: str, segment_ids: list[str]) -> None:
+    """Write all segment paths to tts_results.json in one shot (concurrent-safe)."""
+    video_dir = get_video_dir(video_id)
+    results_path = os.path.join(video_dir, "tts_results.json")
+
+    with _registry_lock:
         tts_results = {}
         if os.path.exists(results_path):
             try:
@@ -111,12 +172,11 @@ async def synthesize_speech(
             except Exception:
                 pass
 
-        tts_results[segment_id] = f"tts/{segment_id}.mp3"
+        for segment_id in segment_ids:
+            tts_results[segment_id] = f"tts/{segment_id}.mp3"
 
-        with open(results_path, "w", encoding="utf-8") as f:
-            json.dump(tts_results, f, ensure_ascii=False, indent=2)
-
-    except Exception as e:
-        logger.warning(f"Failed to save synthesized audio or update registry: {e}")
-
-    return audio_path
+        try:
+            with open(results_path, "w", encoding="utf-8") as f:
+                json.dump(tts_results, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.warning(f"Failed to sync tts registry: {e}")

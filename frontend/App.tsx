@@ -7,8 +7,38 @@ import Timeline from './components/Timeline';
 import SettingsModal from './components/SettingsModal';
 import StreamingLog from './components/StreamingLog';
 import { TranscriptionPanel } from './components/TranscriptionPanel';
-import { uploadVideo, translateScript, synthesizeSpeech, processVideo, getVideoStatus, resetVideo, getVoiceCloneStatus, generateVoicePreview } from './services/apiService';
+import {
+  uploadVideo,
+  translateScript,
+  synthesizeSpeech,
+  processVideo,
+  getVideoStatus,
+  resetVideo,
+  getVoiceCloneStatus,
+  generateVoicePreview,
+  exportVideo,
+  getExportDownloadUrl,
+  getSeparatorInfo,
+  uploadStems,
+  type SeparatorInfo,
+} from './services/apiService';
 import { getAudioWaveform, getAudioWaveformFromUrl } from './utils/audioProcessor';
+import { decodeAudio, separateAndUpload, isModelCached } from './utils/mdx/separatorClient';
+
+/**
+ * Replace a trailing, in-progress log line (identified by `prefix`) instead of
+ * appending a new one, so repeated progress updates do not flood the log.
+ */
+function withTrailingLine(prev: string, prefix: string, text: string): string {
+  const lines = prev.split('\n');
+  const last = lines.length - 1;
+  if (last >= 0 && lines[last].startsWith(prefix)) {
+    lines[last] = text;
+  } else {
+    lines.push(text);
+  }
+  return lines.join('\n');
+}
 
 function detectBrowserLanguage(): string {
   const lang = (navigator.language || '').toLowerCase();
@@ -44,11 +74,47 @@ const App: React.FC = () => {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [targetLanguage, setTargetLanguage] = useState<string>(detectBrowserLanguage);
   const [enableVoiceClone, setEnableVoiceClone] = useState(false);
-  const [enableBgmSeparation, setEnableBgmSeparation] = useState(true);
+  // Vocal separation needs PyTorch and is not viable on a small CPU-only
+  // server, so it is off by default.
+  const [enableBgmSeparation, setEnableBgmSeparation] = useState(false);
+
+  // Export (mux the dubbed audio back into a downloadable MP4)
+  const [exportUrl, setExportUrl] = useState<string | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
+  const [exportError, setExportError] = useState<string>('');
+
+  // Whether the server can actually run vocal separation (needs PyTorch).
+  // Reported by /status; assumed false until we hear otherwise.
+  const [bgmSeparationAvailable, setBgmSeparationAvailable] = useState(false);
+
+  // Vocal separation runs in the browser (WebGPU/WASM) unless the server was
+  // explicitly configured with SEPARATION_MODE=server.
+  const [separatorInfo, setSeparatorInfo] = useState<SeparatorInfo | null>(null);
+  const [separationMode, setSeparationMode] = useState<string>('client');
+  const [isSeparating, setIsSeparating] = useState(false);
 
   const handleVoiceCloneChange = (v: boolean) => {
     setEnableVoiceClone(v);
-    if (v) setEnableBgmSeparation(true);
+    if (!v) return;
+
+    // Cloning sounds much better on isolated vocals. Separation can come from
+    // the browser (MDX-Net WASM/WebGPU, the default) or from the server
+    // (PyTorch). Only force it on when one of those is actually available.
+    const separationUsable =
+      separationMode === 'client'
+        ? Boolean(separatorInfo?.available)
+        : bgmSeparationAvailable;
+
+    if (separationUsable) {
+      setEnableBgmSeparation(true);
+    } else {
+      setEnableBgmSeparation(false);
+      window.alert(
+        'Voice cloning works best with vocal separation, but no separation ' +
+        'backend is available (neither the in-browser model nor PyTorch on the ' +
+        'server). Cloning will use the original mixed audio instead.'
+      );
+    }
   };
   const handleBgmSeparationChange = (v: boolean) => {
     if (enableVoiceClone) return;
@@ -96,6 +162,21 @@ const App: React.FC = () => {
     }
   }, [videoFile, videoId]);
 
+  // Discover how separation should run (browser vs server) on mount.
+  useEffect(() => {
+    getSeparatorInfo()
+      .then(info => {
+        setSeparatorInfo(info);
+        setSeparationMode(info.mode);
+      })
+      .catch(err => {
+        // Model missing or the endpoint is unavailable: fall back to whatever
+        // the server reports, which will be "server" or "off".
+        console.warn('Separator model unavailable:', err);
+        setSeparatorInfo(null);
+      });
+  }, []);
+
   // Session Recovery
   useEffect(() => {
     const pathParts = window.location.pathname.split('/').filter(Boolean);
@@ -117,6 +198,8 @@ const App: React.FC = () => {
           // Restore switch settings from server
           if (data.enable_bgm_separation !== undefined) setEnableBgmSeparation(data.enable_bgm_separation);
           if (data.enable_voice_clone !== undefined) setEnableVoiceClone(data.enable_voice_clone);
+          if (data.export_url) setExportUrl(data.export_url);
+          setBgmSeparationAvailable(!!data.bgm_separation_available);
 
           // Always load existing segments/speakers
           if (data.segments && data.segments.length > 0) {
@@ -272,10 +355,13 @@ const App: React.FC = () => {
     }
   };
 
-  const runPipeline = useCallback(async (vid: string, file?: File) => {
+  const runPipeline = useCallback(async (vid: string, file?: File, opts: { skipSeparation?: boolean } = {}) => {
     setIsTranscribing(true);
     setRawLog('');
     setIsLogOpen(true);
+    setExportUrl(null);
+    setExportError('');
+    setIsExporting(false);
 
     if (file) {
       setIsAudioLoading(true);
@@ -304,6 +390,10 @@ const App: React.FC = () => {
         if (event.phase === 'separation') {
           if (event.status === 'started') {
             setRawLog(prev => prev + 'Separating vocals from background audio...\n');
+          } else if (event.status === 'unavailable') {
+            setBgmSeparationAvailable(false);
+            setEnableBgmSeparation(false);
+            setRawLog(prev => prev + `Vocal separation unavailable: ${event.message || 'not installed on this server'}\n`);
           } else if (event.status === 'skipped') {
             if (event.background_url) {
               setBackgroundAudioUrl(event.background_url);
@@ -409,6 +499,35 @@ const App: React.FC = () => {
           }
         }
 
+        // Export events
+        if (event.phase === 'export') {
+          if (event.status === 'started') {
+            setIsExporting(true);
+            setExportError('');
+            setRawLog(prev => prev + '\n--- Exporting Video (video stream copied) ---\n');
+          } else if (event.status === 'mixing' && event.total) {
+            const pct = Math.round((event.current / event.total) * 100);
+            setRawLog(prev => {
+              const lines = prev.split('\n');
+              const lastIdx = lines.length - 1;
+              if (lines[lastIdx].startsWith('Export progress:')) {
+                lines[lastIdx] = `Export progress: ${pct}%`;
+              } else {
+                lines.push(`Export progress: ${pct}%`);
+              }
+              return lines.join('\n');
+            });
+          } else if (event.status === 'muxing') {
+            setRawLog(prev => prev + 'Muxing dubbed audio into the video...\n');
+          } else if (event.status === 'done') {
+            if (event.url) setExportUrl(event.url);
+            setRawLog(prev => prev + `Export complete${event.size_mb ? ` (${event.size_mb} MB)` : ''}.\n`);
+          } else if (event.status === 'failed') {
+            setExportError(event.error || 'Export failed');
+            setRawLog(prev => prev + `Export failed: ${event.error}\n`);
+          }
+        }
+
         // TTS events
         if (event.phase === 'tts') {
           if (event.status === 'started') {
@@ -434,6 +553,8 @@ const App: React.FC = () => {
 
         // Final done
         if (event.done) {
+          setIsExporting(false);
+          if (event.export_url) setExportUrl(event.export_url);
           setRawLog(prev => prev + '\n=== All Processing Complete ===\nClosing in 2 seconds...');
         }
 
@@ -441,7 +562,13 @@ const App: React.FC = () => {
         if (event.error) {
           setRawLog(prev => prev + `\nERROR: ${event.error}\n`);
         }
-      }, { enableBgmSeparation, enableVoiceClone });
+      }, {
+        // Separation already happened (in the browser or on the server), so
+        // tell the backend not to attempt it again.
+        enableBgmSeparation: opts.skipSeparation ? false : enableBgmSeparation,
+        enableVoiceClone,
+        exportVideo: true,
+      });
 
       await new Promise(resolve => setTimeout(resolve, 2000));
       setIsLogOpen(false);
@@ -453,6 +580,71 @@ const App: React.FC = () => {
       setIsTranscribing(false);
     }
   }, [targetLanguage, enableBgmSeparation, enableVoiceClone]);
+
+  /**
+   * Run vocal separation locally in the browser and hand the stems to the
+   * server. This is what makes separation possible on a small CPU-only host:
+   * the backend never loads PyTorch and there is no per-minute API cost.
+   *
+   * Returns true when the stems were uploaded successfully.
+   */
+  const runClientSeparation = useCallback(async (file: File, vid: string): Promise<boolean> => {
+    setIsSeparating(true);
+    try {
+      const info = separatorInfo ?? (await getSeparatorInfo());
+      if (!info?.available) {
+        throw new Error('the separation model is not available on the server');
+      }
+
+      setRawLog(prev => prev + '\n--- Separating vocals in the browser ---\n');
+
+      if (!(await isModelCached(info))) {
+        setRawLog(prev => prev + `Downloading the ${info.size_mb} MB model (cached for next time)...\n`);
+      }
+
+      setRawLog(prev => prev + 'Decoding audio locally...\n');
+      const audio = await decodeAudio(file);
+      setRawLog(prev =>
+        prev + `Decoded ${audio.duration.toFixed(1)}s @ ${audio.sampleRate} Hz.\n`
+      );
+
+      await separateAndUpload({
+        audio,
+        info,
+        onLog: (message) => setRawLog(prev => prev + message + '\n'),
+        onProgress: (stage, payload) => {
+          if (stage === 'model') {
+            const pct = payload.percent.toFixed(0);
+            const mb = (payload.loaded / 1048576).toFixed(1);
+            const totalMb = (payload.total / 1048576).toFixed(1);
+            setRawLog(prev =>
+              withTrailingLine(prev, 'Model download:', `Model download: ${pct}% (${mb}/${totalMb} MB)`)
+            );
+          } else if (stage === 'separate') {
+            const pct = Math.round((payload.done / Math.max(1, payload.total)) * 100);
+            setRawLog(prev =>
+              withTrailingLine(
+                prev,
+                'Separating:',
+                `Separating: ${pct}% (chunk ${payload.done}/${payload.total}, window ${payload.window}/${payload.windows})`
+              )
+            );
+          }
+        },
+        upload: (vocals, background) => uploadStems(vid, vocals, background),
+      });
+
+      setBackgroundAudioUrl(`/api/videos/${vid}/audio/background`);
+      setRawLog(prev => prev + 'Browser separation complete.\n');
+      return true;
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      setRawLog(prev => prev + `Browser separation failed: ${message}\nContinuing without separation.\n`);
+      return false;
+    } finally {
+      setIsSeparating(false);
+    }
+  }, [separatorInfo]);
 
   // Handle browser back/forward navigation
   useEffect(() => {
@@ -497,6 +689,8 @@ const App: React.FC = () => {
             // Restore switch settings from server
             if (data.enable_bgm_separation !== undefined) setEnableBgmSeparation(data.enable_bgm_separation);
             if (data.enable_voice_clone !== undefined) setEnableVoiceClone(data.enable_voice_clone);
+            if (data.export_url) setExportUrl(data.export_url);
+            setBgmSeparationAvailable(!!data.bgm_separation_available);
 
             if (data.segments && data.segments.length > 0) {
               const recoveredSegments: TranscriptionSegment[] = data.segments.map((seg: any) => ({
@@ -567,6 +761,18 @@ const App: React.FC = () => {
       setVideoId(uploadResult.video_id);
       setRawLog(prev => prev + `Upload complete. Video ID: ${uploadResult.video_id}\n`);
 
+      /**
+       * Optionally separate vocals in the browser first, then start the server
+       * pipeline. `skipSeparation` stops the backend from repeating the work.
+       */
+      const startPipeline = async () => {
+        let stemsUploaded = false;
+        if (enableBgmSeparation && separationMode === 'client') {
+          stemsUploaded = await runClientSeparation(file, uploadResult.video_id);
+        }
+        await runPipeline(uploadResult.video_id, file, { skipSeparation: stemsUploaded });
+      };
+
       if (uploadResult.exists) {
         // Video already exists — ask user what to do
         setIsLogOpen(false);
@@ -577,6 +783,8 @@ const App: React.FC = () => {
         // Restore switch settings from server
         if (statusData.enable_bgm_separation !== undefined) setEnableBgmSeparation(statusData.enable_bgm_separation);
         if (statusData.enable_voice_clone !== undefined) setEnableVoiceClone(statusData.enable_voice_clone);
+        setExportUrl(statusData.export_url || null);
+        setBgmSeparationAvailable(!!statusData.bgm_separation_available);
 
         const isCompleted = statusData.status === 'completed';
         const isError = statusData.status === 'error';
@@ -631,7 +839,7 @@ const App: React.FC = () => {
           }
 
           // Resume pipeline
-          await runPipeline(uploadResult.video_id, file);
+          await startPipeline();
         } else {
           // Reset and re-process
           setRawLog('Resetting video data...\n');
@@ -641,11 +849,11 @@ const App: React.FC = () => {
           setSpeakers([]);
           await resetVideo(uploadResult.video_id);
           setRawLog(prev => prev + 'Reset complete. Starting fresh...\n');
-          await runPipeline(uploadResult.video_id, file);
+          await startPipeline();
         }
       } else {
-        // New video — run full pipeline
-        await runPipeline(uploadResult.video_id, file);
+        // New video — run the full pipeline
+        await startPipeline();
       }
 
     } catch (err) {
@@ -656,7 +864,7 @@ const App: React.FC = () => {
       setIsTranscribing(false);
       setIsAudioLoading(false);
     }
-  }, [targetLanguage, runPipeline]);
+  }, [targetLanguage, runPipeline, runClientSeparation, enableBgmSeparation, separationMode]);
 
   const handleTranslateSegmentImpl = useCallback(async (id: string, textToTranslate?: string) => {
     // Find the latest segment data from state
@@ -677,6 +885,7 @@ const App: React.FC = () => {
           text: text,
           speaker_id: segmentToTranslate.speakerId,
           start_time: segmentToTranslate.startTime,
+          end_time: segmentToTranslate.endTime,
         }],
         targetLanguage
       );
@@ -740,6 +949,51 @@ const App: React.FC = () => {
     }
   }, [handleTranslateSegmentImpl, handleSynthesizeSegment]);
 
+  /**
+   * Server-side export: mux the dubbed audio into the video and expose a
+   * download URL. The video stream is copied, so this is fast even without a
+   * GPU. `silent` suppresses the extra log lines used by the reprocess flow.
+   *
+   * Declared before handleReprocess because that callback depends on it.
+   */
+  const handleExport = useCallback(async (silent = false) => {
+    if (!videoId) return null;
+    if (!silent) {
+      setIsLogOpen(true);
+      setRawLog(prev => prev + '\n--- Exporting Video (video stream copied) ---\n');
+    }
+    setIsExporting(true);
+    setExportError('');
+
+    try {
+      const result = await exportVideo(videoId);
+      setExportUrl(result.url);
+      setRawLog(prev =>
+        prev + `Export complete${result.size_mb ? ` (${result.size_mb} MB)` : ''}.\n`
+      );
+      return result.url;
+    } catch (e) {
+      const message = e instanceof Error ? e.message : 'Export failed';
+      setExportError(message);
+      setRawLog(prev => prev + `Export failed: ${message}\n`);
+      return null;
+    } finally {
+      setIsExporting(false);
+    }
+  }, [videoId]);
+
+  const handleDownloadExport = useCallback(() => {
+    if (!videoId) return;
+    // Use the backend download route so the browser saves the file.
+    const url = exportUrl || getExportDownloadUrl(videoId);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `translated_${videoId.slice(0, 8)}.mp4`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }, [videoId, exportUrl]);
+
   const handleReprocess = useCallback(async () => {
     if (!videoId || segments.length === 0) return;
 
@@ -761,6 +1015,7 @@ const App: React.FC = () => {
         text: s.originalText,
         speaker_id: s.speakerId,
         start_time: s.startTime,
+        end_time: s.endTime,
       }));
 
       setRawLog(prev => prev + `Sending ${segments.length} segments with full context...\n`);
@@ -788,6 +1043,11 @@ const App: React.FC = () => {
         await new Promise(r => setTimeout(r, 200));
       }
 
+      // Phase 3: Re-export the video with the new audio
+      setRawLog(prev => prev + '\n=== Exporting Video ===\n');
+      setBatchProgress('Exporting...');
+      await handleExport(true);
+
       setRawLog(prev => prev + '\n=== All Processing Complete ===\nClosing in 1.5 seconds...');
       await new Promise(resolve => setTimeout(resolve, 1500));
       setIsLogOpen(false);
@@ -798,7 +1058,7 @@ const App: React.FC = () => {
       setBatchProgress('');
       setIsBatchProcessing(false);
     }
-  }, [segments, videoId, targetLanguage, handleSynthesizeSegment]);
+  }, [segments, videoId, targetLanguage, handleSynthesizeSegment, handleExport]);
 
   // Current subtitle based on video time
   const currentSubtitle = useMemo(() => {
@@ -861,7 +1121,7 @@ const App: React.FC = () => {
       {isIndexPage ? (
         <VideoUpload
           onVideoSelect={handleVideoSelect}
-          isLoading={isTranscribing}
+          isLoading={isTranscribing || isSeparating}
           targetLanguage={targetLanguage}
           onLanguageChange={setTargetLanguage}
           enableVoiceClone={enableVoiceClone}
@@ -879,6 +1139,11 @@ const App: React.FC = () => {
             onLanguageChange={setTargetLanguage}
             isProcessing={isBatchProcessing}
             hasSegments={segments.length > 0}
+            onExport={() => handleExport(false)}
+            onDownloadExport={handleDownloadExport}
+            isExporting={isExporting}
+            hasExport={!!exportUrl}
+            exportError={exportError}
           />
 
           <main className="flex-grow flex flex-col container mx-auto p-4 lg:p-6 pt-12 lg:pt-14 min-h-0">

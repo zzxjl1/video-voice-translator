@@ -41,6 +41,9 @@ class TranslationSegmentIn(BaseModel):
     text: str
     speaker_id: str
     start_time: float
+    # Used to compute the per-segment length budget so the translation fits
+    # the time slot it has to fill. Optional for backward compatibility.
+    end_time: float = 0.0
 
 
 class TranslateRequest(BaseModel):
@@ -91,7 +94,13 @@ class VideoStatusResponse(BaseModel):
     has_asr: bool = False
     has_translation: bool = False
     has_tts: bool = False
-    enable_bgm_separation: bool = True
+    has_export: bool = False
+    export_url: Optional[str] = None
+    export_available: bool = False
+    # "client" (browser runs MDX-Net), "server" (PyTorch) or "off"
+    separation_mode: str = "client"
+    bgm_separation_available: bool = False
+    enable_bgm_separation: bool = False
     enable_voice_clone: bool = False
 
 
@@ -99,5 +108,17 @@ class VideoStatusResponse(BaseModel):
 
 class ProcessRequest(BaseModel):
     target_language: str = "English"
-    enable_bgm_separation: bool = True
+    # Default comes from config.ENABLE_BGM_SEPARATION_DEFAULT (False: the
+    # separation model needs PyTorch and is not viable on a small CPU host).
+    enable_bgm_separation: bool = False
     enable_voice_clone: bool = False
+    # Mux the dubbed audio into a downloadable MP4 when finished.
+    export_video: bool = True
+
+
+# ----- Export -----
+
+class ExportResponse(BaseModel):
+    video_id: str
+    url: str
+    size_mb: Optional[float] = None

@@ -1,2 +1,19 @@
-backend/.numba_cache/*
-backend/models/*
+# secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# node
+node_modules/
+frontend/dist/
+
+# runtime state
+backend/.numba_cache/
+backend/data/

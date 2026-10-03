@@ -69,11 +69,14 @@ export async function transcribeVideo(videoId: string): Promise<SegmentData[]> {
 }
 
 /**
- * Translate script segments via SiliconFlow LLM.
+ * Translate script segments via the backend LLM.
+ *
+ * `end_time` lets the backend size each line to the time slot it has to fill,
+ * which keeps the dubbed audio aligned with the video.
  */
 export async function translateScript(
   videoId: string,
-  segments: { id: string; text: string; speaker_id: string; start_time: number }[],
+  segments: { id: string; text: string; speaker_id: string; start_time: number; end_time?: number }[],
   targetLanguage: string = 'English',
 ): Promise<TranslateResult[]> {
   const response = await fetch(`${API_BASE}/videos/${videoId}/translate`, {
@@ -206,6 +209,104 @@ export async function getVideoStatus(videoId: string) {
 }
 
 
+export interface ExportResult {
+  video_id: string;
+  url: string;
+  size_mb?: number;
+}
+
+/**
+ * Mux the dubbed audio back into the video and return the download URL.
+ * Cheap on the server: the video stream is copied, not re-encoded.
+ */
+export async function exportVideo(videoId: string): Promise<ExportResult> {
+  const response = await fetch(`${API_BASE}/videos/${videoId}/export`, {
+    method: 'POST',
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(err.detail || 'Export failed');
+  }
+
+  return response.json();
+}
+
+
+/** Absolute-ish URL for downloading an already exported video. */
+export function getExportDownloadUrl(videoId: string): string {
+  return `${API_BASE}/videos/${videoId}/export/download`;
+}
+
+
+/**
+ * Parameters of the vocal-separation model that runs in the browser.
+ * The DSP constants live on the server so the client never hardcodes them.
+ */
+export interface SeparatorInfo {
+  available: boolean;
+  mode: string;
+  filename: string;
+  size_bytes: number;
+  size_mb: number;
+  fingerprint: string;
+  download_url: string;
+  params: {
+    nFft: number;
+    dimF: number;
+    segmentSize: number;
+    overlap: number;
+    compensate: number;
+    primaryStem: string;
+    zeroLowBins: number;
+    normalizationThreshold: number;
+  };
+  input_shape: number[];
+}
+
+export async function getSeparatorInfo(): Promise<SeparatorInfo> {
+  const response = await fetch(`${API_BASE}/models/separator`);
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(err.detail || 'Separator model is unavailable');
+  }
+  return response.json();
+}
+
+
+export interface StemsResult {
+  video_id: string;
+  stems: { file: string; bytes: number }[];
+  background_url: string;
+}
+
+/**
+ * Upload the vocals/background WAV stems produced by the in-browser separator.
+ * After this the pipeline behaves as if the server had separated the audio.
+ */
+export async function uploadStems(
+  videoId: string,
+  vocals: Blob,
+  background: Blob,
+): Promise<StemsResult> {
+  const form = new FormData();
+  form.append('vocals', vocals, 'vocals.wav');
+  form.append('background', background, 'background.wav');
+
+  const response = await fetch(`${API_BASE}/videos/${videoId}/stems`, {
+    method: 'POST',
+    body: form,
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(err.detail || 'Stem upload failed');
+  }
+
+  return response.json();
+}
+
+
 /**
  * Run the full server-side pipeline (separation → ASR → translation → TTS)
  * via SSE. Calls onEvent for each SSE message received.
@@ -214,15 +315,18 @@ export async function processVideo(
   videoId: string,
   targetLanguage: string,
   onEvent: (event: any) => void,
-  options?: { enableBgmSeparation?: boolean; enableVoiceClone?: boolean },
+  options?: { enableBgmSeparation?: boolean; enableVoiceClone?: boolean; exportVideo?: boolean },
 ): Promise<void> {
   const response = await fetch(`${API_BASE}/videos/${videoId}/process`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       target_language: targetLanguage,
-      enable_bgm_separation: options?.enableBgmSeparation ?? true,
+      // Server default is off: separation needs PyTorch, which is not viable
+      // on a small CPU-only host.
+      enable_bgm_separation: options?.enableBgmSeparation ?? false,
       enable_voice_clone: options?.enableVoiceClone ?? false,
+      export_video: options?.exportVideo ?? true,
     }),
   });
 

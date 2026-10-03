@@ -1,12 +1,23 @@
 fastapi>=0.115.0
 uvicorn[standard]>=0.34.0
 python-multipart>=0.0.20
+python-dotenv>=1.0.0
 openai>=1.60.0
 requests>=2.32.0
 httpx>=0.27.0
 dashscope>=1.23.4
 
-# --- Vocal separation (CPU-only) ---
-# Install manually to avoid pulling NVIDIA/CUDA packages:
+# --- Vocal separation ---
+# The default SEPARATION_MODE=client runs the MDX-Net ONNX model **in the
+# browser** (WebGPU/WASM) and needs NO Python packages at all: the server only
+# serves the weights and receives the resulting stems.
+#
+# Only if you set SEPARATION_MODE=server do you need the PyTorch backend.
+# It pulls in ~hundreds of MB of RSS and will make a small CPU-only host swap,
+# so install it ONLY on a machine with headroom:
+#
 #   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 #   pip install "audio-separator[cpu]>=0.24.0"
+#
+# Then set ENABLE_BGM_SEPARATION_DEFAULT=true (and optionally
+# PRELOAD_SEPARATION=true) in backend/.env.

@@ -21,6 +21,7 @@ from app.models import (
     save_state,
 )
 from app.schemas import (
+    ExportResponse,
     SegmentOut,
     SpeakerOut,
     TranscribeResponse,
@@ -33,7 +34,7 @@ from app.schemas import (
     VideoStatusResponse,
     ProcessRequest,
 )
-from app.services import asr_service, llm_service, separation_service, tts_service
+from app.services import asr_service, export_service, llm_service, separation_service, tts_service
 from app.services import pipeline_service
 from app.services import voice_clone_service
 
@@ -108,6 +109,7 @@ async def get_video_status(video_id: str):
         raise HTTPException(status_code=404, detail="Video not found")
 
     video_dir = get_video_dir(video_id)
+    has_export = os.path.exists(export_service.get_export_path(video_id))
 
     return VideoStatusResponse(
         video_id=state.video_id,
@@ -136,6 +138,11 @@ async def get_video_status(video_id: str):
         has_asr=os.path.exists(os.path.join(video_dir, "asr_result.json")),
         has_translation=os.path.exists(os.path.join(video_dir, "translation_result.json")),
         has_tts=os.path.exists(os.path.join(video_dir, "tts_results.json")),
+        has_export=has_export,
+        export_url=f"/api/videos/{video_id}/export/download" if has_export else None,
+        export_available=export_service.is_available() and config.EXPORT_ENABLED,
+        separation_mode=config.SEPARATION_MODE,
+        bgm_separation_available=separation_service.is_available(),
         enable_bgm_separation=state.enable_bgm_separation,
         enable_voice_clone=state.enable_voice_clone,
     )
@@ -285,13 +292,18 @@ async def translate_video(video_id: str, req: TranslateRequest):
         logger.info(f"[{video_id}] Status: {state.status.value}")
         save_state(state)
 
-        # Prepare context payload
+        # Prepare context payload. When the caller does not send end_time we
+        # fall back to the persisted segment, so the length budget is still
+        # available for single-line re-translation.
+        stored = {seg.id: seg for seg in state.segments}
         context = [
             {
                 "id": seg.id,
                 "text": seg.text,
                 "speaker_id": seg.speaker_id,
                 "start_time": seg.start_time,
+                "end_time": seg.end_time
+                or (stored[seg.id].end_time if seg.id in stored else 0.0),
             }
             for seg in req.segments
         ]
@@ -552,6 +564,7 @@ async def process_video(video_id: str, req: ProcessRequest):
                     emit=emit,
                     enable_bgm_separation=req.enable_bgm_separation,
                     enable_voice_clone=req.enable_voice_clone,
+                    export_video=req.export_video,
                 )
             except Exception as e:
                 logger.error(f"[{video_id}] Pipeline error: {e}", exc_info=True)
@@ -667,3 +680,116 @@ async def serve_voice_preview(video_id: str, speaker_id: str):
         raise HTTPException(status_code=404, detail="Voice preview not found. Generate one first via POST.")
 
     return FileResponse(preview_path, media_type="audio/mp3")
+
+
+@router.post("/{video_id}/stems")
+async def upload_stems(
+    video_id: str,
+    vocals: UploadFile = File(...),
+    background: UploadFile = File(...),
+):
+    """
+    Accept vocals/background stems produced by the **browser**.
+
+    Separation normally runs client-side (see `app/routers/models.py`): the
+    browser downloads the MDX-Net ONNX model, separates the locally decoded
+    audio, and pushes the two WAV stems here. The rest of the pipeline then
+    works exactly as if the server had done the separation — `vocals.wav` feeds
+    ASR and voice cloning, `background.wav` is mixed back in during export.
+    """
+    state = get_state(video_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    video_dir = get_video_dir(video_id)
+
+    written = []
+    for filename, upload in (("vocals.wav", vocals), ("background.wav", background)):
+        dest = os.path.join(video_dir, filename)
+        tmp = f"{dest}.part"
+        try:
+            with open(tmp, "wb") as out:
+                shutil.copyfileobj(upload.file, out)
+
+            size = os.path.getsize(tmp)
+            if size < 44:  # smaller than a WAV header
+                raise ValueError(f"{filename} is too small to be a WAV file ({size} bytes)")
+
+            # Fail fast on non-WAV payloads instead of breaking ffmpeg later.
+            with open(tmp, "rb") as f:
+                header = f.read(4)
+            if header[:4] not in (b"RIFF", b"RF64"):
+                raise ValueError(f"{filename} is not a RIFF/WAV file (header={header!r})")
+
+            os.replace(tmp, dest)
+            written.append({"file": filename, "bytes": size})
+            logger.info(f"[{video_id}] Received stem {filename} ({size / 1048576:.1f} MB)")
+        except Exception as e:
+            if os.path.exists(tmp):
+                os.remove(tmp)
+            logger.error(f"[{video_id}] Failed to store stem {filename}: {e}")
+            raise HTTPException(status_code=400, detail=f"Invalid stem {filename}: {e}")
+
+    # Separation is done — make sure the pipeline does not try to redo it.
+    state.enable_bgm_separation = False
+    state.audio_path = os.path.join(video_dir, "vocals.wav")
+    save_state(state)
+
+    return {
+        "video_id": video_id,
+        "stems": written,
+        "background_url": f"/api/videos/{video_id}/audio/background",
+    }
+
+
+@router.post("/{video_id}/export", response_model=ExportResponse)
+async def export_video(video_id: str):
+    """
+    Mux the dubbed audio back into the video and return the download URL.
+
+    Cheap by design: the video stream is copied (`-c:v copy`), only the audio
+    timeline is rebuilt, so this works even on a single-core CPU host.
+    """
+    logger.info(f"Export requested for video_id: {video_id}")
+
+    state = get_state(video_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    if not config.EXPORT_ENABLED:
+        raise HTTPException(status_code=503, detail="Export is disabled on this server")
+
+    if not export_service.is_available():
+        raise HTTPException(
+            status_code=503, detail="ffmpeg/ffprobe are not available on the server"
+        )
+
+    try:
+        output_path = await export_service.export_video(video_id)
+        size_mb = os.path.getsize(output_path) / 1024 / 1024
+        return ExportResponse(
+            video_id=video_id,
+            url=f"/api/videos/{video_id}/export/download",
+            size_mb=round(size_mb, 1),
+        )
+    except Exception as e:
+        logger.error(f"[{video_id}] Export failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{video_id}/export/download")
+async def download_export(video_id: str):
+    """Download the exported (dubbed) video."""
+    from fastapi.responses import FileResponse
+
+    export_path = export_service.get_export_path(video_id)
+    if not os.path.exists(export_path):
+        raise HTTPException(
+            status_code=404, detail="Export not found. Run POST /export first."
+        )
+
+    return FileResponse(
+        export_path,
+        media_type="video/mp4",
+        filename=f"translated_{video_id[:8]}.mp4",
+    )

@@ -165,7 +165,7 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onVideoSelect, isLoading, tar
             <div className="flex items-center justify-between py-2 px-3 bg-gray-50 rounded-xl">
               <div className="flex items-center">
                 <span className={`text-sm font-medium ${bgmSeparationLocked ? 'text-gray-400' : 'text-gray-700'}`}>BGM Separation</span>
-                <InfoTooltip text={bgmSeparationLocked ? "BGM Separation is required when Voice Cloning is enabled." : "Separate background music from vocals before processing. Produces cleaner results but takes longer. Recommended for videos with music."} />
+                <InfoTooltip text={bgmSeparationLocked ? "Vocal separation is required when Voice Cloning is enabled." : "Splits vocals from background music for cleaner transcription and voice cloning. Runs locally in your browser (WebGPU/WASM); the first run downloads a 64 MB model which is then cached."} />
               </div>
               <button
                 onClick={() => !bgmSeparationLocked && onBgmSeparationChange(!enableBgmSeparation)}

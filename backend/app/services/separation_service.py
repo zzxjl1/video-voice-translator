@@ -3,19 +3,47 @@ Vocal separation service using audio-separator (VR Architecture).
 Splits audio into vocals and background (accompaniment).
 Uses Python API instead of CLI to avoid PATH issues.
 Model is loaded once globally and reused across requests.
+
+IMPORTANT — resource requirements
+---------------------------------
+`audio-separator` depends on PyTorch, which needs several hundred MB of RAM
+just to import, plus the model weights. On a 2 GB / single-core / no-GPU box
+this makes the process swap and turns a few minutes of audio into tens of
+minutes of work, so separation is DISABLED by default
+(`config.ENABLE_BGM_SEPARATION_DEFAULT = False`).
+
+When disabled, the pipeline skips this module entirely and never imports
+torch. Install the extra dependencies only on a machine with headroom:
+
+    pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+    pip install "audio-separator[cpu]>=0.24.0"
+
+Nothing here is imported at module import time, so the rest of the app runs
+fine without those packages installed.
 """
+import importlib.util
 import logging
 import os
 import shutil
 import threading
 from typing import Optional, Callable
 
+from app import config
+
 logger = logging.getLogger(__name__)
 
 # Persistent model directory (survives /tmp cleanup on reboot)
-MODEL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "models")
-MODEL_NAME = "2_HP-UVR.pth"
+MODEL_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "models",
+)
+MODEL_NAME = config.SEPARATION_MODEL_NAME
 _separator = None
+
+
+def is_available() -> bool:
+    """True when the optional separation dependencies are installed."""
+    return importlib.util.find_spec("audio_separator") is not None
 
 # Limit threads to avoid overloading low-spec CPU
 os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -27,10 +55,18 @@ _progress_lock = threading.Lock()
 
 
 def init_separator():
-    """Pre-load the separator model. Call at application startup."""
+    """Lazily load the separator model. Only call this when separation is enabled."""
     global _separator
     if _separator is None:
-        logger.info("Loading audio separator model (VR Arch: %s) at startup...", MODEL_NAME)
+        if not is_available():
+            raise RuntimeError(
+                "Vocal separation was requested but the optional dependencies are "
+                "not installed. Install them with:\n"
+                "  pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu\n"
+                '  pip install "audio-separator[cpu]>=0.24.0"\n'
+                "or disable separation (ENABLE_BGM_SEPARATION_DEFAULT=false)."
+            )
+        logger.info("Loading audio separator model (VR Arch: %s)...", MODEL_NAME)
         from audio_separator.separator import Separator
         sep = Separator(
             output_format="WAV",
