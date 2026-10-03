@@ -120,80 +120,6 @@ export async function synthesizeSpeech(
   return response.json();
 }
 
-export interface SeparationResult {
-  video_id: string;
-  vocals: string;
-  background: string;
-  background_url: string;
-}
-
-/**
- * Separate audio into vocals and background with SSE progress.
- */
-export async function separateAudio(
-  videoId: string,
-  onProgress?: (progress: number) => void,
-): Promise<SeparationResult> {
-  const response = await fetch(`${API_BASE}/videos/${videoId}/separate`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-  });
-
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({ detail: response.statusText }));
-    throw new Error(err.detail || 'Vocal separation failed');
-  }
-
-  const reader = response.body?.getReader();
-  if (!reader) {
-    throw new Error('ReadableStream not supported');
-  }
-
-  const decoder = new TextDecoder();
-  let result: SeparationResult | null = null;
-  let buffer = '';
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
-
-    for (const line of lines) {
-      if (!line.startsWith('data: ')) continue;
-      try {
-        const data = JSON.parse(line.slice(6));
-        if (data.error) {
-          throw new Error(data.error);
-        }
-        if (data.progress !== undefined && onProgress) {
-          onProgress(data.progress);
-        }
-        if (data.done) {
-          result = {
-            video_id: data.video_id,
-            vocals: data.vocals,
-            background: data.background,
-            background_url: data.background_url,
-          };
-        }
-      } catch (e) {
-        if (e instanceof Error && e.message !== 'Unexpected end of JSON input') {
-          throw e;
-        }
-      }
-    }
-  }
-
-  if (!result) {
-    throw new Error('Separation completed but no result received');
-  }
-
-  return result;
-}
-
 /**
  * Get the current processing status of a video.
  */
@@ -240,12 +166,40 @@ export function getExportDownloadUrl(videoId: string): string {
 
 
 /**
+ * Backend used to split vocals from background music.
+ *  - "client": the browser runs the MDX-Net ONNX model (WebGPU/WASM)
+ *  - "api":    302.AI's demucs endpoint does it server-side (paid)
+ *  - "off":    no separation
+ * There is deliberately no self-hosted (PyTorch) option: the deployment has no
+ * GPU and a local separator would just make the host swap.
+ */
+export type SeparationMode = 'client' | 'api' | 'off';
+
+export interface BackendAvailability {
+  available: boolean;
+  /** Why the backend cannot be used, or null when it can. */
+  reason: string | null;
+}
+
+/**
+ * Per-backend availability as reported by the server. The UI builds its
+ * backend picker from this instead of guessing, which is what used to produce
+ * "no separation backend is available" while the browser backend was fine.
+ */
+export type SeparationBackends = Partial<Record<SeparationMode, BackendAvailability>>;
+
+/**
  * Parameters of the vocal-separation model that runs in the browser.
  * The DSP constants live on the server so the client never hardcodes them.
  */
 export interface SeparatorInfo {
   available: boolean;
-  mode: string;
+  /** Default backend from the server config. */
+  mode: SeparationMode;
+  /** Whether separation should start switched on. */
+  default_enabled: boolean;
+  /** Per-backend availability, so the picker can render accurate options. */
+  backends: SeparationBackends;
   filename: string;
   size_bytes: number;
   size_mb: number;
@@ -344,15 +298,22 @@ export async function processVideo(
   videoId: string,
   targetLanguage: string,
   onEvent: (event: any) => void,
-  options?: { enableBgmSeparation?: boolean; enableVoiceClone?: boolean; exportVideo?: boolean },
+  options?: {
+    separationMode?: SeparationMode;
+    enableBgmSeparation?: boolean;
+    enableVoiceClone?: boolean;
+    exportVideo?: boolean;
+  },
 ): Promise<void> {
   const response = await fetch(`${API_BASE}/videos/${videoId}/process`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       target_language: targetLanguage,
-      // Server default is off: separation needs PyTorch, which is not viable
-      // on a small CPU-only host.
+      // Which backend splits the vocals: "client" (browser, default), "api"
+      // (302.AI) or "off". The server validates this against the backends it
+      // can actually run and degrades to "off" if the choice is unusable.
+      separation_mode: options?.separationMode ?? 'client',
       enable_bgm_separation: options?.enableBgmSeparation ?? false,
       enable_voice_clone: options?.enableVoiceClone ?? false,
       export_video: options?.exportVideo ?? true,

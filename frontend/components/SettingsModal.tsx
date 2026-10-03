@@ -1,13 +1,16 @@
 
 import React, { useState } from 'react';
+import SeparationModeSelector from './SeparationModeSelector';
+import type { SeparationMode, SeparationBackends } from '../services/apiService';
 
 interface SettingsModalProps {
     isOpen: boolean;
     onClose: () => void;
     enableVoiceClone: boolean;
     onVoiceCloneChange: (v: boolean) => void;
-    enableBgmSeparation: boolean;
-    onBgmSeparationChange: (v: boolean) => void;
+    separationMode: SeparationMode;
+    onSeparationModeChange: (mode: SeparationMode) => void;
+    separationBackends: SeparationBackends;
     bgmSeparationLocked?: boolean;
 }
 
@@ -34,7 +37,7 @@ const InfoTooltip: React.FC<{ text: string }> = ({ text }) => {
     );
 };
 
-const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, enableVoiceClone, onVoiceCloneChange, enableBgmSeparation, onBgmSeparationChange, bgmSeparationLocked }) => {
+const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, enableVoiceClone, onVoiceCloneChange, separationMode, onSeparationModeChange, separationBackends, bgmSeparationLocked }) => {
     if (!isOpen) return null;
 
     return (
@@ -59,17 +62,17 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, enableVo
                 <div className="px-8 py-6 space-y-4">
                     <p className="text-xs text-gray-400 uppercase tracking-widest font-bold mb-2">Audio Processing</p>
 
-                    <div className="flex items-center justify-between py-3 px-4 bg-gray-50 rounded-xl">
-                        <div className="flex items-center">
+                    <div className="py-3 px-4 bg-gray-50 rounded-xl">
+                        <div className="flex items-center mb-2">
                             <span className={`text-sm font-medium ${bgmSeparationLocked ? 'text-gray-400' : 'text-gray-700'}`}>BGM Separation</span>
-                            <InfoTooltip text={bgmSeparationLocked ? "Vocal separation is required when Voice Cloning is enabled." : "Splits vocals from background music for cleaner transcription and voice cloning. Runs locally in your browser (WebGPU/WASM); the first run downloads a 64 MB model which is then cached."} />
+                            <InfoTooltip text="Splits vocals from background music for cleaner transcription and voice cloning. Pick which backend does the work, or turn it off." />
                         </div>
-                        <button
-                            onClick={() => !bgmSeparationLocked && onBgmSeparationChange(!enableBgmSeparation)}
-                            className={`relative w-10 h-[22px] rounded-full transition-colors duration-200 ${bgmSeparationLocked ? 'bg-claude-accent/50 cursor-not-allowed' : enableBgmSeparation ? 'bg-claude-accent' : 'bg-gray-300'}`}
-                        >
-                            <span className={`absolute top-[2px] left-[2px] w-[18px] h-[18px] bg-white rounded-full shadow transition-transform duration-200 ${enableBgmSeparation ? 'translate-x-[18px]' : ''}`} />
-                        </button>
+                        <SeparationModeSelector
+                            value={separationMode}
+                            onChange={onSeparationModeChange}
+                            backends={separationBackends}
+                            locked={bgmSeparationLocked}
+                        />
                     </div>
 
                     <div className="flex items-center justify-between py-3 px-4 bg-gray-50 rounded-xl">

@@ -69,6 +69,10 @@ class VideoState:
     segments: list[Segment] = field(default_factory=list)
     speakers: list[Speaker] = field(default_factory=list)
     enable_bgm_separation: bool = True
+    # Which backend performed separation: "client" (browser), "api" (302.AI)
+    # or "off". Persisted so a resumed run keeps the same choice. Defaults to
+    # "off" so info.json files written by older versions stay valid.
+    separation_mode: str = "off"
     enable_voice_clone: bool = False
     created_at: str = field(default_factory=lambda: datetime.datetime.now().isoformat())
 

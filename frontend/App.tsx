@@ -22,6 +22,8 @@ import {
   getSeparatorToken,
   uploadStems,
   type SeparatorInfo,
+  type SeparationMode,
+  type SeparationBackends,
 } from './services/apiService';
 import { getAudioWaveform, getAudioWaveformFromUrl } from './utils/audioProcessor';
 import { decodeAudio, separateAndUpload, isModelCached } from './utils/mdx/separatorClient';
@@ -39,6 +41,32 @@ function withTrailingLine(prev: string, prefix: string, text: string): string {
     lines.push(text);
   }
   return lines.join('\n');
+}
+
+/** Human-readable names for the separation backends. */
+const SEPARATION_MODE_LABEL: Record<SeparationMode, string> = {
+  client: 'in-browser (MDX-Net)',
+  api: '302.AI',
+  off: 'off',
+};
+
+/**
+ * Decide which backend to adopt from a server payload.
+ *
+ * Prefers the persisted `separation_mode` and falls back to the legacy
+ * `enable_bgm_separation` boolean for state written by older versions. A stored
+ * backend that can no longer run (say the browser model was removed from the
+ * server) degrades to "off" instead of queueing a job that would silently lose
+ * separation.
+ */
+function restoreSeparationMode(
+  data: { separation_mode?: string; enable_bgm_separation?: boolean },
+  backends?: SeparationBackends,
+): SeparationMode {
+  const stored = (data.separation_mode ??
+    (data.enable_bgm_separation ? 'client' : 'off')) as SeparationMode;
+  if (stored === 'off') return 'off';
+  return (backends?.[stored]?.available ?? true) ? stored : 'off';
 }
 
 function detectBrowserLanguage(): string {
@@ -75,51 +103,78 @@ const App: React.FC = () => {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [targetLanguage, setTargetLanguage] = useState<string>(detectBrowserLanguage);
   const [enableVoiceClone, setEnableVoiceClone] = useState(false);
-  // Vocal separation needs PyTorch and is not viable on a small CPU-only
-  // server, so it is off by default.
-  const [enableBgmSeparation, setEnableBgmSeparation] = useState(false);
+
+  // Vocal separation. `separationMode` is the single source of truth; the old
+  // on/off boolean is derived from it so the two can never disagree.
+  // Starts "off" to match the server default and is corrected on mount from
+  // GET /api/models/separator.
+  const [separationMode, setSeparationMode] = useState<SeparationMode>('off');
+  const [isSeparating, setIsSeparating] = useState(false);
+
+  // Which backends the server can actually run, and why the others cannot.
+  // Filled from /models/separator (on mount) and /status (per video).
+  const [separationBackends, setSeparationBackends] = useState<SeparationBackends>({});
+  const [separatorInfo, setSeparatorInfo] = useState<SeparatorInfo | null>(null);
 
   // Export (mux the dubbed audio back into a downloadable MP4)
   const [exportUrl, setExportUrl] = useState<string | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [exportError, setExportError] = useState<string>('');
 
-  // Whether the server can actually run vocal separation (needs PyTorch).
-  // Reported by /status; assumed false until we hear otherwise.
-  const [bgmSeparationAvailable, setBgmSeparationAvailable] = useState(false);
+  const enableBgmSeparation = separationMode !== 'off';
 
-  // Vocal separation runs in the browser (WebGPU/WASM) unless the server was
-  // explicitly configured with SEPARATION_MODE=server.
-  const [separatorInfo, setSeparatorInfo] = useState<SeparatorInfo | null>(null);
-  const [separationMode, setSeparationMode] = useState<string>('client');
-  const [isSeparating, setIsSeparating] = useState(false);
+  // Merge what /models/separator said about the browser backend with what
+  // /status reported for the rest, so the picker works before any video exists.
+  const effectiveBackends: SeparationBackends = {
+    ...separationBackends,
+    client: separationBackends.client ?? {
+      available: Boolean(separatorInfo?.available),
+      reason: separatorInfo ? null : 'the separator model is not available on the server',
+    },
+    off: { available: true, reason: null },
+  };
+
+  /** Best backend that can actually run: browser first (free), then the paid API. */
+  const pickAvailableSeparationMode = (): SeparationMode | null => {
+    for (const mode of ['client', 'api'] as SeparationMode[]) {
+      if (effectiveBackends[mode]?.available) return mode;
+    }
+    return null;
+  };
 
   const handleVoiceCloneChange = (v: boolean) => {
     setEnableVoiceClone(v);
     if (!v) return;
 
-    // Cloning sounds much better on isolated vocals. Separation can come from
-    // the browser (MDX-Net WASM/WebGPU, the default) or from the server
-    // (PyTorch). Only force it on when one of those is actually available.
-    const separationUsable =
-      separationMode === 'client'
-        ? Boolean(separatorInfo?.available)
-        : bgmSeparationAvailable;
+    // Cloning sounds much better on isolated vocals, so switch a working
+    // backend on automatically instead of asking. Only speak up when nothing
+    // can run — and then say exactly which backends are out and why.
+    if (separationMode !== 'off') return;
 
-    if (separationUsable) {
-      setEnableBgmSeparation(true);
-    } else {
-      setEnableBgmSeparation(false);
-      window.alert(
-        'Voice cloning works best with vocal separation, but no separation ' +
-        'backend is available (neither the in-browser model nor PyTorch on the ' +
-        'server). Cloning will use the original mixed audio instead.'
+    const best = pickAvailableSeparationMode();
+    if (best) {
+      setSeparationMode(best);
+      setRawLog(
+        prev => prev + `Vocal separation enabled automatically (${SEPARATION_MODE_LABEL[best]}).\n`
       );
+      return;
     }
+
+    const reasons = (['client', 'api'] as SeparationMode[])
+      .map(m => `${SEPARATION_MODE_LABEL[m]} — ${effectiveBackends[m]?.reason ?? 'unavailable'}`)
+      .join('; ');
+    window.alert(
+      'Voice cloning works best with vocal separation, but no backend can run ' +
+      `right now: ${reasons}. Cloning will use the original mixed audio instead.`
+    );
   };
-  const handleBgmSeparationChange = (v: boolean) => {
-    if (enableVoiceClone) return;
-    setEnableBgmSeparation(v);
+
+  /** Choosing a backend also turns separation on/off ("off" == disabled). */
+  const handleSeparationModeChange = (mode: SeparationMode) => {
+    // Cloning without separation would waste the clone quality, and the old UI
+    // locked it the same way.
+    if (enableVoiceClone && mode === 'off') return;
+    setSeparationMode(mode);
   };
 
   // Streaming Log State
@@ -168,7 +223,13 @@ const App: React.FC = () => {
     getSeparatorInfo()
       .then(info => {
         setSeparatorInfo(info);
-        setSeparationMode(info.mode);
+        setSeparationBackends(info.backends ?? {});
+        // Mirror the server default, but never start on a backend that cannot
+        // actually run (that is how the browser backend used to get "fixed" to
+        // an unusable mode).
+        const defaultBackendUsable =
+          info.backends?.[info.mode]?.available ?? info.available;
+        setSeparationMode(info.default_enabled && defaultBackendUsable ? info.mode : 'off');
       })
       .catch(err => {
         // Model missing or the endpoint is unavailable: fall back to whatever
@@ -196,11 +257,13 @@ const App: React.FC = () => {
           const isUploaded = data.status === 'uploaded';
           const isIncomplete = !isCompleted && !isError && !isUploaded;
 
-          // Restore switch settings from server
-          if (data.enable_bgm_separation !== undefined) setEnableBgmSeparation(data.enable_bgm_separation);
+          // Restore settings from server
+          if (data.separation_backends) setSeparationBackends(data.separation_backends);
+          setSeparationMode(
+            restoreSeparationMode(data, data.separation_backends)
+          );
           if (data.enable_voice_clone !== undefined) setEnableVoiceClone(data.enable_voice_clone);
           if (data.export_url) setExportUrl(data.export_url);
-          setBgmSeparationAvailable(!!data.bgm_separation_available);
 
           // Always load existing segments/speakers
           if (data.segments && data.segments.length > 0) {
@@ -392,9 +455,23 @@ const App: React.FC = () => {
           if (event.status === 'started') {
             setRawLog(prev => prev + 'Separating vocals from background audio...\n');
           } else if (event.status === 'unavailable') {
-            setBgmSeparationAvailable(false);
-            setEnableBgmSeparation(false);
-            setRawLog(prev => prev + `Vocal separation unavailable: ${event.message || 'not installed on this server'}\n`);
+            // The server refused the backend we asked for and carried on
+            // without separation. Remember that so we stop offering it, and
+            // report the actual reason instead of a generic "not available".
+            const failedMode = event.mode as SeparationMode | undefined;
+            if (failedMode && failedMode !== 'off') {
+              setSeparationBackends(prev => ({
+                ...prev,
+                [failedMode]: {
+                  available: false,
+                  reason: event.message || 'unavailable',
+                },
+              }));
+            }
+            setSeparationMode('off');
+            setRawLog(prev => prev + `Vocal separation unavailable: ${event.message || 'backend unavailable'}\n`);
+          } else if (event.status === 'failed') {
+            setRawLog(prev => prev + `Vocal separation failed: ${event.error || 'unknown error'} (continuing without it)\n`);
           } else if (event.status === 'skipped') {
             if (event.background_url) {
               setBackgroundAudioUrl(event.background_url);
@@ -564,8 +641,9 @@ const App: React.FC = () => {
           setRawLog(prev => prev + `\nERROR: ${event.error}\n`);
         }
       }, {
-        // Separation already happened (in the browser or on the server), so
-        // tell the backend not to attempt it again.
+        // When the browser already produced the stems there is nothing left to
+        // do, so tell the backend "off"; otherwise pass the chosen backend.
+        separationMode: opts.skipSeparation ? 'off' : separationMode,
         enableBgmSeparation: opts.skipSeparation ? false : enableBgmSeparation,
         enableVoiceClone,
         exportVideo: true,
@@ -580,7 +658,7 @@ const App: React.FC = () => {
     } finally {
       setIsTranscribing(false);
     }
-  }, [targetLanguage, enableBgmSeparation, enableVoiceClone]);
+  }, [targetLanguage, enableBgmSeparation, enableVoiceClone, separationMode]);
 
   /**
    * Run vocal separation locally in the browser and hand the stems to the
@@ -697,11 +775,13 @@ const App: React.FC = () => {
             const isError = data.status === 'error';
             const isUploaded = data.status === 'uploaded';
 
-            // Restore switch settings from server
-            if (data.enable_bgm_separation !== undefined) setEnableBgmSeparation(data.enable_bgm_separation);
+            // Restore settings from server
+            if (data.separation_backends) setSeparationBackends(data.separation_backends);
+            setSeparationMode(
+              restoreSeparationMode(data, data.separation_backends)
+            );
             if (data.enable_voice_clone !== undefined) setEnableVoiceClone(data.enable_voice_clone);
             if (data.export_url) setExportUrl(data.export_url);
-            setBgmSeparationAvailable(!!data.bgm_separation_available);
 
             if (data.segments && data.segments.length > 0) {
               const recoveredSegments: TranscriptionSegment[] = data.segments.map((seg: any) => ({
@@ -791,11 +871,13 @@ const App: React.FC = () => {
 
         const statusData = await getVideoStatus(uploadResult.video_id);
 
-        // Restore switch settings from server
-        if (statusData.enable_bgm_separation !== undefined) setEnableBgmSeparation(statusData.enable_bgm_separation);
+        // Restore settings from server
+        setSeparationBackends(statusData.separation_backends ?? {});
+        setSeparationMode(
+          restoreSeparationMode(statusData, statusData.separation_backends)
+        );
         if (statusData.enable_voice_clone !== undefined) setEnableVoiceClone(statusData.enable_voice_clone);
         setExportUrl(statusData.export_url || null);
-        setBgmSeparationAvailable(!!statusData.bgm_separation_available);
 
         const isCompleted = statusData.status === 'completed';
         const isError = statusData.status === 'error';
@@ -1116,8 +1198,9 @@ const App: React.FC = () => {
         onClose={() => setIsSettingsOpen(false)}
         enableVoiceClone={enableVoiceClone}
         onVoiceCloneChange={handleVoiceCloneChange}
-        enableBgmSeparation={enableBgmSeparation}
-        onBgmSeparationChange={handleBgmSeparationChange}
+        separationMode={separationMode}
+        onSeparationModeChange={handleSeparationModeChange}
+        separationBackends={effectiveBackends}
         bgmSeparationLocked={enableVoiceClone}
       />
 
@@ -1137,8 +1220,9 @@ const App: React.FC = () => {
           onLanguageChange={setTargetLanguage}
           enableVoiceClone={enableVoiceClone}
           onVoiceCloneChange={handleVoiceCloneChange}
-          enableBgmSeparation={enableBgmSeparation}
-          onBgmSeparationChange={handleBgmSeparationChange}
+          separationMode={separationMode}
+          onSeparationModeChange={handleSeparationModeChange}
+          separationBackends={effectiveBackends}
           bgmSeparationLocked={enableVoiceClone}
         />
       ) : (

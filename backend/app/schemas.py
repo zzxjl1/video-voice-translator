@@ -97,9 +97,12 @@ class VideoStatusResponse(BaseModel):
     has_export: bool = False
     export_url: Optional[str] = None
     export_available: bool = False
-    # "client" (browser runs MDX-Net), "server" (PyTorch) or "off"
+    # Separation backend the pipeline should use for this video:
+    # "client" (browser runs MDX-Net and uploads stems), "api" (302.AI) or "off".
     separation_mode: str = "client"
-    bgm_separation_available: bool = False
+    # Per-backend availability + the reason an option is unusable:
+    # {"client": {"available": bool, "reason": str|None}, "api": {...}, "off": {...}}
+    separation_backends: dict = {}
     enable_bgm_separation: bool = False
     enable_voice_clone: bool = False
 
@@ -108,8 +111,10 @@ class VideoStatusResponse(BaseModel):
 
 class ProcessRequest(BaseModel):
     target_language: str = "English"
-    # Default comes from config.ENABLE_BGM_SEPARATION_DEFAULT (False: the
-    # separation model needs PyTorch and is not viable on a small CPU host).
+    # Separation backend for this job. Validated server-side against
+    # config.VALID_SEPARATION_MODES and config.separation_capabilities(); the
+    # client's choice is a request, not an instruction.
+    separation_mode: Optional[str] = None
     enable_bgm_separation: bool = False
     enable_voice_clone: bool = False
     # Mux the dubbed audio into a downloadable MP4 when finished.

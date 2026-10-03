@@ -63,6 +63,12 @@ async def separator_info():
     return {
         "available": True,
         "mode": config.SEPARATION_MODE,
+        # Whether the UI should start with separation switched on. Kept here
+        # rather than in /status so the client can initialise the picker before
+        # any video exists.
+        "default_enabled": config.ENABLE_BGM_SEPARATION_DEFAULT,
+        # Per-backend availability + reason, so the picker never has to guess.
+        "backends": config.separation_capabilities(),
         "filename": config.SEPARATOR_MODEL_FILE,
         "size_bytes": size,
         "size_mb": round(size / 1024 / 1024, 1),

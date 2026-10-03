@@ -36,7 +36,7 @@ from app.schemas import (
     VideoStatusResponse,
     ProcessRequest,
 )
-from app.services import asr_service, export_service, llm_service, separation_service, tts_service
+from app.services import asr_service, export_service, llm_service, tts_service
 from app.services import pipeline_service
 from app.services import voice_clone_service
 
@@ -144,7 +144,7 @@ async def get_video_status(video_id: str):
         export_url=f"/api/videos/{video_id}/export/download" if has_export else None,
         export_available=export_service.is_available() and config.EXPORT_ENABLED,
         separation_mode=config.SEPARATION_MODE,
-        bgm_separation_available=separation_service.is_available(),
+        separation_backends=config.separation_capabilities(),
         enable_bgm_separation=state.enable_bgm_separation,
         enable_voice_clone=state.enable_voice_clone,
     )
@@ -466,76 +466,6 @@ async def serve_audio(video_id: str):
     return FileResponse(state.audio_path, media_type="audio/wav")
 
 
-@router.post("/{video_id}/separate")
-async def separate_vocals(video_id: str):
-    """
-    Separate audio into vocals and background with SSE progress streaming.
-    Returns Server-Sent Events with progress updates, then the final result.
-    """
-    import asyncio
-    import json as _json
-    from fastapi.responses import StreamingResponse
-
-    logger.info(f"Vocal separation requested for video_id: {video_id}")
-    state = get_state(video_id)
-    if not state:
-        raise HTTPException(status_code=404, detail="Video not found")
-
-    async def event_stream():
-        loop = asyncio.get_event_loop()
-        progress_queue = asyncio.Queue()
-
-        def on_progress(current: int, total: int):
-            pct = int(current / total * 100) if total > 0 else 0
-            loop.call_soon_threadsafe(progress_queue.put_nowait, {"progress": pct, "current": current, "total": total})
-
-        async def run_separation():
-            video_dir = get_video_dir(video_id)
-            audio_path = os.path.join(video_dir, "extracted_audio.wav")
-            if not os.path.exists(audio_path):
-                logger.info(f"[{video_id}] Extracting audio for separation...")
-                asr_service.extract_audio(state.file_path, audio_path)
-            state.audio_path = audio_path
-            save_state(state)
-
-            result = await loop.run_in_executor(
-                None,
-                lambda: separation_service.separate_audio(audio_path, video_dir, progress_callback=on_progress),
-            )
-            return result
-
-        sep_task = asyncio.create_task(run_separation())
-
-        # Stream progress events until separation completes
-        while not sep_task.done():
-            try:
-                msg = await asyncio.wait_for(progress_queue.get(), timeout=0.5)
-                yield f"data: {_json.dumps(msg)}\n\n"
-            except asyncio.TimeoutError:
-                continue
-
-        # Drain remaining progress messages
-        while not progress_queue.empty():
-            msg = progress_queue.get_nowait()
-            yield f"data: {_json.dumps(msg)}\n\n"
-
-        try:
-            result = await sep_task
-            final = {
-                "done": True,
-                "video_id": video_id,
-                "vocals": result["vocals"],
-                "background": result["background"],
-                "background_url": f"/api/videos/{video_id}/audio/background",
-            }
-            yield f"data: {_json.dumps(final)}\n\n"
-        except Exception as e:
-            logger.error(f"[{video_id}] Separation error: {str(e)}", exc_info=True)
-            yield f"data: {_json.dumps({'error': str(e)})}\n\n"
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
-
-
 @router.post("/{video_id}/process")
 async def process_video(video_id: str, req: ProcessRequest):
     """
@@ -564,6 +494,7 @@ async def process_video(video_id: str, req: ProcessRequest):
                     target_language=req.target_language,
                     server_url_base=config.SERVER_URL_BASE,
                     emit=emit,
+                    separation_mode=req.separation_mode,
                     enable_bgm_separation=req.enable_bgm_separation,
                     enable_voice_clone=req.enable_voice_clone,
                     export_video=req.export_video,

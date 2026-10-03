@@ -353,28 +353,98 @@ def voices_for_language(language: Optional[str]) -> list[str]:
 # Vocal separation
 # =====================================================================
 #
-# Three modes:
-#   "client" — the browser runs the MDX-Net ONNX model (WebGPU/WASM) and
+# Two real backends. There is deliberately NO self-hosted (PyTorch) option:
+# `audio-separator` needs hundreds of MB of RSS and a GPU to be usable, and
+# this deployment has neither. Do not add it back.
+#
+#   "client" — the BROWSER runs the MDX-Net ONNX model (WebGPU/WASM) and
 #              uploads the resulting stems. No server CPU/RAM cost, no API
-#              cost. This is the default because the server has no headroom.
-#   "server" — the server runs `audio-separator` (PyTorch). Only viable on a
-#              machine with real headroom; NOT on a 2 GB / single-core host:
-#                pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-#                pip install "audio-separator[cpu]>=0.24.0"
-#   "off"    — no separation at all.
+#              cost. Default.
+#   "api"    — 302.AI's demucs endpoint does the separation (paid, per use).
+#   "off"    — never separate.
+#
+# `SEPARATION_MODE` is only the DEFAULT the UI starts from. The user picks a
+# backend per job and the choice travels in `ProcessRequest.separation_mode`;
+# the backend validates it rather than trusting the client.
 SEPARATION_MODE = _env("SEPARATION_MODE", "client").lower()
 
-# Server-side (PyTorch) separation backend. Disabled by default: importing
-# torch costs hundreds of MB of RSS and will make a small host swap.
+# Initial state of the "BGM Separation" control in the UI.
 ENABLE_BGM_SEPARATION_DEFAULT = _env_bool("ENABLE_BGM_SEPARATION_DEFAULT", False)
-PRELOAD_SEPARATION = _env_bool("PRELOAD_SEPARATION", False)
-SEPARATION_MODEL_NAME = _env("SEPARATION_MODEL_NAME", "2_HP-UVR.pth")
 
-# Client-side (browser) separation: the MDX-Net model served to the browser.
-# Parameters are mirrored to the client via GET /api/models/separator so the
-# JavaScript never has to hardcode them.
+# ----- Browser ("client") backend -----
+# The MDX-Net model served to the browser; its DSP parameters are mirrored to
+# the client via GET /api/models/separator so the JS never hardcodes them.
 MODELS_DIR = os.path.join(BASE_DIR, "models")
 SEPARATOR_MODEL_FILE = _env("SEPARATOR_MODEL_FILE", "UVR-MDX-NET-Inst_HQ_3.onnx")
+
+# ----- 302.AI ("api") backend -----
+# Host matters. 302.AI publishes two:
+#     https://api.302.ai   — 海外, DNS-poisoned on mainland-China networks. It
+#                            resolves to Facebook-owned IPs (observed
+#                            66.220.148.145 and 31.13.95.33) and never
+#                            completes a TLS handshake. Do not use it here.
+#     https://api.302ai.com — 国内环境2, documented and reachable.
+# `https://api.302ai.cn` also works (Tencent Cloud, fastest of the three) but
+# is not in the published spec, so the documented host is the default.
+#
+# A task_id is scoped to the environment that issued it (note the `-e1` / `-e2`
+# suffix), so submit and poll MUST use the same host.
+#
+# Both endpoints take a PUBLICLY REACHABLE audio URL — 302's servers download it
+# themselves — so this backend needs SERVER_URL_BASE to be public.
+SEPARATION_API_BASE = _env("SEPARATION_API_BASE", "https://api.302ai.com").rstrip("/")
+# POST -> {"task_id": "<uuid>-e2"}
+SEPARATION_API_PATH = _env("SEPARATION_API_PATH", "/302/vt/subtitle/extract")
+# GET -> {"status": "...", "result": {...}, "progress": <int|absent>}
+# status is one of: pending | queue | processing | success | fail
+SEPARATION_API_RESULT_PATH = _env(
+    "SEPARATION_API_RESULT_PATH", "/302/vt/tasks/subtitle/{task_id}"
+)
+# Read without `_secret()`: the API backend is optional, so a missing key must
+# not stop the app from booting.
+SEPARATION_API_KEY = (os.environ.get("SEPARATION_API_KEY") or "").strip()
+SEPARATION_API_TIMEOUT = _env_int("SEPARATION_API_TIMEOUT", 600)
+SEPARATION_API_POLL_INTERVAL = _env_float("SEPARATION_API_POLL_INTERVAL", 5.0)
+# `language` is a required field, but with is_only_demucs=true nothing is
+# transcribed, so it only has to be a valid code (e.g. "zh", "en"). The source
+# language is not known this early in the pipeline — separation runs before ASR.
+SEPARATION_API_LANGUAGE = _env("SEPARATION_API_LANGUAGE", "en")
+# While false the "api" backend reports itself unavailable *with a reason*,
+# instead of being selectable and then failing halfway through a job.
+SEPARATION_API_ENABLED = _env_bool("SEPARATION_API_ENABLED", False)
+
+VALID_SEPARATION_MODES = ("client", "api", "off")
+
+
+def separation_capabilities() -> dict[str, dict]:
+    """
+    Which separation backends are usable right now, and why not.
+
+    The UI builds its backend selector from this. The previous design exposed a
+    single global `mode` and left the frontend guessing whether it worked, which
+    is how "no separation backend is available" ended up being shown while the
+    browser backend was perfectly fine.
+    """
+    browser_model = os.path.join(MODELS_DIR, SEPARATOR_MODEL_FILE)
+    browser_ok = os.path.exists(browser_model)
+
+    if not SEPARATION_API_ENABLED:
+        api_ok, api_reason = False, "the 302.AI backend is not enabled on this server"
+    elif not SEPARATION_API_KEY:
+        api_ok, api_reason = False, "SEPARATION_API_KEY is not configured"
+    else:
+        api_ok, api_reason = True, None
+
+    return {
+        "client": {
+            "available": browser_ok,
+            "reason": None
+            if browser_ok
+            else f"separator model '{SEPARATOR_MODEL_FILE}' not found in {MODELS_DIR}",
+        },
+        "api": {"available": api_ok, "reason": api_reason},
+        "off": {"available": True, "reason": None},
+    }
 
 # ----- Capability tokens for the client-side compute endpoints -----
 # Signs the short-lived tokens that gate the 64 MB model download and the

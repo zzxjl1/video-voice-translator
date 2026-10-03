@@ -1,13 +1,6 @@
 """
 FastAPI application entry point.
 """
-import os
-
-# Fix numba cache issue: set a writable cache dir before any numba/librosa import
-_numba_cache = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".numba_cache")
-os.makedirs(_numba_cache, exist_ok=True)
-os.environ["NUMBA_CACHE_DIR"] = _numba_cache
-
 import logging
 from contextlib import asynccontextmanager
 
@@ -33,29 +26,20 @@ async def lifespan(app: FastAPI):
     """Startup / shutdown tasks."""
     logger.info("Running startup tasks...")
 
-    # Vocal separation is optional and heavy. Never load torch unless the
-    # operator explicitly opted in (PRELOAD_SEPARATION=true).
-    if config.PRELOAD_SEPARATION:
-        from app.services import separation_service
-
-        if separation_service.is_available():
-            try:
-                separation_service.init_separator()
-            except Exception as e:
-                logger.error("Failed to preload separation model: %s", e)
+    # Nothing to preload: vocal separation runs either in the browser (the
+    # server only hands over the ONNX weights) or on 302.AI. There is no local
+    # model to warm up, which is exactly the point on a small host.
+    parts = []
+    for name, info in config.separation_capabilities().items():
+        if info["available"]:
+            parts.append(f"{name}=available")
         else:
-            logger.warning(
-                "PRELOAD_SEPARATION=true but audio-separator is not installed; skipping."
-            )
-    else:
-        from app.services import separation_service
-
-        logger.info(
-            "Vocal separation: %s (preload=%s, deps=%s)",
-            "enabled" if config.ENABLE_BGM_SEPARATION_DEFAULT else "DISABLED",
-            config.PRELOAD_SEPARATION,
-            "installed" if separation_service.is_available() else "not installed",
-        )
+            parts.append(f"{name}=unavailable ({info['reason']})")
+    logger.info(
+        "Vocal separation backends: %s (default mode: %s)",
+        ", ".join(parts),
+        config.SEPARATION_MODE,
+    )
 
     logger.info("Startup tasks complete.")
     yield
@@ -89,15 +73,16 @@ async def root():
 
 @api_router.get("/health")
 async def health():
-    from app.services import separation_service
-
     return {
         "status": "ok",
         "asr_model": config.ASR_MODEL,
         "tts_model": config.TTS_MODEL,
         "llm_model": config.LLM_MODEL,
-        "bgm_separation_default": config.ENABLE_BGM_SEPARATION_DEFAULT,
-        "bgm_separation_available": separation_service.is_available(),
+        "separation_mode_default": config.SEPARATION_MODE,
+        # Per-backend availability + the reason an option is unusable, so the
+        # UI never has to guess (see GET /api/models/separator for the same
+        # data alongside the browser model's parameters).
+        "separation_backends": config.separation_capabilities(),
         "export_enabled": config.EXPORT_ENABLED,
     }
 

@@ -1,14 +1,15 @@
 """
 Full video processing pipeline service.
 
-Runs separation → ASR → translation → voice cloning → TTS → export entirely on
-the server side, reporting progress via a callback function, and supports
-resuming from the last completed phase on retry.
+Runs separation → ASR → translation → voice cloning → TTS → export, reporting
+progress via a callback function, and supports resuming from the last completed
+phase on retry.
 
 Designed for a small host (2 GB / single core / no GPU):
 
-* Vocal separation is OFF by default and the torch-based module is never
-  imported unless it is explicitly enabled *and* installed.
+* Vocal separation never runs here. It is either done in the browser (MDX-Net
+  over WebGPU/WASM, with the stems uploaded to us) or by 302.AI over HTTPS.
+  Do not reintroduce a local (torch) separator.
 * ASR / translation / TTS / cloning are all remote calls, so the local CPU
   only orchestrates.
 * TTS runs several segments concurrently — it is network-bound, not CPU-bound.
@@ -68,6 +69,7 @@ async def run_pipeline(
     target_language: str,
     server_url_base: str,
     emit: Callable,
+    separation_mode: Optional[str] = None,
     enable_bgm_separation: Optional[bool] = None,
     enable_voice_clone: bool = False,
     export_video: bool = True,
@@ -81,8 +83,10 @@ async def run_pipeline(
         target_language: Target language for translation (e.g. "English").
         server_url_base: Base URL for serving audio files to ASR.
         emit: async callable(event_dict) to push SSE events to the client.
-        enable_bgm_separation: Run vocal separation. Defaults to
-            config.ENABLE_BGM_SEPARATION_DEFAULT.
+        separation_mode: "client" (browser), "api" (302.AI) or "off". Defaults
+            to config.SEPARATION_MODE. Validated against the backends that are
+            actually usable; an unusable choice degrades to "off" and reports
+            the reason.
         enable_voice_clone: Clone each speaker's voice before synthesis.
         export_video: Mux the dubbed audio back into a downloadable MP4.
     """
@@ -91,33 +95,58 @@ async def run_pipeline(
         await emit({"error": "Video not found"})
         return
 
-    if enable_bgm_separation is None:
-        enable_bgm_separation = config.ENABLE_BGM_SEPARATION_DEFAULT
+    # ------------------------------------------------------------------
+    # Resolve the separation backend for this job.
+    #
+    # Separation never runs locally: this host has no GPU and the torch-based
+    # backend was removed. Either the browser already produced the stems
+    # (POST /api/videos/{id}/stems drops vocals.wav + background.wav into the
+    # video directory) or the 302.AI backend does it over HTTPS.
+    #
+    # The client's choice is a *request*: it is validated against
+    # config.separation_capabilities() so a stale or hand-crafted value can
+    # never send us down a path that cannot work.
+    # ------------------------------------------------------------------
+    separation_mode = (separation_mode or config.SEPARATION_MODE or "off").lower()
+    if separation_mode not in config.VALID_SEPARATION_MODES:
+        logger.warning(
+            "[%s] Unknown separation_mode %r, falling back to 'off'",
+            video_id,
+            separation_mode,
+        )
+        separation_mode = "off"
 
-    # Separation needs torch; if the deps are missing, degrade instead of crashing.
-    if enable_bgm_separation:
-        from app.services import separation_service
-
-        if not separation_service.is_available():
+    if separation_mode != "off":
+        capability = config.separation_capabilities().get(
+            separation_mode, {"available": False, "reason": "unknown mode"}
+        )
+        if not capability["available"]:
+            # Degrade instead of failing: say which backend was requested and
+            # why it cannot run, then carry on with the original mixed audio.
             logger.warning(
-                "[%s] BGM separation requested but audio-separator is not "
-                "installed (it requires PyTorch). Continuing without separation.",
+                "[%s] Separation backend %r unavailable (%s); continuing without it.",
                 video_id,
+                separation_mode,
+                capability["reason"],
             )
             await emit(
                 {
                     "phase": "separation",
                     "status": "unavailable",
+                    "mode": separation_mode,
                     "message": (
-                        "Vocal separation is not installed on this server "
-                        "(requires PyTorch). Continuing without it."
+                        f"Vocal separation backend '{separation_mode}' is "
+                        f"unavailable: {capability['reason']}"
                     ),
                 }
             )
-            enable_bgm_separation = False
+            separation_mode = "off"
 
-    # Persist switch settings into state
+    enable_bgm_separation = separation_mode != "off"
+
+    # Persist settings into state
     state.enable_bgm_separation = enable_bgm_separation
+    state.separation_mode = separation_mode
     state.enable_voice_clone = enable_voice_clone
     save_state(state)
 
@@ -134,90 +163,76 @@ async def run_pipeline(
 
     try:
         # =====================================================
-        # Phase 0: Vocal Separation (optional, disabled by default)
+        # Phase 0: Vocal Separation
+        #
+        # Nothing runs locally. "client" means the browser already produced the
+        # stems and uploaded them; "api" calls 302.AI over HTTPS; "off" does
+        # nothing. There is no torch path any more — this host has no GPU.
         # =====================================================
         audio_path = os.path.join(video_dir, "extracted_audio.wav")
         vocals_path = os.path.join(video_dir, "vocals.wav")
         background_path = os.path.join(video_dir, "background.wav")
+        background_url = f"/api/videos/{video_id}/audio/background"
 
-        if not enable_bgm_separation:
-            # Separation was either disabled or already performed in the
-            # browser (see POST /api/videos/{id}/stems), which drops
-            # vocals.wav + background.wav into the video directory.
-            if not os.path.exists(audio_path):
-                await asyncio.get_event_loop().run_in_executor(
-                    None, asr_service.extract_audio, state.file_path, audio_path
-                )
-            state.audio_path = audio_path
-            save_state(state)
+        # Extraction is needed by ASR, separation and export alike, so do it once.
+        if not os.path.exists(audio_path):
+            await asyncio.get_event_loop().run_in_executor(
+                None, asr_service.extract_audio, state.file_path, audio_path
+            )
+        state.audio_path = audio_path
+        save_state(state)
 
+        if separation_mode == "client":
+            # The browser ran MDX-Net (WebGPU/WASM) and POSTed the stems to
+            # /api/videos/{id}/stems, which drops both files into video_dir.
             if os.path.exists(vocals_path) and os.path.exists(background_path):
                 await emit({
                     "phase": "separation",
                     "status": "done",
-                    "source": "client",
-                    "background_url": f"/api/videos/{video_id}/audio/background",
+                    "mode": "client",
+                    "background_url": background_url,
                 })
             else:
-                await emit({"phase": "separation", "status": "skipped"})
-        elif resume_phase == "separation":
-            await emit({"phase": "separation", "status": "started"})
+                await emit({
+                    "phase": "separation",
+                    "status": "skipped",
+                    "mode": "client",
+                    "message": (
+                        "the browser did not upload separation stems; "
+                        "using the original mixed audio"
+                    ),
+                })
+        elif separation_mode == "api":
+            from app.services import api_separation_service
 
-            if not os.path.exists(audio_path):
-                await asyncio.get_event_loop().run_in_executor(
-                    None, asr_service.extract_audio, state.file_path, audio_path
+            await emit({"phase": "separation", "status": "started", "mode": "api"})
+            try:
+                await api_separation_service.separate_audio(
+                    video_id=video_id,
+                    audio_path=audio_path,
+                    video_dir=video_dir,
+                    server_url_base=server_url_base,
+                    emit=emit,
                 )
-            state.audio_path = audio_path
-            save_state(state)
-
-            if os.path.exists(vocals_path) and os.path.exists(background_path):
-                await emit({"phase": "separation", "progress": 100})
-            else:
-                loop = asyncio.get_event_loop()
-                progress_queue: asyncio.Queue = asyncio.Queue()
-
-                def on_sep_progress(current: int, total: int):
-                    pct = int(current / total * 100) if total > 0 else 0
-                    loop.call_soon_threadsafe(progress_queue.put_nowait, pct)
-
-                # Run separation in thread pool
-                from app.services import separation_service
-
-                sep_task = asyncio.ensure_future(
-                    loop.run_in_executor(
-                        None,
-                        lambda: separation_service.separate_audio(
-                            audio_path, video_dir, progress_callback=on_sep_progress
-                        ),
-                    )
+                await emit({
+                    "phase": "separation",
+                    "status": "done",
+                    "mode": "api",
+                    "background_url": background_url,
+                })
+            except Exception as e:  # noqa: BLE001 - degrade, never kill the job
+                logger.error(
+                    "[%s] 302.AI separation failed: %s", video_id, e, exc_info=True
                 )
-
-                while not sep_task.done():
-                    try:
-                        pct = await asyncio.wait_for(progress_queue.get(), timeout=0.5)
-                        await emit({"phase": "separation", "progress": pct})
-                    except asyncio.TimeoutError:
-                        continue
-
-                # Drain queue
-                while not progress_queue.empty():
-                    pct = progress_queue.get_nowait()
-                    await emit({"phase": "separation", "progress": pct})
-
-                # Raise if separation failed
-                sep_task.result()
-
-            await emit({
-                "phase": "separation",
-                "status": "done",
-                "background_url": f"/api/videos/{video_id}/audio/background",
-            })
+                await emit({
+                    "phase": "separation",
+                    "status": "failed",
+                    "mode": "api",
+                    "error": str(e),
+                    "message": "continuing with the original mixed audio",
+                })
         else:
-            await emit({
-                "phase": "separation",
-                "status": "skipped",
-                "background_url": f"/api/videos/{video_id}/audio/background",
-            })
+            await emit({"phase": "separation", "status": "skipped", "mode": "off"})
 
         # =====================================================
         # Phase 1: ASR Transcription
