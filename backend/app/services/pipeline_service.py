@@ -464,12 +464,26 @@ async def run_pipeline(
                     )
 
                 try:
+                    # Aim this line at its own time slot. `plan_speech_rate` is a
+                    # prediction (measured ~11% average error) but it is free —
+                    # no extra TTS call — and it stops the residual from
+                    # depending on how badly the translation overshot.
+                    # `synthesize_speech` then measures the result and corrects
+                    # it once if it is off by more than the tolerance.
+                    slot = max(
+                        0.5, (seg.end_time or 0.0) - (seg.start_time or 0.0)
+                    )
+                    planned_rate = llm_service.plan_speech_rate(
+                        seg.translated_text, target_language, slot
+                    )
                     audio_file_path = await tts_service.synthesize_speech(
                         video_id,
                         seg.id,
                         seg.translated_text,
                         voice=voice,
                         write_registry=False,
+                        speech_rate=planned_rate,
+                        target_duration=slot,
                     )
                     seg.audio_path = audio_file_path
                     succeeded_segments.append(seg.id)

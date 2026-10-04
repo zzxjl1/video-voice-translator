@@ -2,6 +2,11 @@
 import React, { memo } from 'react';
 import { TranscriptionSegment, Speaker } from '../types';
 import { formatTime, getSpeakerColor } from '../utils/helpers';
+import {
+    computeSyncRates,
+    isOutsideFitRange,
+    fitErrorSeconds,
+} from '../utils/playbackSync';
 
 interface TranscriptionPanelProps {
     segments: TranscriptionSegment[];
@@ -10,6 +15,8 @@ interface TranscriptionPanelProps {
     currentTime: number;
     onSegmentUpdate: (segmentId: string, updates: Partial<TranscriptionSegment>) => void;
     onSynthesize: (segmentId: string) => void;
+    /** Re-synthesize a line at a speed that fits its time slot. */
+    onRefit?: (segmentId: string) => void;
     onSeek: (time: number) => void;
     clonedVoices?: Record<string, string>;
     onPreviewVoice?: (speakerId: string) => void;
@@ -102,22 +109,23 @@ const SegmentCard: React.FC<{
     isActive?: boolean;
     onSegmentUpdate: (segmentId: string, updates: Partial<TranscriptionSegment>) => void;
     onSynthesize: (segmentId: string) => void;
+    onRefit?: (segmentId: string) => void;
     onSeek: (time: number) => void;
     hasClonedVoice?: boolean;
     onPreviewVoice?: (speakerId: string) => void;
     isPreviewingVoice?: boolean;
-}> = memo(({ segment, speaker, isActive, onSegmentUpdate, onSynthesize, onSeek, hasClonedVoice, onPreviewVoice, isPreviewingVoice }) => {
+}> = memo(({ segment, speaker, isActive, onSegmentUpdate, onSynthesize, onRefit, onSeek, hasClonedVoice, onPreviewVoice, isPreviewingVoice }) => {
     const speakerColor = speaker ? getSpeakerColor(speaker.id) : '#9ca3af';
 
-    // Calculate speed stats
-    let audioRate = 1.0;
-    let videoRate = 1.0;
-    if (segment.actualDuration) {
-        const targetDuration = segment.endTime - segment.startTime;
-        const idealFactor = segment.actualDuration / targetDuration;
-        audioRate = Math.min(Math.max(idealFactor, 0.75), 1.5);
-        videoRate = Math.min(Math.max(audioRate / idealFactor, 0.8), 1.5);
-    }
+    // Speed stats come from the same helper the player uses, so what is shown
+    // here is what actually happens during playback.
+    const targetDuration = segment.endTime - segment.startTime;
+    const { audioRate, videoRate } = computeSyncRates(
+        segment.actualDuration,
+        targetDuration,
+    );
+    const cannotFit = isOutsideFitRange(segment.actualDuration, targetDuration);
+    const fitError = fitErrorSeconds(segment.actualDuration, targetDuration);
 
     return (
         <div
@@ -161,12 +169,26 @@ const SegmentCard: React.FC<{
                     )}
                 </div>
                 <div className="flex items-center gap-3">
-                    {segment.actualDuration && (segment.actualDuration / (segment.endTime - segment.startTime) > 1.875 || segment.actualDuration / (segment.endTime - segment.startTime) < 0.5) && (
-                        <div className="flex items-center gap-1.5 px-2 py-1 bg-amber-50 border border-amber-200 rounded-md animate-pulse">
+                    {segment.actualDuration && cannotFit && (
+                        <div className="flex items-center gap-1.5 px-2 py-1 bg-amber-50 border border-amber-200 rounded-md">
                             <svg className="w-3 h-3 text-amber-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                             </svg>
-                            <span className="text-[9px] font-bold text-amber-700 uppercase tracking-wider">Duration Mismatch</span>
+                            <span className="text-[9px] font-bold text-amber-700 uppercase tracking-wider">
+                                {fitError > 0
+                                    ? `${fitError.toFixed(2)}s too long`
+                                    : `${(-fitError).toFixed(2)}s too short`}
+                            </span>
+                            {onRefit && (
+                                <button
+                                    onClick={() => onRefit(segment.id)}
+                                    disabled={segment.isSynthesizing}
+                                    className="ml-0.5 text-[9px] font-bold text-amber-800 underline decoration-dotted hover:text-amber-950 disabled:opacity-40 disabled:cursor-not-allowed"
+                                    title="Re-synthesize this line at a speed that fits its time slot"
+                                >
+                                    Refit
+                                </button>
+                            )}
                         </div>
                     )}
                     <span className="text-[10px] font-mono text-gray-400 bg-[#f9f9f8] px-2 py-1 rounded-md border border-[#eee]">
@@ -268,7 +290,7 @@ const SegmentCard: React.FC<{
 });
 
 export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = memo(({
-    segments, speakers, isTranscribing, currentTime, onSegmentUpdate, onSynthesize, onSeek,
+    segments, speakers, isTranscribing, currentTime, onSegmentUpdate, onSynthesize, onRefit, onSeek,
     clonedVoices, onPreviewVoice, previewingSpeaker
 }) => {
     const speakerMap = new Map(speakers.map(s => [s.id, s]));
@@ -331,6 +353,7 @@ export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = memo(({
                                 isActive={currentTime >= segment.startTime && currentTime < segment.endTime}
                                 onSegmentUpdate={onSegmentUpdate}
                                 onSynthesize={onSynthesize}
+                                onRefit={onRefit}
                                 onSeek={onSeek}
                                 hasClonedVoice={!!(clonedVoices && clonedVoices[segment.speakerId])}
                                 onPreviewVoice={onPreviewVoice}

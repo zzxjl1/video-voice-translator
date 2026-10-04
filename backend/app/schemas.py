@@ -68,6 +68,13 @@ class TTSRequest(BaseModel):
     segment_id: str
     text: str
     voice: Optional[str] = None
+    # Length of the time slot this line has to fill. When given, the backend
+    # measures the result and re-synthesizes once if it misses — this is what
+    # the "Refit" action in the transcript panel uses.
+    target_duration: Optional[float] = None
+    # Used only to predict a good starting speed. Without it the first pass
+    # uses the default rate, and the measurement/correction still fits the line.
+    target_language: Optional[str] = None
 
 
 class TTSResponse(BaseModel):

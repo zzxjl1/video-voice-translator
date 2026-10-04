@@ -27,6 +27,7 @@ import {
 } from './services/apiService';
 import { getAudioWaveform, getAudioWaveformFromUrl } from './utils/audioProcessor';
 import { decodeAudio, separateAndUpload, isModelCached } from './utils/mdx/separatorClient';
+import { computeSyncRates, setPreservesPitch } from './utils/playbackSync';
 
 /**
  * Replace a trailing, in-progress log line (identified by `prefix`) instead of
@@ -366,23 +367,20 @@ const App: React.FC = () => {
         if (shouldBePlaying) {
           isAnyTTSPlaying = true;
 
-          // Calculate desired speed factor
-          let audioRate = 1.0;
-          if (seg.actualDuration) {
-            const targetDuration = seg.endTime - seg.startTime;
-            const idealFactor = seg.actualDuration / targetDuration;
-
-            // Audio takes the first hit (clamped 0.75x - 1.5x)
-            audioRate = Math.min(Math.max(idealFactor, 0.75), 1.5);
-
-            // Video takes the rest (clamped 0.8x - 1.5x)
-            const remainingFactor = audioRate / idealFactor;
-            targetVideoRate = Math.min(Math.max(remainingFactor, 0.8), 1.5);
-          }
+          // How fast this line must play to fill its slot. The server already
+          // fitted it (speech_rate + ffprobe measurement), so this is normally
+          // within a few percent — and the video rate stays at exactly 1.
+          const { audioRate, videoRate } = computeSyncRates(
+            seg.actualDuration,
+            seg.endTime - seg.startTime,
+          );
+          if (videoRate !== 1) targetVideoRate = videoRate;
 
           if (!existingAudio) {
             try {
               const audio = new Audio(seg.audioUrl);
+              // Stretching must not shift pitch; do not rely on the default.
+              setPreservesPitch(audio);
               audio.playbackRate = audioRate;
 
               // Progress-based sync
@@ -1022,15 +1020,38 @@ const App: React.FC = () => {
     setSegments(prev => prev.map(s => s.id === id ? { ...s, isSynthesizing: true } : s));
 
     try {
-      const result = await synthesizeSpeech(videoId, targetSegment.id, text);
-      const audioUrl = result.audio_url;
-      setSegments(prev => prev.map(s => s.id === id ? { ...s, audioUrl, isSynthesizing: false } : s));
+      // Always aim at this line's own time slot. Every synthesis path has to
+      // fit, not just the batch pipeline: the playback clamp was tightened on
+      // the assumption that the server keeps lines close to their slot, so an
+      // unfitted re-synthesis here would be the one case that gets cut short.
+      const result = await synthesizeSpeech(videoId, targetSegment.id, text, undefined, {
+        targetDuration: Math.max(0.5, targetSegment.endTime - targetSegment.startTime),
+        targetLanguage,
+      });
+      // Cache-buster: the file at this URL has just been replaced, and without
+      // it the browser serves the previous take and `actualDuration` never
+      // updates. Clearing actualDuration forces `onLoadedMetadata` to re-measure.
+      setSegments(prev => prev.map(s => s.id === id
+        ? { ...s, audioUrl: `${result.audio_url}?v=${Date.now()}`, actualDuration: undefined, isSynthesizing: false }
+        : s));
     } catch (e) {
       console.error("Synthesis failed:", e);
     } finally {
       setSegments(prev => prev.map(s => s.id === id ? { ...s, isSynthesizing: false } : s));
     }
-  }, [videoId, segments]);
+  }, [videoId, segments, targetLanguage]);
+
+  /**
+   * Re-synthesize one line so it fits its own time slot.
+   *
+   * Delegates to `handleSynthesizeSegment`, which already aims every synthesis
+   * at the slot — this exists for the clearer log line the "Refit" action next
+   * to a Duration Mismatch badge produces.
+   */
+  const handleRefitSegment = useCallback(async (id: string) => {
+    setRawLog(prev => prev + `Refitting ${id} to fit its time slot...\n`);
+    await handleSynthesizeSegment(id);
+  }, [handleSynthesizeSegment]);
 
   const handleSegmentUpdate = useCallback((id: string, updates: Partial<TranscriptionSegment>) => {
     setSegments(prev => prev.map(s => {
@@ -1344,6 +1365,7 @@ const App: React.FC = () => {
                   isTranscribing={isTranscribing}
                   onSegmentUpdate={handleSegmentUpdate}
                   onSynthesize={handleSynthesizeSegment}
+                  onRefit={handleRefitSegment}
                   currentTime={currentTime}
                   onSeek={handleSeek}
                   clonedVoices={clonedVoices}

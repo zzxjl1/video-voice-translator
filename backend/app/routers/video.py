@@ -362,8 +362,24 @@ async def synthesize_speech(video_id: str, req: TTSRequest):
                     voice = cloned
                     logger.info(f"[{video_id}] Using cloned voice {voice} for segment {req.segment_id} (speaker {seg_obj.speaker_id})")
 
+        # When the caller tells us which slot this line has to fill, aim the
+        # synthesis at it. The language is only used for the opening guess; the
+        # measurement-based correction inside synthesize_speech works without
+        # it, so a missing language degrades rather than failing.
+        planned_rate = (
+            llm_service.plan_speech_rate(
+                req.text, req.target_language, req.target_duration
+            )
+            if (req.target_duration and req.target_duration > 0 and req.target_language)
+            else None
+        )
         await tts_service.synthesize_speech(
-            video_id, req.segment_id, req.text, voice
+            video_id,
+            req.segment_id,
+            req.text,
+            voice,
+            speech_rate=planned_rate,
+            target_duration=req.target_duration,
         )
         logger.info(f"[{video_id}] TTS synthesis complete (Segment: {req.segment_id})")
 

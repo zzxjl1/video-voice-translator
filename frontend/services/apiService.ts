@@ -98,18 +98,29 @@ export async function translateScript(
 }
 
 /**
- * Synthesize speech via OpenAI TTS on the backend.
+ * Synthesize speech on the backend.
+ *
+ * `options.targetDuration` makes the backend fit the line to its time slot:
+ * it synthesizes, measures with ffprobe and re-synthesizes once at a corrected
+ * `speech_rate` if the result misses by more than the tolerance.
  */
 export async function synthesizeSpeech(
   videoId: string,
   segmentId: string,
   text: string,
   voice?: string,
+  options?: { targetDuration?: number; targetLanguage?: string },
 ): Promise<TTSResult> {
   const response = await fetch(`${API_BASE}/videos/${videoId}/tts`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ segment_id: segmentId, text, voice }),
+    body: JSON.stringify({
+      segment_id: segmentId,
+      text,
+      voice,
+      target_duration: options?.targetDuration,
+      target_language: options?.targetLanguage,
+    }),
   });
 
   if (!response.ok) {

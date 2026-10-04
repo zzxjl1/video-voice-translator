@@ -166,20 +166,54 @@ GLOSSARY_MAX_TERMS = _env_int("GLOSSARY_MAX_TERMS", 40)
 # Optional per-video glossary file name inside the video directory.
 GLOSSARY_FILE = _env("GLOSSARY_FILE", "glossary.json")
 
-# Rough speaking-rate budgets, used to ask the model to fit each line into the
-# time slot it has to fill. Keeps dubbing length roughly aligned with the video
-# so the TTS output does not have to be time-stretched on playback.
-# Values are characters/sec for CJK and words/sec for latin scripts.
+# Speaking-rate budgets, used to ask the model to fit each line into the time
+# slot it has to fill, so the TTS output does not have to be time-stretched on
+# playback.
+#
+# ALL OF THESE ARE MEASURED, not estimated. Each value comes from synthesizing
+# sample lines with the voice this project actually uses and reading the result
+# back with ffprobe. The previous numbers were guesses — Chinese was 4.5 where
+# the real figure is 5.15, so every budget was ~14% too tight and lines came out
+# shorter than their slot.
+#
+# Units: characters/sec for CJK, words/sec for latin scripts (this is the unit
+# the LLM reasons in, and it is what `maxLength` is expressed in).
 SPEECH_RATE_VALUE = {
-    "Chinese": 4.5,
-    "Japanese": 5.0,
-    "Korean": 4.5,
-    "English": 2.8,
-    "French": 2.8,
-    "German": 2.3,
-    "Spanish": 3.2,
+    "Chinese": 5.65,
+    "Japanese": 7.17,
+    "Korean": 6.5,
+    "English": 2.98,
+    "French": 2.45,
+    "German": 2.5,
+    "Spanish": 2.9,
 }
-DEFAULT_SPEECH_RATE_VALUE = 4.0
+DEFAULT_SPEECH_RATE_VALUE = 2.9
+
+# The same measurement expressed in "spoken units" — roughly syllables, as
+# counted by `llm_service.speech_units()`. This is what the TTS duration
+# prediction uses, because a character count is a bad proxy: "Python" is 6
+# characters but 2 units, "73%" is 3 characters but ~8 units.
+SPEECH_UNITS_PER_SECOND = {
+    "Chinese": 5.07,
+    "Japanese": 6.5,
+    "Korean": 6.06,
+    "English": 4.46,
+    "French": 4.47,
+    "German": 4.07,
+    "Spanish": 4.34,
+}
+DEFAULT_SPEECH_UNITS_PER_SECOND = 4.4
+
+# A line costs a fixed amount of time no matter how short it is (lead-in and
+# trailing pause). Measured: a 3-character Chinese line still takes 0.78s.
+#
+#     duration ~= units / units_per_second + TTS_FIXED_OVERHEAD
+#
+# Ignoring this is why short lines were predicted badly. Fitted per language it
+# ranged 0.04–0.61s across a noisy 4-sample set, so a single shared value is
+# used instead — the slopes are what carry the signal.
+TTS_FIXED_OVERHEAD = _env_float("TTS_FIXED_OVERHEAD", 0.3)
+
 SPEECH_RATE_UNIT = {
     "Chinese": "Chinese characters",
     "Japanese": "Japanese characters",
@@ -198,6 +232,13 @@ def speech_rate_hint(language: str) -> str:
 def speech_rate_value(language: str) -> float:
     """Numeric speaking rate (chars or words per second)."""
     return SPEECH_RATE_VALUE.get(language, DEFAULT_SPEECH_RATE_VALUE)
+
+
+def speech_units_per_second(language: str) -> float:
+    """Spoken units (≈syllables) per second for this language's voice."""
+    return SPEECH_UNITS_PER_SECOND.get(
+        language, DEFAULT_SPEECH_UNITS_PER_SECOND
+    )
 
 
 # =====================================================================
@@ -270,6 +311,20 @@ TTS_MAX_RETRIES = _env_int("TTS_MAX_RETRIES", 2)
 # The SDK binds the sample rate to its `format` enum (default mp3 22.05 kHz);
 # export re-samples with ffmpeg, so this only sizes the mixing timeline.
 TTS_SAMPLE_RATE = _env_int("TTS_SAMPLE_RATE", 24000)
+
+# ----- Duration fitting -----
+# Each line is synthesized once and then measured with ffprobe (free). If the
+# result misses its time slot by more than the tolerance, it is re-synthesized
+# once at a corrected `speech_rate`.
+#
+# Tolerance is a listenability budget, NOT an accuracy target: up to ~20% of
+# pitch-preserved stretching in the browser is inaudible, so correcting tighter
+# than that just burns TTS calls. Above it the stretch becomes audible, so a
+# native re-synthesis is worth the extra call.
+TTS_FIT_TOLERANCE = _env_float("TTS_FIT_TOLERANCE", 0.20)
+# `speech_rate` bounds accepted by the API (verified 0.5–2.0).
+TTS_RATE_MIN = _env_float("TTS_RATE_MIN", 0.5)
+TTS_RATE_MAX = _env_float("TTS_RATE_MAX", 2.0)
 
 # `qwen-audio-3.1-tts-flash` voices, grouped by supported language.
 # Source: Model Studio "Qwen-Audio-TTS voice list". These four handle
