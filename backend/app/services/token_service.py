@@ -73,39 +73,67 @@ def issue_token(video_id: str, ttl: int | None = None) -> tuple[str, int]:
     return f"{_b64e(payload.encode('utf-8'))}.{_sign(payload)}", ttl
 
 
-def verify_token(token: str, video_id: str) -> bool:
+def _parse(token: str) -> tuple[str, int] | None:
     """
-    True when the token is well formed, correctly signed, unexpired and bound
-    to `video_id`.
+    Validate structure and signature. Returns `(video_id, expiry)` or None.
+
+    Expiry is parsed but not enforced here — callers decide (see
+    `video_id_from_token`, which deliberately ignores it).
     """
     if not token or "." not in token:
-        return False
+        return None
     try:
         encoded_payload, encoded_sig = token.split(".", 1)
         payload = _b64d(encoded_payload).decode("utf-8")
         provided_sig = _b64d(encoded_sig)
     except (ValueError, UnicodeDecodeError):
-        return False
+        return None
 
     expected_sig = _b64d(_sign(payload))
     if not hmac.compare_digest(provided_sig, expected_sig):
-        return False
+        return None
 
     parts = payload.split("|")
     if len(parts) != 3 or parts[0] != _TOKEN_VERSION:
-        return False
-    bound_video_id, expiry_raw = parts[1], parts[2]
+        return None
+    try:
+        expiry = int(parts[2])
+    except ValueError:
+        return None
 
+    return parts[1], expiry
+
+
+def verify_token(token: str, video_id: str) -> bool:
+    """
+    True when the token is well formed, correctly signed, unexpired and bound
+    to `video_id`.
+    """
+    parsed = _parse(token)
+    if parsed is None:
+        return False
+
+    bound_video_id, expiry = parsed
     if bound_video_id != video_id:
         return False
-    try:
-        expiry = int(expiry_raw)
-    except ValueError:
-        return False
-    if expiry < time.time():
-        return False
+    return expiry >= time.time()
 
-    return True
+
+def video_id_from_token(token: str) -> str | None:
+    """
+    The video_id a token is bound to, or None when it is malformed or the
+    signature does not check out.
+
+    Needed because the model download is issued as
+    `GET /api/models/separator/onnx?v=<fingerprint>&token=<token>` — there is no
+    `video_id` in the URL, so the binding has to be recovered from the token.
+    The payload is covered by the HMAC, so it cannot be forged.
+
+    Expiry is not checked here; `verify_token` does that as part of the normal
+    gate.
+    """
+    parsed = _parse(token)
+    return parsed[0] if parsed else None
 
 
 # ---------------------------------------------------------------------------

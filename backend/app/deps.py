@@ -16,16 +16,26 @@ def resolve_video_id(request: Request) -> str:
     """
     Find the video_id a request is about, from:
       1. the `X-Video-Id` header (explicit),
-      2. a `video_id` query parameter (used by the model download, which the
-         browser may issue as a bare GET/Range request), or
-      3. the `video_id` path parameter (used by the stem upload).
+      2. a `video_id` query parameter,
+      3. the `video_id` path parameter (used by the stem upload), or
+      4. the signed token itself.
+
+    Case (4) exists because the model download is issued as
+    `GET /api/models/separator/onnx?v=<fingerprint>&token=<token>`: the URL
+    carries no video_id at all, so the binding has to be recovered from the
+    token. Its payload is covered by the HMAC, so it cannot be forged, and
+    `verify_token` still re-checks the signature, version, binding and expiry.
     """
-    return (
+    explicit = (
         request.headers.get("x-video-id")
         or request.query_params.get("video_id")
         or request.path_params.get("video_id")
         or ""
     ).strip()
+    if explicit:
+        return explicit
+
+    return token_service.video_id_from_token(resolve_token(request)) or ""
 
 
 def resolve_token(request: Request) -> str:

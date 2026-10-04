@@ -57,6 +57,12 @@ const SeparationModeSelector: React.FC<SeparationModeSelectorProps> = ({
 
   const selectedReason = reasonFor(value);
 
+  // A disabled button that does not say why reads as broken, so the reason is
+  // printed inline rather than hidden in a hover tooltip.
+  const blockedNotes = OPTIONS.filter(o => o.mode !== 'off')
+    .map(o => ({ label: o.label, reason: reasonFor(o.mode) }))
+    .filter((n): n is { label: string; reason: string } => n.reason !== null);
+
   return (
     <div className="w-full">
       <div className="grid grid-cols-3 gap-1.5">
@@ -86,9 +92,19 @@ const SeparationModeSelector: React.FC<SeparationModeSelectorProps> = ({
         })}
       </div>
 
-      <p className={`text-[10px] leading-snug mt-1.5 px-0.5 ${selectedReason ? 'text-amber-600' : 'text-gray-400'}`}>
-        {selectedReason ?? OPTIONS.find(o => o.mode === value)?.hint}
-      </p>
+      {selectedReason ? (
+        <p className="text-[10px] leading-snug mt-1.5 px-0.5 text-amber-600">
+          {OPTIONS.find(o => o.mode === value)?.label}: {selectedReason}
+        </p>
+      ) : blockedNotes.length > 0 ? (
+        <p className="text-[10px] leading-snug mt-1.5 px-0.5 text-amber-600">
+          {blockedNotes.map(n => `${n.label} unavailable — ${n.reason}`).join(' · ')}
+        </p>
+      ) : (
+        <p className="text-[10px] leading-snug mt-1.5 px-0.5 text-gray-400">
+          {OPTIONS.find(o => o.mode === value)?.hint}
+        </p>
+      )}
     </div>
   );
 };

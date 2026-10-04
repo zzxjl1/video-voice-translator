@@ -78,6 +78,36 @@ def _dump(path: str, payload: Any, label: str) -> None:
         logger.warning(f"Failed to save {label} to {path}: {e}")
 
 
+def _request_kwargs(*, json_mode: bool) -> dict:
+    """
+    Chat-completion arguments shared by every call, kept in one place so the two
+    call sites cannot drift apart.
+
+    Two of these matter more than they look:
+
+    * `max_tokens` — the configured model is a reasoning model, which spends
+      part of the completion budget on hidden thinking before writing the
+      answer. Without an explicit cap, a long chunk gets truncated mid-JSON.
+    * `response_format` — everything downstream parses JSON, so having the
+      provider guarantee it removes a whole class of parse failures.
+
+    `reasoning_effort` is passed through `extra_body` rather than as a named
+    argument so it works regardless of the installed OpenAI SDK's version.
+    """
+    extra_body: dict = {"enable_thinking": config.LLM_THINKING_ENABLED}
+    if config.LLM_REASONING_EFFORT:
+        extra_body["reasoning_effort"] = config.LLM_REASONING_EFFORT
+
+    kwargs: dict = {
+        "temperature": config.LLM_TEMPERATURE,
+        "max_tokens": config.LLM_MAX_TOKENS,
+        "extra_body": extra_body,
+    }
+    if json_mode:
+        kwargs["response_format"] = {"type": "json_object"}
+    return kwargs
+
+
 async def _chat(prompt: str, system: str = _SYSTEM_PROMPT) -> str:
     response = await _client.chat.completions.create(
         model=config.LLM_MODEL,
@@ -85,8 +115,7 @@ async def _chat(prompt: str, system: str = _SYSTEM_PROMPT) -> str:
             {"role": "system", "content": system},
             {"role": "user", "content": prompt},
         ],
-        temperature=config.LLM_TEMPERATURE,
-        extra_body={"enable_thinking": config.LLM_THINKING_ENABLED},
+        **_request_kwargs(json_mode=True),
     )
     return (response.choices[0].message.content or "").strip()
 
@@ -319,8 +348,8 @@ async def translate_single(text: str, target_language: str) -> str:
             },
             {"role": "user", "content": text},
         ],
-        temperature=config.LLM_TEMPERATURE,
-        extra_body={"enable_thinking": config.LLM_THINKING_ENABLED},
+        # Plain text, not JSON — do not constrain the output format.
+        **_request_kwargs(json_mode=False),
     )
     return (response.choices[0].message.content or "").strip()
 

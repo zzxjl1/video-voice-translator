@@ -123,11 +123,34 @@ if _missing_secrets:
 # LLM / translation
 # =====================================================================
 
-LLM_BASE_URL = _env("LLM_BASE_URL", "https://api.siliconflow.cn/v1")
-LLM_MODEL = _env("LLM_MODEL", "Pro/moonshotai/Kimi-K2.5")
+# Defaults target DeepSeek's official API. Any OpenAI-compatible endpoint works
+# (SiliconFlow, DashScope's compatible mode, …); see .env.example.
+LLM_BASE_URL = _env("LLM_BASE_URL", "https://api.deepseek.com")
+LLM_MODEL = _env("LLM_MODEL", "deepseek-flash")
+# Provider-specific passthrough. It is a SiliconFlow/Qwen knob; DeepSeek accepts
+# and ignores it, so it is harmless either way.
 LLM_THINKING_ENABLED = _env_bool("LLM_THINKING_ENABLED", False)
 LLM_TIMEOUT = _env_int("LLM_TIMEOUT", 180)
 LLM_TEMPERATURE = _env_float("LLM_TEMPERATURE", 0.3)
+
+# Reasoning models spend part of the completion budget on hidden "thinking"
+# before writing the answer, so the cap has to cover both. Leave this explicit:
+# with the provider default a long chunk can be cut off mid-JSON. `deepseek-flash`
+# accepts 8192 (verified).
+LLM_MAX_TOKENS = _env_int("LLM_MAX_TOKENS", 8192)
+
+# Ask the provider to guarantee a JSON object in `content`. Everything reading
+# these responses parses JSON, so this removes a whole class of "the model
+# wrapped the array in prose" failures. Supported by DeepSeek and most
+# OpenAI-compatible gateways (verified on DeepSeek).
+LLM_JSON_MODE = _env_bool("LLM_JSON_MODE", True)
+
+# Optional reasoning control. A reasoning model emits `reasoning_content` before
+# the answer; translation does not need it, and it costs tokens and latency.
+# Verified on deepseek-flash: "none" removes the reasoning block entirely.
+# Blank = send nothing and accept the provider default. Common values: none /
+# minimal / low / medium / high.
+LLM_REASONING_EFFORT = _env("LLM_REASONING_EFFORT", "")
 
 # Long scripts are translated in chunks so a single response can never be
 # truncated mid-JSON. Chunks overlap so the model keeps conversational context.

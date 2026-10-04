@@ -115,6 +115,9 @@ const App: React.FC = () => {
   // Filled from /models/separator (on mount) and /status (per video).
   const [separationBackends, setSeparationBackends] = useState<SeparationBackends>({});
   const [separatorInfo, setSeparatorInfo] = useState<SeparatorInfo | null>(null);
+  // Why GET /api/models/separator failed, surfaced in the backend picker so a
+  // greyed-out option explains itself instead of looking broken.
+  const [separatorInfoError, setSeparatorInfoError] = useState<string>('');
 
   // Export (mux the dubbed audio back into a downloadable MP4)
   const [exportUrl, setExportUrl] = useState<string | null>(null);
@@ -129,7 +132,11 @@ const App: React.FC = () => {
     ...separationBackends,
     client: separationBackends.client ?? {
       available: Boolean(separatorInfo?.available),
-      reason: separatorInfo ? null : 'the separator model is not available on the server',
+      reason: separatorInfo
+        ? null
+        : separatorInfoError
+          ? `could not reach GET /api/models/separator — ${separatorInfoError}`
+          : 'the separator model is not available on the server',
     },
     off: { available: true, reason: null },
   };
@@ -232,10 +239,12 @@ const App: React.FC = () => {
         setSeparationMode(info.default_enabled && defaultBackendUsable ? info.mode : 'off');
       })
       .catch(err => {
-        // Model missing or the endpoint is unavailable: fall back to whatever
-        // the server reports, which will be "server" or "off".
+        // Either the model file is missing server-side (the endpoint 404s with
+        // instructions) or the request never reached the backend (wrong origin,
+        // no dev proxy). Keep the message so the picker can say which.
         console.warn('Separator model unavailable:', err);
         setSeparatorInfo(null);
+        setSeparatorInfoError(err instanceof Error ? err.message : String(err));
       });
   }, []);
 
