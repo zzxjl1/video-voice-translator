@@ -6,6 +6,7 @@ import hashlib
 import logging
 import os
 import shutil
+import subprocess
 import uuid
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
@@ -480,6 +481,69 @@ async def serve_audio(video_id: str):
         raise HTTPException(status_code=404, detail="Audio file not found on disk")
 
     return FileResponse(state.audio_path, media_type="audio/wav")
+
+
+@router.get(
+    "/{video_id}/audio/stereo",
+    dependencies=[Depends(enforce_separator_token)],
+)
+async def serve_separation_source(video_id: str):
+    """
+    STEREO 44.1 kHz audio, for in-browser vocal separation.
+
+    Deliberately NOT the file `/{video_id}/audio` serves. That one is the
+    16 kHz MONO track ASR uses, and MDX-Net needs both channels across the full
+    band: separating the ASR file would band-limit the output to 8 kHz and throw
+    away the stereo image. The result is audibly muffled, and the cause is very
+    hard to trace back from the symptom.
+
+    Exists because browser separation cannot always rely on the in-memory File
+    (after a page reload there is none, yet the pipeline can still be started
+    from the URL). Extracted on demand from the original upload and cached
+    beside it; token gated because the extraction costs real CPU.
+    """
+    from fastapi.responses import FileResponse
+
+    state = get_state(video_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    video_dir = get_video_dir(video_id)
+    stereo_path = os.path.join(video_dir, "separation_source.wav")
+
+    if not os.path.exists(stereo_path):
+        if not state.file_path or not os.path.exists(state.file_path):
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "The original video is no longer on disk, so a separation "
+                    "source cannot be produced. Re-upload it to separate "
+                    "vocals in the browser."
+                ),
+            )
+
+        result = subprocess.run(
+            [
+                "ffmpeg", "-y", "-v", "error",
+                "-i", state.file_path,
+                "-vn", "-acodec", "pcm_s16le",
+                "-ar", "44100", "-ac", "2",
+                stereo_path,
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            logger.error(
+                f"[{video_id}] Stereo extraction for separation failed: "
+                f"{result.stderr[-300:]}"
+            )
+            raise HTTPException(
+                status_code=500, detail="Could not extract stereo audio"
+            )
+        logger.info(f"[{video_id}] Extracted separation source -> {stereo_path}")
+
+    return FileResponse(stereo_path, media_type="audio/wav")
 
 
 @router.post("/{video_id}/process")

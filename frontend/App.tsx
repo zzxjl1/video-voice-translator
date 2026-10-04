@@ -269,9 +269,13 @@ const App: React.FC = () => {
 
           // Restore settings from server
           if (data.separation_backends) setSeparationBackends(data.separation_backends);
-          setSeparationMode(
-            restoreSeparationMode(data, data.separation_backends)
+          // Resolve the saved backend once: the retry below runs before this
+          // state update is rendered, so it cannot read it back off state.
+          const restoredMode = restoreSeparationMode(
+            data,
+            data.separation_backends
           );
+          setSeparationMode(restoredMode);
           if (data.enable_voice_clone !== undefined) setEnableVoiceClone(data.enable_voice_clone);
           if (data.export_url) setExportUrl(data.export_url);
 
@@ -308,8 +312,11 @@ const App: React.FC = () => {
             setRawLog(`Session recovered for: ${idFromUrl}\n${reason}\n\nAuto-retrying pipeline...\n`);
             setIsLogOpen(true);
 
-            // Auto-retry pipeline
-            runPipeline(idFromUrl).finally(() => {
+            // Auto-retry pipeline. Goes through `startPipeline` so browser
+            // separation still happens on this route (there is no File in
+            // memory here, so it pulls the audio from the server), and passes
+            // the restored backend explicitly.
+            startPipeline(idFromUrl, undefined, restoredMode).finally(() => {
               setIsTranscribing(false);
             });
           } else {
@@ -426,7 +433,11 @@ const App: React.FC = () => {
     }
   };
 
-  const runPipeline = useCallback(async (vid: string, file?: File, opts: { skipSeparation?: boolean } = {}) => {
+  const runPipeline = useCallback(async (
+    vid: string,
+    file?: File,
+    opts: { skipSeparation?: boolean; separationMode?: SeparationMode } = {},
+  ) => {
     setIsTranscribing(true);
     setRawLog('');
     setIsLogOpen(true);
@@ -657,7 +668,15 @@ const App: React.FC = () => {
       }, {
         // When the browser already produced the stems there is nothing left to
         // do, so tell the backend "off"; otherwise pass the chosen backend.
-        separationMode: opts.skipSeparation ? 'off' : separationMode,
+        //
+        // `opts.separationMode` lets a caller that has just read the saved
+        // choice off the server (the mount and back/forward effects) use it
+        // immediately. Relying on `setSeparationMode` there does not work: the
+        // state update is not rendered yet, so the closure still holds the
+        // initial value and the job would be sent as "off".
+        separationMode: opts.skipSeparation
+          ? 'off'
+          : opts.separationMode ?? separationMode,
         enableBgmSeparation: opts.skipSeparation ? false : enableBgmSeparation,
         enableVoiceClone,
         exportVideo: true,
@@ -681,7 +700,7 @@ const App: React.FC = () => {
    *
    * Returns true when the stems were uploaded successfully.
    */
-  const runClientSeparation = useCallback(async (file: File, vid: string): Promise<boolean> => {
+  const runClientSeparation = useCallback(async (vid: string, file?: File): Promise<boolean> => {
     setIsSeparating(true);
     try {
       const info = separatorInfo ?? (await getSeparatorInfo());
@@ -699,8 +718,33 @@ const App: React.FC = () => {
         setRawLog(prev => prev + `Downloading the ${info.size_mb} MB model (cached for next time)...\n`);
       }
 
+      // Prefer the in-memory file: no extra transfer. After a page reload there
+      // is none, yet the pipeline can still be started from the URL, so fall
+      // back to the audio the server has already extracted. `decodeAudio`
+      // accepts any Blob, so both sources share the same code path — that is
+      // what makes separation possible on the retry routes.
+      let source: Blob;
+      if (file) {
+        source = file;
+      } else {
+        // Not `/audio`: that file is the 16 kHz MONO track ASR uses, and
+        // separating it would band-limit the output to 8 kHz and discard the
+        // stereo image. This endpoint produces a stereo 44.1 kHz source from
+        // the original upload, and caches it server-side.
+        setRawLog(prev => prev + 'Fetching a stereo separation source from the server...\n');
+        const response = await fetch(
+          `/api/videos/${vid}/audio/stereo?token=${encodeURIComponent(token)}`
+        );
+        if (!response.ok) {
+          throw new Error(
+            `could not fetch a separation source (HTTP ${response.status})`
+          );
+        }
+        source = await response.blob();
+      }
+
       setRawLog(prev => prev + 'Decoding audio locally...\n');
-      const audio = await decodeAudio(file);
+      const audio = await decodeAudio(source);
       setRawLog(prev =>
         prev + `Decoded ${audio.duration.toFixed(1)}s @ ${audio.sampleRate} Hz.\n`
       );
@@ -749,6 +793,42 @@ const App: React.FC = () => {
     }
   }, [separatorInfo]);
 
+  /**
+   * Separate in the browser when the user asked for it, then start the server
+   * pipeline and tell it not to repeat the work.
+   *
+   * EVERY entry point has to go through here. The session-recovery and
+   * back/forward handlers used to call `runPipeline` directly, which silently
+   * skipped client separation: the job ran with `separation_mode=client`, the
+   * browser never uploaded stems, and the backend reported "the browser did not
+   * upload separation stems" for a run whose own log showed no separation
+   * attempt at all.
+   *
+   * `file` is optional because those routes have no File in memory; separation
+   * then pulls the audio from the server instead.
+   */
+  const startPipeline = useCallback(
+    async (
+      vid: string,
+      file?: File,
+      modeOverride?: SeparationMode,
+    ): Promise<void> => {
+      // An explicit mode wins: the caller may have just read the saved choice
+      // off the server and the corresponding state update is not rendered yet.
+      const mode = modeOverride ?? separationMode;
+
+      let stemsUploaded = false;
+      if (mode === 'client') {
+        stemsUploaded = await runClientSeparation(vid, file);
+      }
+      await runPipeline(vid, file, {
+        skipSeparation: stemsUploaded,
+        separationMode: mode,
+      });
+    },
+    [separationMode, runClientSeparation, runPipeline]
+  );
+
   // Handle browser back/forward navigation
   useEffect(() => {
     const handlePopState = () => {
@@ -791,9 +871,13 @@ const App: React.FC = () => {
 
             // Restore settings from server
             if (data.separation_backends) setSeparationBackends(data.separation_backends);
-            setSeparationMode(
-              restoreSeparationMode(data, data.separation_backends)
+            // Resolve the saved backend once: the retry below runs before this
+            // state update is rendered, so it cannot read it back off state.
+            const restoredMode = restoreSeparationMode(
+              data,
+              data.separation_backends
             );
+            setSeparationMode(restoredMode);
             if (data.enable_voice_clone !== undefined) setEnableVoiceClone(data.enable_voice_clone);
             if (data.export_url) setExportUrl(data.export_url);
 
@@ -825,7 +909,7 @@ const App: React.FC = () => {
                 : `Processing was interrupted at: ${data.status}`;
               setRawLog(`Session recovered for: ${idFromUrl}\n${reason}\n\nAuto-retrying pipeline...\n`);
               setIsLogOpen(true);
-              runPipeline(idFromUrl).finally(() => setIsTranscribing(false));
+              startPipeline(idFromUrl, undefined, restoredMode).finally(() => setIsTranscribing(false));
             } else {
               setIsTranscribing(false);
               setIsAudioLoading(true);
@@ -849,7 +933,9 @@ const App: React.FC = () => {
 
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, [videoId, runPipeline]);
+    // `startPipeline` carries the current separation mode, so a stale `runPipeline`
+    // can no longer be used to start a job without browser separation.
+  }, [videoId, startPipeline]);
 
   const handleVideoSelect = useCallback(async (file: File) => {
     setVideoFile(file);
@@ -865,18 +951,6 @@ const App: React.FC = () => {
       const uploadResult = await uploadVideo(file);
       setVideoId(uploadResult.video_id);
       setRawLog(prev => prev + `Upload complete. Video ID: ${uploadResult.video_id}\n`);
-
-      /**
-       * Optionally separate vocals in the browser first, then start the server
-       * pipeline. `skipSeparation` stops the backend from repeating the work.
-       */
-      const startPipeline = async () => {
-        let stemsUploaded = false;
-        if (enableBgmSeparation && separationMode === 'client') {
-          stemsUploaded = await runClientSeparation(file, uploadResult.video_id);
-        }
-        await runPipeline(uploadResult.video_id, file, { skipSeparation: stemsUploaded });
-      };
 
       if (uploadResult.exists) {
         // Video already exists — ask user what to do
@@ -946,7 +1020,7 @@ const App: React.FC = () => {
           }
 
           // Resume pipeline
-          await startPipeline();
+          await startPipeline(uploadResult.video_id, file);
         } else {
           // Reset and re-process
           setRawLog('Resetting video data...\n');
@@ -956,11 +1030,11 @@ const App: React.FC = () => {
           setSpeakers([]);
           await resetVideo(uploadResult.video_id);
           setRawLog(prev => prev + 'Reset complete. Starting fresh...\n');
-          await startPipeline();
+          await startPipeline(uploadResult.video_id, file);
         }
       } else {
         // New video — run the full pipeline
-        await startPipeline();
+        await startPipeline(uploadResult.video_id, file);
       }
 
     } catch (err) {
@@ -971,7 +1045,7 @@ const App: React.FC = () => {
       setIsTranscribing(false);
       setIsAudioLoading(false);
     }
-  }, [targetLanguage, runPipeline, runClientSeparation, enableBgmSeparation, separationMode]);
+  }, [targetLanguage, runPipeline, startPipeline]);
 
   const handleTranslateSegmentImpl = useCallback(async (id: string, textToTranslate?: string) => {
     // Find the latest segment data from state
