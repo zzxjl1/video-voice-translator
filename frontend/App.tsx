@@ -482,10 +482,17 @@ const App: React.FC = () => {
           } else if (event.status === 'failed') {
             setRawLog(prev => prev + `Vocal separation failed: ${event.error || 'unknown error'} (continuing without it)\n`);
           } else if (event.status === 'skipped') {
-            if (event.background_url) {
-              setBackgroundAudioUrl(event.background_url);
-            }
-            setRawLog(prev => prev + 'Vocal separation: already done, skipping.\n');
+            // `skipped` means separation did NOT run — the backend reworked this
+            // event from "already done, nothing to do" into "no isolated vocals,
+            // continuing with the original mixed audio". The old wording here
+            // said the exact opposite of what had happened.
+            const why =
+              event.message ||
+              (event.mode === 'off'
+                ? 'separation is off'
+                : 'using the original mixed audio');
+            const label = event.mode ? ` [${event.mode}]` : '';
+            setRawLog(prev => prev + `Vocal separation skipped${label} — ${why}\n`);
           } else if (event.progress !== undefined) {
             const pct = event.progress;
             if (pct !== lastSepPct) {
