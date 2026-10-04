@@ -125,8 +125,6 @@ const App: React.FC = () => {
   const [isExporting, setIsExporting] = useState(false);
   const [exportError, setExportError] = useState<string>('');
 
-  const enableBgmSeparation = separationMode !== 'off';
-
   // Merge what /models/separator said about the browser backend with what
   // /status reported for the rest, so the picker works before any video exists.
   const effectiveBackends: SeparationBackends = {
@@ -316,7 +314,12 @@ const App: React.FC = () => {
             // separation still happens on this route (there is no File in
             // memory here, so it pulls the audio from the server), and passes
             // the restored backend explicitly.
-            startPipeline(idFromUrl, undefined, restoredMode).finally(() => {
+            startPipeline(
+              idFromUrl,
+              undefined,
+              restoredMode,
+              Boolean(data.has_background)
+            ).finally(() => {
               setIsTranscribing(false);
             });
           } else {
@@ -436,7 +439,7 @@ const App: React.FC = () => {
   const runPipeline = useCallback(async (
     vid: string,
     file?: File,
-    opts: { skipSeparation?: boolean; separationMode?: SeparationMode } = {},
+    opts: { separationMode?: SeparationMode } = {},
   ) => {
     setIsTranscribing(true);
     setRawLog('');
@@ -666,18 +669,22 @@ const App: React.FC = () => {
           setRawLog(prev => prev + `\nERROR: ${event.error}\n`);
         }
       }, {
-        // When the browser already produced the stems there is nothing left to
-        // do, so tell the backend "off"; otherwise pass the chosen backend.
+        // Always report the backend honestly, including when the browser
+        // already produced the stems. Forcing "off" in that case was actively
+        // misleading: the backend then logged "separation skipped [off]" for a
+        // run whose stems exist and ARE mixed into the export. With "client"
+        // the backend checks the files itself and reports "done [client]",
+        // which is what actually happened.
+        //
+        // Letting the server decide also removes a redundant flag: it knows
+        // whether the stems exist, so the client no longer has to tell it.
         //
         // `opts.separationMode` lets a caller that has just read the saved
         // choice off the server (the mount and back/forward effects) use it
         // immediately. Relying on `setSeparationMode` there does not work: the
         // state update is not rendered yet, so the closure still holds the
         // initial value and the job would be sent as "off".
-        separationMode: opts.skipSeparation
-          ? 'off'
-          : opts.separationMode ?? separationMode,
-        enableBgmSeparation: opts.skipSeparation ? false : enableBgmSeparation,
+        separationMode: opts.separationMode ?? separationMode,
         enableVoiceClone,
         exportVideo: true,
       });
@@ -691,7 +698,7 @@ const App: React.FC = () => {
     } finally {
       setIsTranscribing(false);
     }
-  }, [targetLanguage, enableBgmSeparation, enableVoiceClone, separationMode]);
+  }, [targetLanguage, enableVoiceClone, separationMode]);
 
   /**
    * Run vocal separation locally in the browser and hand the stems to the
@@ -812,19 +819,29 @@ const App: React.FC = () => {
       vid: string,
       file?: File,
       modeOverride?: SeparationMode,
+      /**
+       * The server already holds vocals.wav + background.wav for this video.
+       * Comes from the status endpoint's `has_background` flag.
+       */
+      stemsAlreadyPresent = false,
     ): Promise<void> => {
       // An explicit mode wins: the caller may have just read the saved choice
       // off the server and the corresponding state update is not rendered yet.
       const mode = modeOverride ?? separationMode;
 
-      let stemsUploaded = false;
-      if (mode === 'client') {
-        stemsUploaded = await runClientSeparation(vid, file);
+      // Only run MDX-Net when the stems are actually missing. Re-running it
+      // costs the whole runtime download (~28 MB of wasm) plus the model plus a
+      // full separation pass plus a re-upload, and the result would just
+      // overwrite identical files. The retry routes hit this every time they
+      // resume a job whose separation had already succeeded.
+      if (mode === 'client' && !stemsAlreadyPresent) {
+        await runClientSeparation(vid, file);
       }
-      await runPipeline(vid, file, {
-        skipSeparation: stemsUploaded,
-        separationMode: mode,
-      });
+
+      // Always report the honest mode. The backend checks the files on disk and
+      // reports separation as "done" or "not performed" itself, so there is no
+      // flag here for the client to get wrong.
+      await runPipeline(vid, file, { separationMode: mode });
     },
     [separationMode, runClientSeparation, runPipeline]
   );
@@ -909,7 +926,12 @@ const App: React.FC = () => {
                 : `Processing was interrupted at: ${data.status}`;
               setRawLog(`Session recovered for: ${idFromUrl}\n${reason}\n\nAuto-retrying pipeline...\n`);
               setIsLogOpen(true);
-              startPipeline(idFromUrl, undefined, restoredMode).finally(() => setIsTranscribing(false));
+              startPipeline(
+                idFromUrl,
+                undefined,
+                restoredMode,
+                Boolean(data.has_background)
+              ).finally(() => setIsTranscribing(false));
             } else {
               setIsTranscribing(false);
               setIsAudioLoading(true);
@@ -1019,8 +1041,14 @@ const App: React.FC = () => {
             return;
           }
 
-          // Resume pipeline
-          await startPipeline(uploadResult.video_id, file);
+          // Resume pipeline. Pass the existing stems so a video that was
+          // already separated is not separated again in the browser.
+          await startPipeline(
+            uploadResult.video_id,
+            file,
+            undefined,
+            Boolean(statusData.has_background)
+          );
         } else {
           // Reset and re-process
           setRawLog('Resetting video data...\n');

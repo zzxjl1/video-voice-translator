@@ -122,6 +122,10 @@ class ProcessRequest(BaseModel):
     # config.VALID_SEPARATION_MODES and config.separation_capabilities(); the
     # client's choice is a request, not an instruction.
     separation_mode: Optional[str] = None
+    # Accepted but IGNORED, kept only so that a stale client or a hand-made
+    # request still validates instead of getting a 422. Whether the browser
+    # already produced the stems is answered by the files on disk, not by a flag
+    # from the client, and `separation_mode` is the single source of truth.
     enable_bgm_separation: bool = False
     enable_voice_clone: bool = False
     # Mux the dubbed audio into a downloadable MP4 when finished.

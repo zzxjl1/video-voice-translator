@@ -311,7 +311,6 @@ export async function processVideo(
   onEvent: (event: any) => void,
   options?: {
     separationMode?: SeparationMode;
-    enableBgmSeparation?: boolean;
     enableVoiceClone?: boolean;
     exportVideo?: boolean;
   },
@@ -325,7 +324,6 @@ export async function processVideo(
       // (302.AI) or "off". The server validates this against the backends it
       // can actually run and degrades to "off" if the choice is unusable.
       separation_mode: options?.separationMode ?? 'client',
-      enable_bgm_separation: options?.enableBgmSeparation ?? false,
       enable_voice_clone: options?.enableVoiceClone ?? false,
       export_video: options?.exportVideo ?? true,
     }),

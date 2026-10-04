@@ -70,7 +70,6 @@ async def run_pipeline(
     server_url_base: str,
     emit: Callable,
     separation_mode: Optional[str] = None,
-    enable_bgm_separation: Optional[bool] = None,
     enable_voice_clone: bool = False,
     export_video: bool = True,
 ):

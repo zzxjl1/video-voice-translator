@@ -575,7 +575,6 @@ async def process_video(video_id: str, req: ProcessRequest):
                     server_url_base=config.SERVER_URL_BASE,
                     emit=emit,
                     separation_mode=req.separation_mode,
-                    enable_bgm_separation=req.enable_bgm_separation,
                     enable_voice_clone=req.enable_voice_clone,
                     export_video=req.export_video,
                 )
