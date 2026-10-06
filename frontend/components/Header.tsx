@@ -7,10 +7,9 @@ interface HeaderProps {
   onLanguageChange: (lang: string) => void;
   isProcessing: boolean;
   hasSegments: boolean;
+  /** Opens the export dialog. Same action in every state — see the button. */
   onExport: () => void;
-  onDownloadExport: () => void;
   isExporting: boolean;
-  hasExport: boolean;
   exportError?: string;
 }
 
@@ -32,10 +31,8 @@ const Header: React.FC<HeaderProps> = ({
   isProcessing,
   hasSegments,
   onExport,
-  onDownloadExport,
   isExporting,
-  hasExport,
-  exportError
+  exportError,
 }) => {
   const [isScrolled, setIsScrolled] = useState(false);
   const [isVisible, setIsVisible] = useState(true);
@@ -159,50 +156,38 @@ const Header: React.FC<HeaderProps> = ({
             <span className="text-sm font-bold mt-1 ml-1 text-white">Translate & Synthesize</span>
           </button>
 
-          {/* Export / Download Button */}
+          {/* Export Button.
+              One button, one label, one meaning: open the export dialog. It used
+              to flip to "Download Video" once a file existed, which made the
+              export settings unreachable exactly for someone re-rendering with
+              different subtitles. There is no "already exported" state to
+              reflect — the file is produced on demand. */}
           <div className="flex flex-col gap-1">
-            {hasExport ? (
-              <button
-                onClick={onDownloadExport}
-                disabled={isProcessing}
-                className="flex flex-col items-start gap-1 p-4 bg-white hover:bg-gray-50 border-2 border-claude-accent shadow-xl shadow-claude-accent/10 hover:-translate-y-0.5 transition-all duration-300 rounded-2xl w-52 text-claude-accent disabled:opacity-40 active:scale-[0.98] active:translate-y-0"
-              >
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-lg bg-claude-accent/10 flex items-center justify-center">
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+            <button
+              onClick={onExport}
+              disabled={isExporting || isProcessing || !hasSegments}
+              className="flex flex-col items-start gap-1 p-4 bg-white hover:bg-gray-50 border border-gray-200 shadow-xl shadow-black/5 hover:-translate-y-0.5 transition-all duration-300 rounded-2xl w-52 text-gray-700 disabled:opacity-40 active:scale-[0.98] active:translate-y-0"
+            >
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center text-gray-500">
+                  {isExporting ? (
+                    <svg className="animate-spin w-5 h-5" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
                     </svg>
-                  </div>
-                  <span className="text-[10px] font-black uppercase tracking-[0.15em] text-claude-accent/70">Ready</span>
+                  ) : (
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l3-3h6a2 2 0 002-2V7a2 2 0 00-2-2H6a2 2 0 00-2 2v8a2 2 0 002 2h3l3 3z" />
+                    </svg>
+                  )}
                 </div>
-                <span className="text-sm font-bold mt-1 ml-1">Download Video</span>
-              </button>
-            ) : (
-              <button
-                onClick={onExport}
-                disabled={isExporting || isProcessing || !hasSegments}
-                className="flex flex-col items-start gap-1 p-4 bg-white hover:bg-gray-50 border border-gray-200 shadow-xl shadow-black/5 hover:-translate-y-0.5 transition-all duration-300 rounded-2xl w-52 text-gray-700 disabled:opacity-40 active:scale-[0.98] active:translate-y-0"
-              >
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-lg bg-gray-100 flex items-center justify-center text-gray-500">
-                    {isExporting ? (
-                      <svg className="animate-spin w-5 h-5" viewBox="0 0 24 24" fill="none">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-                      </svg>
-                    ) : (
-                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
-                      </svg>
-                    )}
-                  </div>
-                  <span className="text-[10px] font-black uppercase tracking-[0.15em] text-gray-400">
-                    {isExporting ? 'Exporting' : 'Export'}
-                  </span>
-                </div>
-                <span className="text-sm font-bold mt-1 ml-1">Render Full Video</span>
-              </button>
-            )}
+                <span className="text-[10px] font-black uppercase tracking-[0.15em] text-gray-400">
+                  {isExporting ? 'Exporting' : 'Export'}
+                </span>
+              </div>
+              <span className="text-sm font-bold mt-1 ml-1">Export</span>
+            </button>
+
             {exportError && (
               <span className="text-[10px] text-red-500 font-semibold max-w-52 px-1" title={exportError}>
                 Export failed: {exportError.slice(0, 60)}

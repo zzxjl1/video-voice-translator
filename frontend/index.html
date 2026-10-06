@@ -9,31 +9,18 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Merriweather:ital,wght@0,300;0,400;0,700;0,900;1,300;1,400&display=swap" rel="stylesheet">
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      theme: {
-        extend: {
-          fontFamily: {
-            serif: ['Merriweather', 'serif'],
-            sans: ['Inter', 'sans-serif'],
-          },
-          colors: {
-            claude: {
-              bg: '#FDFBF9',
-              paper: '#F2F0E9',
-              text: '#2D2D2D',
-              accent: '#DA7756',
-              accentHover: '#C56645',
-              border: '#E6E4DD',
-              charcoal: '#383838'
-            }
-          }
-        }
-      }
-    }
-  </script>
-<link rel="stylesheet" href="/index.css">
+  <!--
+    Tailwind is compiled into the bundle (see index.css, tailwind.config.js).
+    It used to be loaded from cdn.tailwindcss.com with an inline config right
+    here, which meant the app was unstyled until a third-party script arrived
+    and restyled it — and the design tokens below lived in markup rather than
+    in a file the build could see.
+
+    There was also a <link rel="stylesheet" href="/index.css"> here. The file
+    did not exist, so Vite's SPA fallback answered with index.html and the
+    browser tried to parse HTML as CSS. Removed; index.css exists now and is
+    imported by index.tsx.
+  -->
 </head>
 <body class="bg-claude-bg text-claude-text antialiased font-sans">
   <div id="root"></div>

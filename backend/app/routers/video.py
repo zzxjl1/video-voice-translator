@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import uuid
+from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 
@@ -24,6 +25,7 @@ from app.models import (
     save_state,
 )
 from app.schemas import (
+    ExportRequest,
     ExportResponse,
     SegmentOut,
     SpeakerOut,
@@ -37,7 +39,13 @@ from app.schemas import (
     VideoStatusResponse,
     ProcessRequest,
 )
-from app.services import asr_service, export_service, llm_service, tts_service
+from app.services import (
+    asr_service,
+    export_service,
+    llm_service,
+    subtitle_service,
+    tts_service,
+)
 from app.services import pipeline_service
 from app.services import voice_clone_service
 
@@ -112,7 +120,10 @@ async def get_video_status(video_id: str):
         raise HTTPException(status_code=404, detail="Video not found")
 
     video_dir = get_video_dir(video_id)
-    has_export = os.path.exists(export_service.get_export_path(video_id))
+    # Resolved, not assumed: a styled export lands in an MKV, so checking only
+    # the MP4 path would report "no export" for a file that exists.
+    export_found = export_service.find_export(video_id)
+    has_export = export_found is not None
 
     return VideoStatusResponse(
         video_id=state.video_id,
@@ -144,6 +155,16 @@ async def get_video_status(video_id: str):
         has_export=has_export,
         export_url=f"/api/videos/{video_id}/export/download" if has_export else None,
         export_available=export_service.is_available() and config.EXPORT_ENABLED,
+        # Which container the finished file is in, so the UI can label the
+        # download correctly (and re-initialise its export panel).
+        export_container=export_found[1] if export_found else None,
+        subtitle_style=subtitle_service.SubtitleStyle.from_dict(
+            getattr(state, "subtitle_style", None)
+        ).to_dict(),
+        subtitle_export=subtitle_service.ExportPlan.from_dict(
+            getattr(state, "subtitle_export", None)
+        ).to_dict(),
+        subtitle_capabilities=subtitle_service.capabilities(),
         separation_mode=config.SEPARATION_MODE,
         separation_backends=config.separation_capabilities(),
         enable_bgm_separation=state.enable_bgm_separation,
@@ -796,12 +817,18 @@ async def upload_stems(
 
 
 @router.post("/{video_id}/export", response_model=ExportResponse)
-async def export_video(video_id: str):
+async def export_video(video_id: str, req: Optional[ExportRequest] = None):
     """
-    Mux the dubbed audio back into the video and return the download URL.
+    Mux the dubbed audio (and optional subtitle tracks) into the video.
 
-    Cheap by design: the video stream is copied (`-c:v copy`), only the audio
-    timeline is rebuilt, so this works even on a single-core CPU host.
+    Cheap by design: the video stream is copied (`-c:v copy`) and subtitles are
+    EMBEDDED, not burned, so even several styled tracks cost one remux instead
+    of a re-encode. Burning happens in the browser.
+
+    The body is optional. When present it is merged over the video's saved plan
+    — only the fields actually sent are overridden, so a client that flips one
+    switch does not reset the style — and the merged plan is persisted, which is
+    what makes the pipeline's own automatic export produce the same file.
     """
     logger.info(f"Export requested for video_id: {video_id}")
 
@@ -817,13 +844,31 @@ async def export_video(video_id: str):
             status_code=503, detail="ffmpeg/ffprobe are not available on the server"
         )
 
+    if req and req.subtitles:
+        merged = subtitle_service.ExportPlan.from_dict(state.subtitle_export).to_dict()
+        for field_name in ("enabled", "format", "tracks", "default_track", "style"):
+            value = getattr(req.subtitles, field_name)
+            if value is None:
+                continue
+            if field_name == "style":
+                # Style is merged key by key: the UI sends only what changed.
+                merged["style"] = {**merged.get("style", {}), **value}
+            else:
+                merged[field_name] = value
+        plan = subtitle_service.ExportPlan.from_dict(merged)
+        state.subtitle_export = plan.to_dict()
+        save_state(state)
+
     try:
-        output_path = await export_service.export_video(video_id)
-        size_mb = os.path.getsize(output_path) / 1024 / 1024
+        result = await export_service.export_video(video_id)
+        size_mb = os.path.getsize(result.path) / 1024 / 1024
         return ExportResponse(
             video_id=video_id,
             url=f"/api/videos/{video_id}/export/download",
             size_mb=round(size_mb, 1),
+            container=result.container,
+            filename=f"translated_{video_id[:8]}.{result.container}",
+            subtitle_tracks=result.subtitle_tracks,
         )
     except Exception as e:
         logger.error(f"[{video_id}] Export failed: {e}", exc_info=True)
@@ -832,17 +877,27 @@ async def export_video(video_id: str):
 
 @router.get("/{video_id}/export/download")
 async def download_export(video_id: str):
-    """Download the exported (dubbed) video."""
+    """
+    Download the exported (dubbed) video.
+
+    The container depends on the subtitle format that was used — Matroska when
+    styled subtitles were requested, MP4 otherwise — so the file is resolved
+    from disk rather than assumed.
+    """
     from fastapi.responses import FileResponse
 
-    export_path = export_service.get_export_path(video_id)
-    if not os.path.exists(export_path):
+    found = export_service.find_export(video_id)
+    if not found:
         raise HTTPException(
             status_code=404, detail="Export not found. Run POST /export first."
         )
 
+    export_path, container = found
+    media_type = (
+        "video/x-matroska" if container == "mkv" else "video/mp4"
+    )
     return FileResponse(
         export_path,
-        media_type="video/mp4",
-        filename=f"translated_{video_id[:8]}.mp4",
+        media_type=media_type,
+        filename=f"translated_{video_id[:8]}.{container}",
     )

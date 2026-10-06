@@ -8,7 +8,7 @@ from fastapi import FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import config
-from app.routers import models, video
+from app.routers import models, subtitles, video
 
 # Configure logging
 logging.basicConfig(
@@ -89,5 +89,7 @@ async def health():
 
 api_router.include_router(video.router)
 api_router.include_router(models.router)
+api_router.include_router(subtitles.router)
+api_router.include_router(subtitles.video_router)
 
 app.include_router(api_router)

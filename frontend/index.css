@@ -1,0 +1,14 @@
+/*
+ * Compiled into the bundle at build time.
+ *
+ * Previously the app loaded Tailwind from cdn.tailwindcss.com and this file did
+ * not exist at all — index.html linked to it anyway, so that request fell
+ * through to Vite's SPA fallback and the browser tried to parse index.html as a
+ * stylesheet. It failed silently.
+ *
+ * Keeping the styles here means: no third-party request before the app is
+ * styled, no flash of unstyled content, and only the classes actually used.
+ */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;

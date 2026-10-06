@@ -74,6 +74,19 @@ class VideoState:
     # "off" so info.json files written by older versions stay valid.
     separation_mode: str = "off"
     enable_voice_clone: bool = False
+    # Subtitle look, as a plain dict so it round-trips through JSON untouched.
+    # Empty means "use config defaults" — see subtitle_service.SubtitleStyle.
+    # Persisted per video so a resumed run (and the pipeline's own export step)
+    # renders the same subtitles the user configured.
+    subtitle_style: dict = field(default_factory=dict)
+    # Which subtitle tracks the export embeds and in which container. Same
+    # contract as `subtitle_style`: a plain dict, empty means "use config
+    # defaults". See subtitle_service.ExportPlan.
+    subtitle_export: dict = field(default_factory=dict)
+    # Target language of the dub. Stored because the exported subtitle tracks
+    # need an ISO language tag so players can auto-select one, and the tag
+    # cannot be recovered from the segments after the fact.
+    target_language: str = ""
     created_at: str = field(default_factory=lambda: datetime.datetime.now().isoformat())
 
     def to_dict(self):

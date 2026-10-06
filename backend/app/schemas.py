@@ -104,6 +104,14 @@ class VideoStatusResponse(BaseModel):
     has_export: bool = False
     export_url: Optional[str] = None
     export_available: bool = False
+    # "mp4" or "mkv"; None when nothing has been exported yet.
+    export_container: Optional[str] = None
+    # Subtitle state for this video, so the export panel can initialise without
+    # extra round-trips: the look, the track/container plan, and which formats
+    # this server can actually produce (with reasons).
+    subtitle_style: dict = {}
+    subtitle_export: dict = {}
+    subtitle_capabilities: dict = {}
     # Separation backend the pipeline should use for this video:
     # "client" (browser runs MDX-Net and uploads stems), "api" (302.AI) or "off".
     separation_mode: str = "client"
@@ -134,7 +142,35 @@ class ProcessRequest(BaseModel):
 
 # ----- Export -----
 
+class SubtitleExportRequest(BaseModel):
+    """
+    Which subtitle tracks to embed, and in what container.
+
+    Mirrors `subtitle_service.ExportPlan`. Every field is optional on purpose:
+    the request is merged over the video's saved plan, so a client that only
+    flips one switch does not silently reset the rest.
+    """
+
+    enabled: Optional[bool] = None
+    # "off" | "soft" (MP4) | "styled" (MKV + ASS) | "burn"
+    format: Optional[str] = None
+    tracks: Optional[list[str]] = None
+    default_track: Optional[str] = None
+    style: Optional[dict] = None
+
+
+class ExportRequest(BaseModel):
+    """Body of POST /videos/{id}/export. The whole body is optional."""
+
+    subtitles: Optional[SubtitleExportRequest] = None
+
+
 class ExportResponse(BaseModel):
     video_id: str
     url: str
     size_mb: Optional[float] = None
+    # "mp4" or "mkv" — the filename depends on it and the client shows it.
+    container: str = "mp4"
+    filename: Optional[str] = None
+    # One entry per embedded track: {track, title, language, codec, default}
+    subtitle_tracks: list[dict] = []

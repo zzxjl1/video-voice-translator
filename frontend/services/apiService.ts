@@ -150,15 +150,38 @@ export interface ExportResult {
   video_id: string;
   url: string;
   size_mb?: number;
+  /** "mp4" or "mkv" — a styled subtitle track forces Matroska. */
+  container?: string;
+  filename?: string;
+  subtitle_tracks?: SubtitleTrackInfo[];
+}
+
+/** One subtitle track that actually made it into the exported file. */
+export interface SubtitleTrackInfo {
+  track: SubtitleTrack;
+  title: string;
+  language: string;
+  codec: string;
+  default: boolean;
 }
 
 /**
- * Mux the dubbed audio back into the video and return the download URL.
- * Cheap on the server: the video stream is copied, not re-encoded.
+ * Mux the dubbed audio (and optional subtitle tracks) into the video.
+ * Cheap on the server: the video stream is copied and subtitles are embedded,
+ * not burned, so even styled tracks cost one remux.
+ *
+ * The subtitle options are merged over the video's saved plan server-side, so
+ * sending only the changed field leaves the rest intact.
  */
-export async function exportVideo(videoId: string): Promise<ExportResult> {
+export async function exportVideo(
+  videoId: string,
+  subtitles?: SubtitleExportOptions,
+): Promise<ExportResult> {
   const response = await fetch(`${API_BASE}/videos/${videoId}/export`, {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    // Always send a body: an empty object is treated as "use the saved plan".
+    body: JSON.stringify(subtitles ? { subtitles } : {}),
   });
 
   if (!response.ok) {
@@ -413,4 +436,235 @@ export async function generateVoicePreview(videoId: string, speakerId: string): 
 
   // The POST returns the audio file directly — use the GET URL for playback
   return `${API_BASE}/videos/${videoId}/voice-clone/${encodeURIComponent(speakerId)}/preview`;
+}
+
+
+/* ------------------------------------------------------------------ *
+ * Subtitles
+ *
+ * The style numbers mirror `subtitle_service.SubtitleStyle` field for field,
+ * snake_case included: the same object is sent to the server, used to render
+ * the in-app preview overlay, and (later) drawn by the browser burn-in. Keeping
+ * one shape is what makes "what you see is what you export" true — a separate
+ * CSS-only representation would drift.
+ *
+ * Sizes are PERCENTAGES OF THE VIDEO HEIGHT, never pixels, so one style is
+ * correct at every resolution and in the preview element, whose CSS size has
+ * nothing to do with the video's real size.
+ * ------------------------------------------------------------------ */
+
+/**
+ * Fallback style, mirroring `config.py` defaults. Only used until the server
+ * reports its own (`/subtitles/capabilities` carries `default_style`), so the
+ * two cannot drift in a way that matters — but the overlay needs *something*
+ * to render with on first paint.
+ */
+export const DEFAULT_SUBTITLE_STYLE: SubtitleStyle = {
+  track: 'translated',
+  font_family: 'Source Han Sans',
+  font_size_percent: 4.5,
+  primary_color: '#FFFFFF',
+  outline_color: '#000000',
+  outline_width: 2,
+  shadow: 1,
+  bold: true,
+  background: 'box',
+  alignment: 'bottom',
+  margin_v_percent: 6,
+  margin_h_percent: 5,
+  max_chars_per_line: 18,
+  max_lines: 2,
+  min_duration: 0.8,
+};
+
+/** Which text a track shows. */
+export type SubtitleTrack = 'translated' | 'original' | 'bilingual';
+
+/**
+ * How subtitles reach the exported file.
+ *  - "off":    no subtitle track
+ *  - "soft":   MP4 with switchable, unstyled tracks (free, one remux)
+ *  - "styled": MKV with a fully styled ASS track (still just a remux)
+ *  - "burn":   rendered into the picture. The BROWSER does this; the server
+ *              reports it unavailable because it lacks libass and a CJK font.
+ */
+export type SubtitleExportFormat = 'off' | 'soft' | 'styled' | 'burn';
+
+export type SubtitleAlignment = 'bottom' | 'center' | 'top';
+export type SubtitleBackground = 'none' | 'box';
+
+export interface SubtitleStyle {
+  track: SubtitleTrack;
+  font_family: string;
+  /** Percent of the video height. */
+  font_size_percent: number;
+  /** #RRGGBB. */
+  primary_color: string;
+  outline_color: string;
+  outline_width: number;
+  shadow: number;
+  bold: boolean;
+  background: SubtitleBackground;
+  alignment: SubtitleAlignment;
+  margin_v_percent: number;
+  margin_h_percent: number;
+  max_chars_per_line: number;
+  max_lines: number;
+  min_duration: number;
+}
+
+/** Partial style for updates: only the keys sent are merged server-side. */
+export type SubtitleStylePatch = Partial<SubtitleStyle>;
+
+export interface SubtitleExportOptions {
+  enabled?: boolean;
+  format?: SubtitleExportFormat;
+  tracks?: SubtitleTrack[];
+  default_track?: SubtitleTrack;
+  style?: SubtitleStylePatch;
+}
+
+export interface SubtitleCapability {
+  available: boolean;
+  reason: string | null;
+  description: string;
+}
+
+export type SubtitleCapabilities = Partial<Record<SubtitleExportFormat, SubtitleCapability>>;
+
+/** A display cue with the server's adapted timing. */
+export interface SubtitleCue {
+  start: number;
+  end: number;
+  text: string;
+  /** The other track's text, for bilingual. */
+  secondary: string;
+  /** Pre-wrapped lines; the client may re-wrap while a slider moves. */
+  lines: string[];
+}
+
+export interface SubtitleCueResponse {
+  video_id: string;
+  track: SubtitleTrack;
+  count: number;
+  style: SubtitleStyle;
+  cues: SubtitleCue[];
+  /**
+   * A cue that is NOT in the video, for previewing a style on a stretch with no
+   * subtitle. Wrapped server-side by the same code as `cues`, which is the only
+   * reason it can be trusted: re-breaking the lines in JS would drift from the
+   * export. Optional so an older backend still type-checks.
+   */
+  sample?: SubtitleCue;
+}
+
+export interface SubtitleCapabilitiesResponse {
+  capabilities: SubtitleCapabilities;
+  default_style: SubtitleStyle;
+}
+
+export interface SubtitleStyleResponse {
+  video_id: string;
+  style: SubtitleStyle;
+  default_style: SubtitleStyle;
+  is_custom: boolean;
+}
+
+/**
+ * What this server can actually produce, and why not. The UI greys out an
+ * option with the reason instead of offering something that fails mid-export.
+ */
+export async function getSubtitleCapabilities(): Promise<SubtitleCapabilitiesResponse> {
+  const response = await fetch(`${API_BASE}/subtitles/capabilities`);
+  if (!response.ok) {
+    throw new Error(`Failed to load subtitle capabilities (${response.status})`);
+  }
+  return response.json();
+}
+
+/** The style in effect for a video, plus the server default for "reset". */
+export async function getSubtitleStyle(videoId: string): Promise<SubtitleStyleResponse> {
+  const response = await fetch(`${API_BASE}/videos/${videoId}/subtitles/style`);
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(err.detail || 'Failed to load subtitle style');
+  }
+  return response.json();
+}
+
+/** Persist a video's subtitle style. Out-of-range values are clamped server-side. */
+export async function saveSubtitleStyle(
+  videoId: string,
+  style: SubtitleStylePatch,
+): Promise<SubtitleStyleResponse> {
+  const response = await fetch(`${API_BASE}/videos/${videoId}/subtitles/style`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(style),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(err.detail || 'Failed to save subtitle style');
+  }
+  return response.json();
+}
+
+/**
+ * Display cues with the server's adapted timing.
+ *
+ * Timing comes from here rather than being recomputed locally because the
+ * adaptation extends each cue to cover the dubbed audio that actually exists —
+ * which needs audio durations. Recomputing it in the browser would drift from
+ * what the export produces, and the preview's whole point is that it matches.
+ */
+export async function getSubtitleCues(
+  videoId: string,
+  track?: SubtitleTrack,
+): Promise<SubtitleCueResponse> {
+  const query = track ? `?track=${encodeURIComponent(track)}` : '';
+  const response = await fetch(`${API_BASE}/videos/${videoId}/subtitles/cues${query}`);
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(err.detail || 'Failed to load subtitle cues');
+  }
+  return response.json();
+}
+
+/**
+ * Cues rendered with a style the caller supplies, WITHOUT saving it.
+ *
+ * Used by the style editor to preview while a slider is being dragged. The
+ * wrapping is done server-side on purpose: reimplementing it in JS would mean
+ * the preview silently disagreeing with the export as soon as the two drifted.
+ */
+export async function previewSubtitleCues(
+  videoId: string,
+  options: { track?: SubtitleTrack; style?: SubtitleStylePatch } = {},
+): Promise<SubtitleCueResponse> {
+  const response = await fetch(`${API_BASE}/videos/${videoId}/subtitles/preview`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ track: options.track, style: options.style }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(err.detail || 'Failed to preview subtitle cues');
+  }
+  return response.json();
+}
+
+/**
+ * Download URL for the standalone .srt.
+ *
+ * Returned as a URL rather than fetched because the browser should handle it as
+ * a normal download (correct filename, no buffering in JS memory).
+ */
+export function getSrtDownloadUrl(videoId: string, track?: SubtitleTrack): string {
+  const query = track ? `?track=${encodeURIComponent(track)}` : '';
+  return `${API_BASE}/videos/${videoId}/subtitles.srt${query}`;
+}
+
+/** Name used for the downloaded .srt, mirroring the server's filename. */
+export function srtFilename(videoId: string, track: SubtitleTrack): string {
+  return `${track}_${videoId.slice(0, 8)}.srt`;
 }

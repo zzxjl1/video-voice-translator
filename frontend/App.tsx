@@ -3,6 +3,8 @@ import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react'
 import { TranscriptionSegment, Speaker } from './types';
 import Header from './components/Header';
 import VideoUpload from './components/VideoUpload';
+import ExportModal, { type SubtitleDelivery } from './components/ExportModal';
+import SubtitleStylePanel from './components/SubtitleStylePanel';
 import Timeline from './components/Timeline';
 import SettingsModal from './components/SettingsModal';
 import StreamingLog from './components/StreamingLog';
@@ -21,13 +23,33 @@ import {
   getSeparatorInfo,
   getSeparatorToken,
   uploadStems,
+  getSubtitleCapabilities,
+  getSubtitleStyle,
+  saveSubtitleStyle,
+  previewSubtitleCues,
+  getSrtDownloadUrl,
+  srtFilename,
+  DEFAULT_SUBTITLE_STYLE,
   type SeparatorInfo,
   type SeparationMode,
   type SeparationBackends,
+  type SubtitleCapabilities,
+  type SubtitleCue,
+  type SubtitleExportFormat,
+  type SubtitleStyle,
+  type SubtitleStylePatch,
 } from './services/apiService';
 import { getAudioWaveform, getAudioWaveformFromUrl } from './utils/audioProcessor';
 import { decodeAudio, separateAndUpload, isModelCached } from './utils/mdx/separatorClient';
 import { computeSyncRates, setPreservesPitch } from './utils/playbackSync';
+import {
+  containRect,
+  cueAtTime,
+  overlayContainerStyle,
+  overlayLineStyle,
+  type Rect,
+} from './utils/subtitleStyle';
+import { probeBurnCapability, type BurnCapability } from './utils/burnCapability';
 
 /**
  * Replace a trailing, in-progress log line (identified by `prefix`) instead of
@@ -42,6 +64,22 @@ function withTrailingLine(prev: string, prefix: string, text: string): string {
     lines.push(text);
   }
   return lines.join('\n');
+}
+
+/**
+ * Trigger a browser download for a URL.
+ *
+ * `download` matters: without it the browser may navigate or pick the filename
+ * from the URL, which drops the extension the backend chose (and a styled
+ * export is an .mkv, not an .mp4).
+ */
+function downloadFile(url: string, filename: string): void {
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
 }
 
 /** Human-readable names for the separation backends. */
@@ -120,10 +158,61 @@ const App: React.FC = () => {
   // greyed-out option explains itself instead of looking broken.
   const [separatorInfoError, setSeparatorInfoError] = useState<string>('');
 
-  // Export (mux the dubbed audio back into a downloadable MP4)
-  const [exportUrl, setExportUrl] = useState<string | null>(null);
+  // Export. No "last export" state is kept: the server rebuilds the file on
+  // demand and the browser downloads it, so remembering a URL only created
+  // state to keep in sync (and a button that had to change meaning).
   const [isExporting, setIsExporting] = useState(false);
   const [exportError, setExportError] = useState<string>('');
+
+  // ------------------------------------------------------------------
+  // Subtitles
+  //
+  // The style drives three things at once: the overlay over the player, the
+  // track embedded in the export, and (for burn-in) the canvas renderer. Only
+  // the timing and the line breaking come from the server, because those depend
+  // on probed audio durations — recomputing them here would drift from what the
+  // export actually contains.
+  // ------------------------------------------------------------------
+  const [subtitleCapabilities, setSubtitleCapabilities] = useState<SubtitleCapabilities>({});
+  const [subtitleStyle, setSubtitleStyle] = useState<SubtitleStyle>(DEFAULT_SUBTITLE_STYLE);
+  // What the user picked in the export dialog, in plain terms. The server's
+  // `format` is DERIVED from this (and from `keepEmbeddedStyle`) rather than
+  // stored, so the two cannot disagree.
+  const [subtitleDelivery, setSubtitleDelivery] = useState<SubtitleDelivery>('embedded');
+  const [keepEmbeddedStyle, setKeepEmbeddedStyle] = useState(false);
+  // There is deliberately no separate export-track state. Which text appears is
+  // `subtitleStyle.track`, and that single value drives the preview overlay, the
+  // .srt download and the embedded track. A second control for it in the export
+  // dialog only LOOKED like the same setting while changing nothing but the file.
+  
+  // Cues with the server's adapted timing, for the overlay.
+  const [subtitleCues, setSubtitleCues] = useState<SubtitleCue[]>([]);
+  /**
+   * Stand-in cue from the server, shown only while the style panel is open and
+   * no real cue is on screen. Without it, opening the editor on a gap between
+   * lines leaves the user adjusting sliders against a bare picture.
+   */
+  const [sampleCue, setSampleCue] = useState<SubtitleCue | null>(null);
+  // Set when the cue request failed, so the failure is visible instead of the
+  // subtitles silently vanishing.
+  const [subtitleError, setSubtitleError] = useState<string>('');
+  const [burnCapability, setBurnCapability] = useState<BurnCapability>({
+    available: false,
+    reason: 'checking this browser…',
+    codecs: [],
+  });
+
+  // Where the video actually renders inside its box, so the overlay lands on
+  // the picture rather than on the letterbox bars.
+  const [videoRect, setVideoRect] = useState<Rect | null>(null);
+  const videoBoxRef = useRef<HTMLDivElement | null>(null);
+  // Two independent entrances, on purpose: the Header's Export button opens the
+  // delivery dialog, and the pill on the video's left edge opens the style
+  // editor. They are different questions ("what goes in the file" vs "what does
+  // the text look like") and folding them into one panel is what made the
+  // earlier single button ambiguous.
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [showStylePanel, setShowStylePanel] = useState(false);
 
   // Merge what /models/separator said about the browser backend with what
   // /status reported for the rest, so the picker works before any video exists.
@@ -247,6 +336,136 @@ const App: React.FC = () => {
       });
   }, []);
 
+  // Which subtitle deliveries this server can perform, and the style to start
+  // from. Failing this is not fatal — with no capabilities every non-"off"
+  // format reads as unavailable, which is the safe direction to fail in.
+  useEffect(() => {
+    getSubtitleCapabilities()
+      .then(response => {
+        setSubtitleCapabilities(response.capabilities);
+        setSubtitleStyle(response.default_style);
+      })
+      .catch(err => {
+        console.warn('Subtitle capabilities unavailable:', err);
+        setSubtitleCapabilities({});
+      });
+  }, []);
+
+  // Whether THIS browser can burn subtitles in. Memoised inside the probe:
+  // `isConfigSupported` enumerates real encoders, so it is not free.
+  useEffect(() => {
+    let cancelled = false;
+    probeBurnCapability().then(capability => {
+      if (!cancelled) setBurnCapability(capability);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // The saved style for a video, so reopening a session shows what was chosen.
+  useEffect(() => {
+    if (!videoId) {
+      setSubtitleCues([]);
+      return;
+    }
+    let cancelled = false;
+    getSubtitleStyle(videoId)
+      .then(response => {
+        if (!cancelled) setSubtitleStyle(response.style);
+      })
+      .catch(err => console.warn('Subtitle style unavailable:', err));
+    return () => {
+      cancelled = true;
+    };
+  }, [videoId]);
+
+  // How many segments actually have a translation: the cue list only changes
+  // when this does, so depending on it avoids re-fetching on every unrelated
+  // segment update (TTS progress touches segments constantly).
+  const translatedCount = useMemo(
+    () => segments.filter(segment => segment.translatedText).length,
+    [segments],
+  );
+
+  // Pull the cues. Debounced, and only for the parts that cannot be computed
+  // locally: the TIMING comes from probed audio durations, and the line
+  // breaking is done by the same code the export uses, so the preview cannot
+  // disagree with the file.
+  useEffect(() => {
+    if (!videoId) {
+      setSubtitleCues([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      previewSubtitleCues(videoId, {
+        track: subtitleStyle.track,
+        style: {
+          max_chars_per_line: subtitleStyle.max_chars_per_line,
+          max_lines: subtitleStyle.max_lines,
+        },
+      })
+        .then(response => {
+          if (cancelled) return;
+          setSubtitleCues(response.cues);
+          setSampleCue(response.sample ?? null);
+          setSubtitleError('');
+        })
+        .catch(err => {
+          if (cancelled) return;
+          // Surface the failure and KEEP the last good list. There is
+          // deliberately no local fallback that re-derives cues from segments:
+          // that would use the unadapted timing, so the player and the export
+          // would show subtitles at different moments — a second rendering path
+          // silently disagreeing with the first.
+          const message = err instanceof Error ? err.message : String(err);
+          console.warn('Subtitle cues unavailable:', err);
+          setSubtitleError(message);
+        });
+    }, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [
+    videoId,
+    translatedCount,
+    subtitleStyle.track,
+    subtitleStyle.max_chars_per_line,
+    subtitleStyle.max_lines,
+  ]);
+
+  // Where the video actually renders inside its box. `object-contain` leaves
+  // letterbox bars, and measuring against the box would push the subtitles into
+  // those bars whenever the video's aspect ratio differs from the container's.
+  //
+  // Extracted as a callback so `onLoadedMetadata` can call it directly: the
+  // intrinsic size only becomes known there, and depending on `duration` alone
+  // silently misses the case where two videos happen to be the same length.
+  const measureVideoRect = useCallback(() => {
+    const box = videoBoxRef.current;
+    if (!box) return;
+    const video = videoRef.current;
+    setVideoRect(
+      containRect(
+        box.clientWidth,
+        box.clientHeight,
+        video?.videoWidth ?? 0,
+        video?.videoHeight ?? 0,
+      ),
+    );
+  }, []);
+
+  useEffect(() => {
+    const box = videoBoxRef.current;
+    if (!box) return;
+    measureVideoRect();
+    const observer = new ResizeObserver(() => measureVideoRect());
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, [videoUrl, videoFile, duration, measureVideoRect]);
+
   // Session Recovery
   useEffect(() => {
     const pathParts = window.location.pathname.split('/').filter(Boolean);
@@ -275,7 +494,6 @@ const App: React.FC = () => {
           );
           setSeparationMode(restoredMode);
           if (data.enable_voice_clone !== undefined) setEnableVoiceClone(data.enable_voice_clone);
-          if (data.export_url) setExportUrl(data.export_url);
 
           // Always load existing segments/speakers
           if (data.segments && data.segments.length > 0) {
@@ -444,7 +662,6 @@ const App: React.FC = () => {
     setIsTranscribing(true);
     setRawLog('');
     setIsLogOpen(true);
-    setExportUrl(null);
     setExportError('');
     setIsExporting(false);
 
@@ -626,7 +843,6 @@ const App: React.FC = () => {
           } else if (event.status === 'muxing') {
             setRawLog(prev => prev + 'Muxing dubbed audio into the video...\n');
           } else if (event.status === 'done') {
-            if (event.url) setExportUrl(event.url);
             setRawLog(prev => prev + `Export complete${event.size_mb ? ` (${event.size_mb} MB)` : ''}.\n`);
           } else if (event.status === 'failed') {
             setExportError(event.error || 'Export failed');
@@ -660,7 +876,6 @@ const App: React.FC = () => {
         // Final done
         if (event.done) {
           setIsExporting(false);
-          if (event.export_url) setExportUrl(event.export_url);
           setRawLog(prev => prev + '\n=== All Processing Complete ===\nClosing in 2 seconds...');
         }
 
@@ -896,7 +1111,6 @@ const App: React.FC = () => {
             );
             setSeparationMode(restoredMode);
             if (data.enable_voice_clone !== undefined) setEnableVoiceClone(data.enable_voice_clone);
-            if (data.export_url) setExportUrl(data.export_url);
 
             if (data.segments && data.segments.length > 0) {
               const recoveredSegments: TranscriptionSegment[] = data.segments.map((seg: any) => ({
@@ -987,7 +1201,6 @@ const App: React.FC = () => {
           restoreSeparationMode(statusData, statusData.separation_backends)
         );
         if (statusData.enable_voice_clone !== undefined) setEnableVoiceClone(statusData.enable_voice_clone);
-        setExportUrl(statusData.export_url || null);
 
         const isCompleted = statusData.status === 'completed';
         const isError = statusData.status === 'error';
@@ -1182,6 +1395,59 @@ const App: React.FC = () => {
   }, [handleTranslateSegmentImpl, handleSynthesizeSegment]);
 
   /**
+   * Apply a style change immediately and persist it on a short delay.
+   *
+   * Immediate because the overlay is pure CSS derived from these numbers; the
+   * save is debounced because dragging a slider would otherwise fire a request
+   * per pixel. Wrapping changes are re-fetched by the cue effect instead, so the
+   * preview keeps using the server's line breaking rather than a second
+   * implementation of it.
+   *
+   * Declared before handleExport because that callback depends on
+   * handleDownloadSrt below, and a callback referenced in a dependency array has
+   * to already be initialised when the array is evaluated.
+   */
+  /**
+   * The server's subtitle format, derived from the plain-language choice.
+   *
+   * "external" means the video carries no subtitle track at all — the .srt is a
+   * separate file — so it maps to "off" for the export itself. Derived rather
+   * than stored so the two can never fall out of step.
+   *
+   * Declared up here because `handleExport` reads it during render (it is in
+   * that callback's dependency array), which would otherwise be a TDZ error.
+   */
+  const effectiveSubtitleFormat: SubtitleExportFormat =
+    subtitleDelivery === 'embedded'
+      ? keepEmbeddedStyle
+        ? 'styled'
+        : 'soft'
+      : subtitleDelivery === 'burn'
+        ? 'burn'
+        : 'off';
+
+  const styleSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleSubtitleStyleChange = useCallback(
+    (patch: SubtitleStylePatch) => {
+      setSubtitleStyle(prev => ({ ...prev, ...patch }));
+      if (!videoId) return;
+      if (styleSaveTimer.current) clearTimeout(styleSaveTimer.current);
+      styleSaveTimer.current = setTimeout(() => {
+        saveSubtitleStyle(videoId, patch).catch(err =>
+          console.warn('Could not save subtitle style:', err)
+        );
+      }, 500);
+    },
+    [videoId],
+  );
+
+  const handleDownloadSrt = useCallback(() => {
+    if (!videoId) return;
+    const track = subtitleStyle.track;
+    downloadFile(getSrtDownloadUrl(videoId, track), srtFilename(videoId, track));
+  }, [videoId, subtitleStyle.track]);
+
+  /**
    * Server-side export: mux the dubbed audio into the video and expose a
    * download URL. The video stream is copied, so this is fast even without a
    * GPU. `silent` suppresses the extra log lines used by the reprocess flow.
@@ -1198,11 +1464,40 @@ const App: React.FC = () => {
     setExportError('');
 
     try {
-      const result = await exportVideo(videoId);
-      setExportUrl(result.url);
+      const result = await exportVideo(videoId, {
+        enabled: effectiveSubtitleFormat !== 'off',
+        format: effectiveSubtitleFormat,
+        // One track, with the content the style panel says. "Bilingual" already
+        // means both languages in one line, so a second track would be a
+        // confusing way to express the same thing.
+        tracks: [subtitleStyle.track],
+        default_track: subtitleStyle.track,
+      });
+
+      const trackNote =
+        result.subtitle_tracks && result.subtitle_tracks.length > 0
+          ? ` with ${result.subtitle_tracks.length} subtitle track${result.subtitle_tracks.length > 1 ? 's' : ''}`
+          : '';
       setRawLog(prev =>
-        prev + `Export complete${result.size_mb ? ` (${result.size_mb} MB)` : ''}.\n`
+        prev +
+        `Export complete${result.size_mb ? ` (${result.size_mb} MB)` : ''}${trackNote}` +
+        `${result.container === 'mkv' ? ' [MKV — a styled track needs Matroska]' : ''}.\n`
       );
+
+      // Download straight away. The file on the server IS the deliverable, and
+      // parking it behind a second button meant tracking a URL and a container
+      // just to label that button — visible complexity for no decision.
+      downloadFile(
+        result.url || getExportDownloadUrl(videoId),
+        `translated_${videoId.slice(0, 8)}.${result.container ?? 'mp4'}`,
+      );
+
+      // "External" keeps the video free of subtitle tracks, so the .srt is part
+      // of what was asked for — not an extra button next to it.
+      if (subtitleDelivery === 'external') {
+        handleDownloadSrt();
+      }
+      setShowExportModal(false);
       return result.url;
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Export failed';
@@ -1212,19 +1507,13 @@ const App: React.FC = () => {
     } finally {
       setIsExporting(false);
     }
-  }, [videoId]);
-
-  const handleDownloadExport = useCallback(() => {
-    if (!videoId) return;
-    // Use the backend download route so the browser saves the file.
-    const url = exportUrl || getExportDownloadUrl(videoId);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `translated_${videoId.slice(0, 8)}.mp4`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-  }, [videoId, exportUrl]);
+  }, [
+    videoId,
+    effectiveSubtitleFormat,
+    subtitleStyle.track,
+    subtitleDelivery,
+    handleDownloadSrt,
+  ]);
 
   const handleReprocess = useCallback(async () => {
     if (!videoId || segments.length === 0) return;
@@ -1292,16 +1581,32 @@ const App: React.FC = () => {
     }
   }, [segments, videoId, targetLanguage, handleSynthesizeSegment, handleExport]);
 
-  // Current subtitle based on video time
-  const currentSubtitle = useMemo(() => {
-    if (segments.length === 0) return null;
-    const seg = segments.find(s => currentTime >= s.startTime && currentTime < s.endTime);
-    if (!seg) return null;
-    return {
-      translated: seg.translatedText,
-      original: seg.originalText,
-    };
-  }, [segments, currentTime]);
+  /**
+   * The cue to show right now, straight from the server's list.
+   *
+   * There is deliberately NO local fallback that re-derives cues from
+   * `segments`. It would use the unadapted segment times while the export uses
+   * the times extended to cover the dubbed audio, so the player and the file
+   * would disagree about when a line appears. A visible error (below) is more
+   * honest than a second renderer that quietly drifts.
+   */
+  const overlayCue = useMemo(() => {
+    /*
+     * The style editor takes the picture over completely: while it is open, the
+     * overlay always shows the server's sample cue and never the real one.
+     *
+     * Showing the real line instead would mean the text changes every time the
+     * playhead crosses a cue or a gap — while the user is dragging sliders,
+     * that is motion in the exact thing they are trying to look at. A fixed
+     * line makes the picture a stable test subject, and it is the same
+     * `Cue.lines()` the export runs, so what it shows is still true.
+     *
+     * Outside the editor the overlay is unchanged and simply follows the
+     * playhead.
+     */
+    if (showStylePanel) return sampleCue;
+    return cueAtTime(subtitleCues, currentTime);
+  }, [subtitleCues, currentTime, showStylePanel, sampleCue]);
 
   const handlePreviewVoice = useCallback(async (speakerId: string) => {
     if (!videoId || previewingSpeaker) return;
@@ -1373,11 +1678,33 @@ const App: React.FC = () => {
             onLanguageChange={setTargetLanguage}
             isProcessing={isBatchProcessing}
             hasSegments={segments.length > 0}
-            onExport={() => handleExport(false)}
-            onDownloadExport={handleDownloadExport}
+            onExport={() => setShowExportModal(true)}
             isExporting={isExporting}
-            hasExport={!!exportUrl}
             exportError={exportError}
+          />
+
+          {/* Export dialog. Owns "what goes into the file" only; the look of the
+              text is edited from the pill on the video. */}
+          <ExportModal
+            isOpen={showExportModal}
+            onClose={() => setShowExportModal(false)}
+            capabilities={subtitleCapabilities}
+            burnCapability={burnCapability}
+            style={subtitleStyle}
+            delivery={subtitleDelivery}
+            onDeliveryChange={setSubtitleDelivery}
+            keepStyle={keepEmbeddedStyle}
+            onKeepStyleChange={setKeepEmbeddedStyle}
+            onOpenStyleEditor={() => {
+              // Close first: the style panel is meant to be judged against the
+              // picture, which this dialog covers.
+              setShowExportModal(false);
+              setShowStylePanel(true);
+            }}
+            onExport={() => handleExport(false)}
+            isExporting={isExporting}
+            exportError={exportError}
+            hasCues={segments.some(segment => Boolean(segment.translatedText))}
           />
 
           <main className="flex-grow flex flex-col container mx-auto p-4 lg:p-6 pt-12 lg:pt-14 min-h-0">
@@ -1395,7 +1722,10 @@ const App: React.FC = () => {
 
             <div className="flex-grow grid grid-cols-1 lg:grid-cols-12 gap-6 min-h-0 items-stretch">
               <div className="w-full lg:col-span-7 flex flex-col gap-4 min-h-0">
-                <div className="flex-grow bg-black rounded-2xl overflow-hidden shadow-xl border border-gray-800 relative min-h-[300px]">
+                <div
+                  ref={videoBoxRef}
+                  className="flex-grow bg-black rounded-2xl overflow-hidden shadow-xl border border-gray-800 relative min-h-[300px]"
+                >
                   {videoUrl && (
                     <video
                       ref={videoRef}
@@ -1404,7 +1734,12 @@ const App: React.FC = () => {
                       muted={!!backgroundAudioUrl}
                       className="w-full h-full object-contain"
                       onTimeUpdate={handleTimeUpdate}
-                      onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
+                      onLoadedMetadata={(e) => {
+                        setDuration(e.currentTarget.duration);
+                        // The intrinsic size is only known now, and that is
+                        // what the overlay positions against.
+                        measureVideoRect();
+                      }}
                       onPause={() => {
                         activeAudiosRef.current.forEach(a => a.pause());
                         backgroundAudioRef.current?.pause();
@@ -1430,19 +1765,63 @@ const App: React.FC = () => {
                     />
                   )}
 
-                  {/* Subtitle Overlay */}
-                  {currentSubtitle && (
-                    <div className="absolute bottom-10 left-0 right-0 flex flex-col items-center pointer-events-none px-4 z-10">
-                      {currentSubtitle.translated && (
-                        <div className="bg-black/80 text-white text-base font-bold px-5 py-2 rounded-lg max-w-[90%] text-center leading-relaxed shadow-lg backdrop-blur-sm">
-                          {currentSubtitle.translated}
+                  {/* Subtitle Overlay.
+                      Style-driven and positioned on the video's rendered rect
+                      rather than the container, so it lands on the picture and
+                      not in the letterbox bars. Every size comes from the same
+                      percentages the ASS file and the burn-in use. */}
+                  {videoRect && overlayCue && (
+                    <div style={overlayContainerStyle(subtitleStyle, videoRect)}>
+                      {overlayCue.lines.map((line, index) => (
+                        <div key={index} style={overlayLineStyle(subtitleStyle, videoRect)}>
+                          {line}
                         </div>
-                      )}
-                      {currentSubtitle.original && (
-                        <div className="bg-black/60 text-gray-300 text-xs px-4 py-1 rounded-md max-w-[85%] text-center leading-relaxed mt-1">
-                          {currentSubtitle.original}
-                        </div>
-                      )}
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Style pill, stuck to the left edge of the picture.
+                      Vertical so it reads as a tab on the frame rather than yet
+                      another toolbar button, and its position down the edge
+                      keeps it clear of the subtitle it is used to adjust.
+                      It swaps the RIGHT column to the style editor instead of
+                      opening anything over the video: the picture then stays at
+                      full size and uncropped, which is what makes the preview
+                      trustworthy. */}
+                  <button
+                    type="button"
+                    onClick={() => setShowStylePanel(v => !v)}
+                    title="调整字幕的字体、大小、颜色和位置，画面上的字幕会实时跟着变"
+                    style={{ writingMode: 'vertical-rl' }}
+                    className={[
+                      'absolute left-0 top-1/2 -translate-y-1/2 z-20',
+                      'px-1.5 py-3 rounded-r-lg backdrop-blur-sm transition-colors cursor-pointer',
+                      'text-[10px] font-bold tracking-[0.25em]',
+                      showStylePanel
+                        ? 'bg-claude-accent text-white'
+                        : 'bg-black/55 text-white/80 hover:bg-black/75 hover:text-white',
+                    ].join(' ')}
+                  >
+                    字幕样式
+                  </button>
+
+                  {/* A failed cue fetch is surfaced here instead of being masked
+                      by a local re-render: the last good list stays on screen,
+                      and the user is told the preview may be stale. */}
+                  {subtitleError && (
+                    <div className="absolute left-8 bottom-3 z-20 flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-red-500/90 text-white text-[10px] font-semibold shadow-lg">
+                      <span>字幕加载失败，画面上的字幕可能不是最新的</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSubtitleError('');
+                          setSubtitleCues([]);
+                        }}
+                        className="underline decoration-white/60 hover:decoration-white cursor-pointer"
+                        title={subtitleError}
+                      >
+                        重试
+                      </button>
                     </div>
                   )}
                 </div>
@@ -1461,19 +1840,52 @@ const App: React.FC = () => {
               </div>
 
               <div className="w-full lg:col-span-5 flex flex-col min-h-0">
-                <TranscriptionPanel
-                  segments={segments}
-                  speakers={speakers}
-                  isTranscribing={isTranscribing}
-                  onSegmentUpdate={handleSegmentUpdate}
-                  onSynthesize={handleSynthesizeSegment}
-                  onRefit={handleRefitSegment}
-                  currentTime={currentTime}
-                  onSeek={handleSeek}
-                  clonedVoices={clonedVoices}
-                  onPreviewVoice={handlePreviewVoice}
-                  previewingSpeaker={previewingSpeaker}
-                />
+                {/* The right column hosts two views. The style editor lives here
+                    rather than floating over the video: the picture keeps its
+                    full size and nothing is cropped, which is what makes the
+                    live preview trustworthy. The pill on the video switches
+                    between them — no second set of tabs saying the same thing.
+                    Both views stay MOUNTED and are toggled with `hidden`.
+                    The script editor holds per-segment edit state and its own
+                    scroll position; unmounting it to show the style panel would
+                    silently discard whatever the user had half-typed. */}
+                <div
+                  className={
+                    showStylePanel ? 'hidden' : 'flex-grow flex flex-col min-h-0'
+                  }
+                >
+                  <TranscriptionPanel
+                    segments={segments}
+                    speakers={speakers}
+                    isTranscribing={isTranscribing}
+                    onSegmentUpdate={handleSegmentUpdate}
+                    onSynthesize={handleSynthesizeSegment}
+                    onRefit={handleRefitSegment}
+                    currentTime={currentTime}
+                    onSeek={handleSeek}
+                    clonedVoices={clonedVoices}
+                    onPreviewVoice={handlePreviewVoice}
+                    previewingSpeaker={previewingSpeaker}
+                  />
+                </div>
+
+                <div
+                  className={
+                    showStylePanel ? 'flex-grow flex flex-col min-h-0' : 'hidden'
+                  }
+                >
+                  {/*
+                    No `overflow-y-auto` here: the panel is now the same card as
+                    TranscriptionPanel and owns its own header + scroll area.
+                    Scrolling it from outside would scroll the header away with
+                    the content.
+                  */}
+                  <SubtitleStylePanel
+                    style={subtitleStyle}
+                    onStyleChange={handleSubtitleStyleChange}
+                    onClose={() => setShowStylePanel(false)}
+                  />
+                </div>
               </div>
             </div>
           </main>

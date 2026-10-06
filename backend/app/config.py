@@ -570,6 +570,55 @@ EXPORT_TTS_GAIN = _env_float("EXPORT_TTS_GAIN", 1.0)
 EXPORT_BGM_GAIN = _env_float("EXPORT_BGM_GAIN", 0.9)
 EXPORT_ORIGINAL_AUDIO_GAIN = _env_float("EXPORT_ORIGINAL_AUDIO_GAIN", 0.12)
 EXPORT_FILENAME = _env("EXPORT_FILENAME", "translated_video.mp4")
+# Container used when a styled (ASS) subtitle track is requested. MP4 cannot
+# carry ASS styling, so that delivery switches to Matroska.
+EXPORT_STYLED_FILENAME = _env("EXPORT_STYLED_FILENAME", "translated_video.mkv")
+
+
+# =====================================================================
+# Subtitles
+# =====================================================================
+#
+# Sizes are PERCENTAGES OF THE VIDEO HEIGHT, never pixels, so one style resolves
+# correctly for any resolution and agrees with the in-app preview overlay. See
+# app/services/subtitle_service.py.
+#
+# Nothing here renders text: the server only writes SRT/ASS (plain text) and the
+# player does the rendering, so no font has to be installed on the server.
+# Burn-in is different — it must rasterise glyphs, which needs libass/freetype
+# and a CJK font, and it forces a full re-encode. On a 2 GB CPU-only host that
+# is not viable, so burning runs in the BROWSER (Canvas2D + MediaRecorder) where
+# the work is free and the OS fonts are already available.
+
+# translated | original | bilingual
+SUBTITLE_DEFAULT_TRACK = _env("SUBTITLE_DEFAULT_TRACK", "translated")
+# Player-side font name. Only used by players that support styling (MKV/ASS);
+# embedded MP4 tracks ignore it.
+SUBTITLE_FONT_FAMILY = _env("SUBTITLE_FONT_FAMILY", "Source Han Sans")
+SUBTITLE_FONT_SIZE_PERCENT = _env_float("SUBTITLE_FONT_SIZE_PERCENT", 4.5)
+SUBTITLE_MARGIN_V_PERCENT = _env_float("SUBTITLE_MARGIN_V_PERCENT", 6.0)
+SUBTITLE_MARGIN_H_PERCENT = _env_float("SUBTITLE_MARGIN_H_PERCENT", 5.0)
+SUBTITLE_MAX_CHARS_PER_LINE = _env_int("SUBTITLE_MAX_CHARS_PER_LINE", 18)
+
+# How subtitles are delivered in the exported file:
+#   "off"    — no subtitle track
+#   "soft"   — MP4 with `mov_text` tracks: switchable and toggleable in the
+#              player, but unstyled (the format carries no styling at all)
+#   "styled" — MKV with a fully styled ASS track. Matroska is required because
+#              MP4 cannot carry ASS styling; the VIDEO STREAM IS STILL COPIED,
+#              so this costs one remux, not a re-encode.
+#   "burn"   — rendered into the picture. Only the BROWSER can do this (see the
+#              note above): on the server it is reported unavailable.
+#
+# "soft" is the default because it is free on every axis: no re-encode, no
+# styling to get wrong, and every player understands it.
+SUBTITLE_EXPORT_ENABLED = _env_bool("SUBTITLE_EXPORT_ENABLED", True)
+SUBTITLE_EXPORT_FORMAT = _env("SUBTITLE_EXPORT_FORMAT", "soft").lower()
+# Comma-separated. Multiple tracks make the file usable for both viewers who
+# want the dub and viewers who want the original.
+SUBTITLE_EXPORT_TRACKS = [
+    t.strip() for t in _env("SUBTITLE_EXPORT_TRACKS", "translated").split(",") if t.strip()
+]
 
 
 # =====================================================================

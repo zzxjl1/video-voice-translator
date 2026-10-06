@@ -20,10 +20,12 @@ import os
 import shutil
 import subprocess
 import wave
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 from app import config
 from app.models import VideoState, get_state, get_video_dir
+from app.services import subtitle_service
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +39,72 @@ def is_available() -> bool:
     return shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
 
 
-def get_export_path(video_id: str) -> str:
-    return os.path.join(get_video_dir(video_id), config.EXPORT_FILENAME)
+# Container per subtitle format. Matroska is required for "styled" because MP4
+# cannot carry ASS styling at all; "soft" stays MP4 for maximum compatibility.
+_CONTAINER_FOR_FORMAT = {"soft": "mp4", "styled": "mkv"}
+
+
+def get_export_path(video_id: str, container: str = "mp4") -> str:
+    """Path of the exported file for a container ("mp4" or "mkv")."""
+    name = (
+        config.EXPORT_STYLED_FILENAME
+        if container == "mkv"
+        else config.EXPORT_FILENAME
+    )
+    return os.path.join(get_video_dir(video_id), name)
+
+
+def find_export(video_id: str) -> Optional[tuple[str, str]]:
+    """
+    (path, container) of the current export.
+
+    Only one export is kept at a time (see `_drop_other_exports`), so normally
+    there is a single candidate. The newest-by-mtime tiebreak is a safety net
+    for the case where an older version left both behind: without it the lookup
+    order would silently decide, and the download would serve a stale render
+    while the UI claims the new one is ready.
+    """
+    candidates = []
+    for container in ("mp4", "mkv"):
+        path = get_export_path(video_id, container)
+        if os.path.exists(path):
+            try:
+                candidates.append((os.path.getmtime(path), path, container))
+            except OSError:
+                candidates.append((0.0, path, container))
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    _, path, container = candidates[0]
+    return path, container
+
+
+def _drop_other_exports(video_id: str, keep_container: str) -> None:
+    """
+    Delete the export in the other container, if any.
+
+    Called only AFTER a successful mux, so a failed export never destroys the
+    previous good file. Leaving the stale one would waste a full copy of the
+    video and, worse, `find_export` could serve it in place of the fresh render.
+    """
+    for container in ("mp4", "mkv"):
+        if container == keep_container:
+            continue
+        stale = get_export_path(video_id, container)
+        if not os.path.exists(stale):
+            continue
+        try:
+            os.remove(stale)
+            logger.info(f"[{video_id}] Removed stale .{container} export")
+        except OSError as e:
+            logger.warning(f"[{video_id}] Could not remove stale export {stale}: {e}")
+
+
+def container_for(plan: subtitle_service.ExportPlan) -> str:
+    """Which container a plan needs. Falls back to MP4 for a subtitle-free export."""
+    if not plan.enabled or plan.format == "off":
+        return "mp4"
+    return _CONTAINER_FOR_FORMAT.get(plan.format, "mp4")
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +208,10 @@ def build_dubbed_timeline(
     """
     Write every synthesized segment at its original timestamp into a single
     WAV file. Returns the WAV path, or None when nothing could be placed.
+
+    Rebuilt every time. Caching it would mean recording each clip's identity to
+    know when to invalidate — bookkeeping that costs more than the few seconds
+    it saves for something the user triggers deliberately rather than in a loop.
     """
     sample_rate = config.EXPORT_SAMPLE_RATE
     segments = [
@@ -215,6 +285,142 @@ def build_dubbed_timeline(
 
 
 # ---------------------------------------------------------------------------
+# Subtitles
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ExportResult:
+    """
+    What an export produced.
+
+    Returned instead of a bare path because the API layer has to report the
+    container and the tracks that actually made it in — and `_prepare_subtitles`
+    can skip a track (nothing translated yet), so the result is not simply the
+    requested plan echoed back.
+    """
+
+    path: str
+    container: str
+    subtitle_tracks: list[dict]
+
+
+@dataclass
+class SubtitleInput:
+    """One subtitle file to embed, plus how the muxer should tag it."""
+
+    track: str          # translated | original | bilingual
+    path: str
+    codec: str          # "mov_text" for MP4, "ass" for Matroska
+    lang: str
+    title: str
+
+
+def _prepare_subtitles(
+    video_id: str,
+    state: VideoState,
+    plan: subtitle_service.ExportPlan,
+) -> list[SubtitleInput]:
+    """
+    Render one file per requested track and describe it for the muxer.
+
+    "soft" and "styled" differ only in the rendered text and the codec — SRT for
+    `mov_text`, ASS for `ass`. Track selection, the adapted timeline and the
+    style are all shared, so both deliveries produce the same words at the same
+    times; only the styling survives in one of them.
+
+    Returns an empty list when subtitles are off, nothing is translated yet, or
+    the requested renderer is unavailable. The export then proceeds WITHOUT
+    subtitles rather than failing: a missing subtitle track is a far smaller
+    problem than losing the whole render.
+    """
+    if not plan.enabled or plan.format == "off":
+        return []
+
+    if plan.format == "burn":
+        # Burn-in is a BROWSER job: it needs glyph rasterisation (libass and a
+        # CJK font) plus a full video re-encode, and this host has neither the
+        # libraries nor the CPU headroom. Reaching this point means the client
+        # asked the server for something it cannot do, so fail loudly.
+        #
+        # The dangerous alternative is falling through to the embedding path:
+        # that produces a file with an UNSTYLED subtitle track and no indication
+        # anything went wrong, which is exactly the silent wrong output this
+        # check exists to prevent.
+        raise RuntimeError(
+            "Burn-in subtitles are rendered in the browser, not on the server "
+            "(the server has no libass or CJK font, and re-encoding is not "
+            "affordable here)."
+        )
+
+    caps = subtitle_service.capabilities()
+    capability_key = "styled" if plan.format == "styled" else "soft"
+    capability = caps.get(capability_key, {})
+    if not capability.get("available"):
+        logger.warning(
+            "[%s] Subtitle format %r unavailable (%s); exporting without subtitles",
+            video_id,
+            plan.format,
+            capability.get("reason"),
+        )
+        return []
+
+    styled = plan.format == "styled"
+    codec = "ass" if styled else "mov_text"
+    extension = "ass" if styled else "srt"
+
+    subs_dir = os.path.join(get_video_dir(video_id), "subs")
+    os.makedirs(subs_dir, exist_ok=True)
+
+    # ASS needs the real frame size: every size in the file is a percentage of
+    # it, so a wrong PlayRes renders the text at the wrong scale.
+    frame = subtitle_service.probe_video_size(state.file_path) if styled else None
+
+    inputs: list[SubtitleInput] = []
+    for track in plan.tracks:
+        style = subtitle_service.SubtitleStyle.from_dict(
+            {**plan.style.to_dict(), "track": track}
+        )
+        cues = subtitle_service.build_cues(state.segments, style)
+        if not cues:
+            logger.info("[%s] No cues for track %r; skipping", video_id, track)
+            continue
+
+        text = (
+            subtitle_service.to_ass(cues, style, frame[0], frame[1])
+            if styled and frame
+            else subtitle_service.to_srt(cues, style)
+        )
+        path = os.path.join(subs_dir, f"{track}.{extension}")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+
+        # The translation tracks are in the TARGET language; the original track
+        # is in whatever the source happened to be, which we do not know.
+        source_language = getattr(state, "target_language", None) if track != "original" else None
+        inputs.append(
+            SubtitleInput(
+                track=track,
+                path=path,
+                codec=codec,
+                lang=subtitle_service.language_tag(source_language),
+                title=subtitle_service.TRACK_TITLES.get(track, track),
+            )
+        )
+
+    if inputs:
+        logger.info(
+            "[%s] Prepared %d subtitle track(s): %s",
+            video_id,
+            len(inputs),
+            ", ".join(f"{i.title}/{i.lang}/{i.codec}" for i in inputs),
+        )
+    else:
+        logger.info("[%s] No subtitle tracks produced", video_id)
+    return inputs
+
+
+# ---------------------------------------------------------------------------
 # Mux
 # ---------------------------------------------------------------------------
 
@@ -226,8 +432,19 @@ def _mux(
     has_source_audio: bool,
     output_path: str,
     duration: float,
+    subtitle_inputs: Optional[list[SubtitleInput]] = None,
+    default_subtitle: int = 0,
 ) -> None:
-    """Combine original video stream + dubbed timeline (+ bgm) into an MP4."""
+    """
+    Combine the original video stream + dubbed timeline (+ bgm + subtitles).
+
+    The video stream is always copied. Subtitles are EMBEDDED, never burned:
+    embedding is a remux (~40 ms), burning would need a full re-encode plus
+    libass and a CJK font, none of which this host has. Burn-in runs in the
+    browser instead.
+    """
+    inputs = subtitle_inputs or []
+
     cmd = ["ffmpeg", "-y", "-v", "warning", "-i", video_path, "-i", timeline_path]
 
     if background_path:
@@ -249,17 +466,51 @@ def _mux(
     else:
         filter_complex = f"[1:a]volume={config.EXPORT_TTS_GAIN},alimiter=limit=0.97[aout]"
 
+    # Subtitle inputs are appended LAST. The filter_complex above refers to
+    # inputs 0/1/2 by index, so inserting them earlier would silently remap the
+    # audio to the wrong stream.
+    first_subtitle_input = 3 if background_path else 2
+    for subtitle_input in inputs:
+        cmd += ["-i", subtitle_input.path]
+
     cmd += [
         "-filter_complex", filter_complex,
         "-map", "0:v:0",
         "-map", "[aout]",
+    ]
+    for index in range(len(inputs)):
+        cmd += ["-map", f"{first_subtitle_input + index}:s"]
+
+    cmd += [
         "-c:v", "copy",          # never re-encode the video stream
         "-c:a", "aac",
         "-b:a", "160k",
-        "-t", f"{duration:.3f}",
-        "-movflags", "+faststart",
-        output_path,
     ]
+
+    if inputs:
+        cmd += ["-c:s", inputs[0].codec]
+        for index, subtitle_input in enumerate(inputs):
+            # Both tags are needed, and which one a player shows depends on the
+            # container: MP4 SILENTLY IGNORES `title` for subtitle streams and
+            # only keeps `handler_name`, while Matroska prefers `title`. Setting
+            # just one leaves the track unnamed in half the players.
+            cmd += [
+                f"-metadata:s:s:{index}", f"language={subtitle_input.lang}",
+                f"-metadata:s:s:{index}", f"title={subtitle_input.title}",
+                f"-metadata:s:s:{index}", f"handler_name={subtitle_input.title}",
+            ]
+            # Exactly one default track: players that auto-select would
+            # otherwise pick the first and ignore the user's choice.
+            cmd += [
+                f"-disposition:s:{index}",
+                "default" if index == default_subtitle else "0",
+            ]
+
+    cmd += ["-t", f"{duration:.3f}"]
+    if output_path.endswith(".mp4"):
+        # Only meaningful for MP4; the Matroska muxer rejects the option.
+        cmd += ["-movflags", "+faststart"]
+    cmd.append(output_path)
 
     logger.info(f"[{video_id}] Muxing: {' '.join(cmd)}")
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -274,7 +525,10 @@ async def export_video(
     emit: Optional[Callable] = None,
 ) -> str:
     """
-    Produce the final dubbed MP4 for a video and return its path.
+    Produce the final dubbed video for a video and return its path.
+
+    Reads the subtitle plan from the video's own state, so the pipeline's
+    automatic export and an explicit POST /export produce the same file.
 
     Emits progress events through `emit` when provided (async callable).
     """
@@ -290,6 +544,11 @@ async def export_video(
         raise RuntimeError("Video not found")
 
     video_dir = get_video_dir(video_id)
+
+    plan = subtitle_service.ExportPlan.from_dict(
+        getattr(state, "subtitle_export", None)
+    )
+    container = container_for(plan)
 
     async def _emit(event: dict) -> None:
         if emit:
@@ -338,7 +597,21 @@ async def export_video(
 
     await _emit({"phase": "export", "status": "muxing"})
 
-    output_path = get_export_path(video_id)
+    # Subtitles are rendered before the mux so a failure here cannot leave a
+    # half-written output file behind.
+    subtitle_inputs = await loop.run_in_executor(
+        None, lambda: _prepare_subtitles(video_id, state, plan)
+    )
+
+    # Only tracks that actually produced cues became files, so the requested
+    # default has to be clamped into the range that exists — otherwise the
+    # disposition would point at a stream index past the end.
+    requested_default = (
+        plan.tracks.index(plan.default_track) if plan.default_track in plan.tracks else 0
+    )
+    default_index = min(requested_default, max(0, len(subtitle_inputs) - 1))
+
+    output_path = get_export_path(video_id, container)
     await loop.run_in_executor(
         None,
         lambda: _mux(
@@ -349,17 +622,39 @@ async def export_video(
             has_source_audio,
             output_path,
             duration,
+            subtitle_inputs,
+            default_index,
         ),
     )
 
+    # The mux succeeded, so the previous export (a different container) is now
+    # stale. Removed after the fact on purpose: a failure above must not destroy
+    # a good file the user can still download.
+    _drop_other_exports(video_id, container)
+
     size_mb = os.path.getsize(output_path) / 1024 / 1024
-    logger.info(f"[{video_id}] Export complete: {output_path} ({size_mb:.1f} MB)")
+    tracks = [
+        {
+            "track": subtitle_input.track,
+            "title": subtitle_input.title,
+            "language": subtitle_input.lang,
+            "codec": subtitle_input.codec,
+            "default": index == default_index,
+        }
+        for index, subtitle_input in enumerate(subtitle_inputs)
+    ]
+    logger.info(
+        f"[{video_id}] Export complete: {output_path} ({size_mb:.1f} MB, "
+        f"{len(tracks)} subtitle track(s), container={container})"
+    )
     await _emit(
         {
             "phase": "export",
             "status": "done",
             "url": f"/api/videos/{video_id}/export/download",
             "size_mb": round(size_mb, 1),
+            "container": container,
+            "subtitle_tracks": tracks,
         }
     )
-    return output_path
+    return ExportResult(path=output_path, container=container, subtitle_tracks=tracks)

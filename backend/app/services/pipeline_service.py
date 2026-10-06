@@ -147,6 +147,9 @@ async def run_pipeline(
     state.enable_bgm_separation = enable_bgm_separation
     state.separation_mode = separation_mode
     state.enable_voice_clone = enable_voice_clone
+    # Kept for the subtitle tracks: they need an ISO language tag so a player
+    # can auto-select a track, and the tag is not recoverable from the segments.
+    state.target_language = target_language
     save_state(state)
 
     video_dir = get_video_dir(video_id)
