@@ -283,13 +283,59 @@ function styledInfoReason(capabilities: SubtitleCapabilities): string {
   return capabilities.styled?.reason ?? '服务器不支持该输出格式';
 }
 
+const CONTENT_LABEL: Record<SubtitleTrack, string> = {
+  translated: '译文',
+  original: '原文',
+  bilingual: '双语',
+};
+
 /** The style in words, so a subtle change is readable at a glance. */
 function describeStyle(style: SubtitleStyle): string {
   const alignment =
     style.alignment === 'top' ? '顶部' : style.alignment === 'center' ? '居中' : '底部';
   const weight = style.bold ? '加粗' : '常规';
   const box = style.background === 'box' ? ' · 带底色' : '';
-  return `${alignment} · ${style.primary_color} · ${style.font_size_percent.toFixed(1)}% 高 · ${weight}${box}`;
+  // The content leads: it decides how many lines there are, which is the most
+  // visible thing about a subtitle and was the only setting this summary did
+  // not mention at all.
+  return `${CONTENT_LABEL[style.track]} · ${alignment} · ${style.primary_color} · ${style.font_size_percent.toFixed(1)}% 高 · ${weight}${box}`;
+}
+
+/*
+ * The two samples the miniature is drawn from.
+ *
+ * Short enough to sit on one line at any width the panel allows (the default is
+ * 18 characters), so nothing here has to wrap. Line breaking belongs to the
+ * server's `Cue.lines()`, and a second implementation in the dialog would drift
+ * from it — which is exactly why this file does not re-wrap.
+ */
+const SAMPLE_TRANSLATED = '你好，欢迎回来';
+const SAMPLE_ORIGINAL = 'Hello, welcome back';
+
+/**
+ * The lines `Cue.lines()` on the server would return for this content choice.
+ *
+ * Mirrors that method's ORDER (translation first, then the original) and its
+ * `max_lines` cap. It does not re-wrap — see above.
+ *
+ * This exists because the miniature used to hardcode a single string. Picking
+ * 双语 then changed the burn-in and the player but left the dialog previewing
+ * one line, so the one place built to answer "what will this look like?" was
+ * the one place that answered wrong.
+ */
+function sampleLines(style: SubtitleStyle): string[] {
+  const parts =
+    style.track === 'original'
+      ? [SAMPLE_ORIGINAL]
+      : style.track === 'bilingual'
+        ? [SAMPLE_TRANSLATED, SAMPLE_ORIGINAL]
+        : [SAMPLE_TRANSLATED];
+
+  const max = Math.max(1, style.max_lines);
+  if (parts.length <= max) return parts;
+  // Same elision marker as the server, for the same reason: dropping the rest
+  // silently reads as a rendering bug rather than as a deliberate cut.
+  return [...parts.slice(0, max - 1), `${parts[max - 1]}…`];
 }
 
 /**
@@ -319,14 +365,17 @@ const StyleThumbnail: React.FC<{ style: SubtitleStyle }> = ({ style }) => {
         boxSizing: 'border-box',
       }}
     >
-      <div
-        style={{
-          ...overlayLineStyle(style, rect),
-          fontSize: Math.max(7, metrics.fontSize * 0.55),
-        }}
-      >
-        你好，欢迎回来
-      </div>
+      {sampleLines(style).map((line, index) => (
+        <div
+          key={index}
+          style={{
+            ...overlayLineStyle(style, rect),
+            fontSize: Math.max(7, metrics.fontSize * 0.55),
+          }}
+        >
+          {line}
+        </div>
+      ))}
     </div>
   );
 };

@@ -55,16 +55,32 @@ import { burnSubtitles } from './utils/burnSubtitles';
 /**
  * Replace a trailing, in-progress log line (identified by `prefix`) instead of
  * appending a new one, so repeated progress updates do not flood the log.
+ *
+ * The result ALWAYS ends with a newline, including the line being rewritten.
+ *
+ * That is not cosmetic. `prev + 'text\n'` only starts a new line if `prev`
+ * already ends in one, so leaving the progress line open meant the next thing
+ * logged was glued onto it — and that happened at every single call site:
+ *
+ *     Burn 100%Burn complete (45.7 MB).
+ *     Separating: 100% (...)Browser separation complete.
+ *     Model download: 87% (12/14 MB)Loading the model...
+ *
+ * Terminating here fixes all of them at once, and keeps fixing them, because
+ * no caller has to remember. (Stripping the newline before splitting is what
+ * lets a rewritten line be recognised on the next update: without it the last
+ * element would be the empty string after the newline and never match.)
  */
 function withTrailingLine(prev: string, prefix: string, text: string): string {
-  const lines = prev.split('\n');
+  const body = prev.endsWith('\n') ? prev.slice(0, -1) : prev;
+  const lines = body === '' ? [] : body.split('\n');
   const last = lines.length - 1;
   if (last >= 0 && lines[last].startsWith(prefix)) {
     lines[last] = text;
   } else {
     lines.push(text);
   }
-  return lines.join('\n');
+  return `${lines.join('\n')}\n`;
 }
 
 /**
@@ -1482,10 +1498,45 @@ const App: React.FC = () => {
    */
   const handleExport = useCallback(async (silent = false) => {
     if (!videoId) return null;
-    if (!silent) {
+
+    /*
+     * Burn-in keeps the log panel CLOSED; every other delivery opens it.
+     *
+     * The log is a full-screen terminal — `fixed inset-0 z-[9999]` — so while it
+     * is up it covers the export dialog completely. Burn-in has its own progress
+     * bar in that dialog now, and popping a black overlay on top of it hides the
+     * one thing the user is watching. The other deliveries finish in well under
+     * a second and leave no other trace, so for them the log is the only place
+     * the result appears at all.
+     *
+     * Burn-in's lines are still written to the log, so opening it by hand shows
+     * the history.
+     */
+    const burning = subtitleDelivery === 'burn';
+    if (!silent && !burning) {
       setIsLogOpen(true);
       setRawLog(prev => prev + '\n--- Exporting Video (video stream copied) ---\n');
     }
+
+    /**
+     * Hand the log panel back when the work is done.
+     *
+     * A non-silent export opens it and nothing used to close it, so the panel
+     * stayed on screen long after the file had already downloaded. The pause
+     * matches the pipeline's, for the same reason: the last line should be
+     * legible before the panel goes away.
+     *
+     * A silent export (the re-process flow) leaves the panel alone — its caller
+     * owns it and closes it itself. An error leaves it up on purpose, so the
+     * message can be read.
+     */
+    const releaseLog = async () => {
+      if (silent) return;
+      setRawLog(prev => prev + '\nClosing in 2 seconds...');
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      setIsLogOpen(false);
+    };
+
     setIsExporting(true);
     setExportError('');
 
@@ -1575,6 +1626,7 @@ const App: React.FC = () => {
         handleDownloadSrt();
       }
       setShowExportModal(false);
+      await releaseLog();
       return result.url;
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Export failed';
