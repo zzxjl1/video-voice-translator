@@ -75,11 +75,22 @@ class TTSRequest(BaseModel):
     # Used only to predict a good starting speed. Without it the first pass
     # uses the default rate, and the measurement/correction still fits the line.
     target_language: Optional[str] = None
+    # Chinese dialect to speak in, e.g. "广东话". Empty/absent means Mandarin.
+    # Validated against config.CHINESE_ACCENTS and ignored for other languages;
+    # see config.tts_instruction for why this is checked and not trusted.
+    accent: Optional[str] = None
 
 
 class TTSResponse(BaseModel):
     audio_url: str
     content_type: str = "audio/mp3"
+
+
+class SpeakerVoiceRequest(BaseModel):
+    """Pin one speaker to one system voice (voice cloning off)."""
+
+    speaker_id: str
+    voice: str
 
 
 # ----- Status -----
@@ -136,6 +147,9 @@ class ProcessRequest(BaseModel):
     # from the client, and `separation_mode` is the single source of truth.
     enable_bgm_separation: bool = False
     enable_voice_clone: bool = False
+    # Chinese dialect for the dubbed audio, e.g. "广东话". Absent means Mandarin.
+    # Only meaningful with target_language="Chinese"; ignored otherwise.
+    accent: Optional[str] = None
     # Mux the dubbed audio into a downloadable MP4 when finished.
     export_video: bool = True
 

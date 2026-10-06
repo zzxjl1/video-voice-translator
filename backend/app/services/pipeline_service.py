@@ -72,6 +72,7 @@ async def run_pipeline(
     separation_mode: Optional[str] = None,
     enable_voice_clone: bool = False,
     export_video: bool = True,
+    accent: Optional[str] = None,
 ):
     """
     Execute the full processing pipeline for a video.
@@ -88,11 +89,18 @@ async def run_pipeline(
             the reason.
         enable_voice_clone: Clone each speaker's voice before synthesis.
         export_video: Mux the dubbed audio back into a downloadable MP4.
+        accent: Chinese dialect for the dubbed audio (e.g. "广东话"). None or ""
+            means Mandarin, which needs no instruction at all.
     """
     state = get_state(video_id)
     if not state:
         await emit({"error": "Video not found"})
         return
+
+    # Resolved once, here. `config.tts_instruction` both checks the accent
+    # against the documented dialect list and drops it for a non-Chinese
+    # target, so the synthesis path below does not have to know either rule.
+    instruction = config.tts_instruction(target_language, accent)
 
     # ------------------------------------------------------------------
     # Resolve the separation backend for this job.
@@ -147,6 +155,14 @@ async def run_pipeline(
     state.enable_bgm_separation = enable_bgm_separation
     state.separation_mode = separation_mode
     state.enable_voice_clone = enable_voice_clone
+    # A pinned voice belongs to a LANGUAGE. Voice ids are language-specific, so
+    # a pin from a previous Chinese run is not just a poor fit for an English
+    # dub — the service rejects the pair, and it does so part-way through
+    # synthesizing rather than at the start. Dropping the pins on a change keeps
+    # the failure from ever being reachable.
+    if state.target_language and state.target_language != target_language:
+        tts_service.clear_speaker_voices(video_id)
+
     # Kept for the subtitle tracks: they need an ISO language tag so a player
     # can auto-select a track, and the tag is not recoverable from the segments.
     state.target_language = target_language
@@ -486,6 +502,7 @@ async def run_pipeline(
                         write_registry=False,
                         speech_rate=planned_rate,
                         target_duration=slot,
+                        instruction=instruction,
                     )
                     seg.audio_path = audio_file_path
                     succeeded_segments.append(seg.id)

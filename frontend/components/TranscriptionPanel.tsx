@@ -7,6 +7,8 @@ import {
     isOutsideFitRange,
     fitErrorSeconds,
 } from '../utils/playbackSync';
+import SegmentActionsMenu from './SegmentActionsMenu';
+import type { VoiceOption } from '../services/apiService';
 
 interface TranscriptionPanelProps {
     segments: TranscriptionSegment[];
@@ -21,6 +23,17 @@ interface TranscriptionPanelProps {
     clonedVoices?: Record<string, string>;
     onPreviewVoice?: (speakerId: string) => void;
     previewingSpeaker?: string;
+    /**
+     * System voices to offer per speaker. EMPTY when voice cloning is on —
+     * a cloned voice takes precedence over any system voice, so offering the
+     * choice would be offering something with no effect.
+     */
+    voices?: VoiceOption[];
+    /** speaker_id -> pinned voice_id. A speaker missing here is automatic. */
+    pinnedVoices?: Record<string, string>;
+    onPickVoice?: (speakerId: string, voiceId: string) => void;
+    /** Target language has no built-in voice at all; the picker explains this. */
+    voicesNeedCloning?: boolean;
 }
 
 
@@ -114,7 +127,11 @@ const SegmentCard: React.FC<{
     hasClonedVoice?: boolean;
     onPreviewVoice?: (speakerId: string) => void;
     isPreviewingVoice?: boolean;
-}> = memo(({ segment, speaker, isActive, onSegmentUpdate, onSynthesize, onRefit, onSeek, hasClonedVoice, onPreviewVoice, isPreviewingVoice }) => {
+    voices?: VoiceOption[];
+    needsVoiceCloning?: boolean;
+    pinnedVoice?: string;
+    onPickVoice?: (speakerId: string, voiceId: string) => void;
+}> = memo(({ segment, speaker, isActive, onSegmentUpdate, onSynthesize, onRefit, onSeek, hasClonedVoice, onPreviewVoice, isPreviewingVoice, voices, needsVoiceCloning, pinnedVoice, onPickVoice }) => {
     const speakerColor = speaker ? getSpeakerColor(speaker.id) : '#9ca3af';
 
     // Speed stats come from the same helper the player uses, so what is shown
@@ -204,6 +221,52 @@ const SegmentCard: React.FC<{
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
                         </svg>
                     </button>
+
+                    {/* Everything else this line can do. The row used to expose
+                        only what happened to fit — Refit appeared in the duration
+                        badge, and only when the line was already off — so the
+                        actions that matter most when something is wrong were the
+                        hardest to find. */}
+                    <SegmentActionsMenu
+                        speakerName={speaker?.name || '该说话人'}
+                        voices={voices ?? []}
+                        needsVoiceCloning={needsVoiceCloning}
+                        currentVoice={pinnedVoice}
+                        onPickVoice={voiceId => onPickVoice?.(segment.speakerId, voiceId)}
+                        actions={[
+                            {
+                                label: '重新生成语音',
+                                onSelect: () => onSynthesize(segment.id),
+                                disabledReason: !segment.translatedText
+                                    ? '还没有译文'
+                                    : segment.isSynthesizing || segment.isTranslating
+                                      ? '正在处理中'
+                                      : undefined,
+                            },
+                            {
+                                label: '按时长重新拟合',
+                                onSelect: () => onRefit?.(segment.id),
+                                disabledReason: !onRefit
+                                    ? '不可用'
+                                    : !segment.translatedText
+                                      ? '还没有译文'
+                                      : undefined,
+                            },
+                            ...(hasClonedVoice && onPreviewVoice
+                                ? [
+                                      {
+                                          label: isPreviewingVoice ? '试听生成中…' : '试听克隆音色',
+                                          onSelect: () => onPreviewVoice(segment.speakerId),
+                                          disabledReason: isPreviewingVoice ? '正在生成' : undefined,
+                                      },
+                                  ]
+                                : []),
+                            {
+                                label: '跳到这一行',
+                                onSelect: () => onSeek(segment.startTime),
+                            },
+                        ]}
+                    />
                 </div>
             </div>
 
@@ -291,7 +354,8 @@ const SegmentCard: React.FC<{
 
 export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = memo(({
     segments, speakers, isTranscribing, currentTime, onSegmentUpdate, onSynthesize, onRefit, onSeek,
-    clonedVoices, onPreviewVoice, previewingSpeaker
+    clonedVoices, onPreviewVoice, previewingSpeaker,
+    voices, pinnedVoices, onPickVoice, voicesNeedCloning
 }) => {
     const speakerMap = new Map(speakers.map(s => [s.id, s]));
     const listRef = React.useRef<HTMLDivElement>(null);
@@ -358,6 +422,10 @@ export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = memo(({
                                 hasClonedVoice={!!(clonedVoices && clonedVoices[segment.speakerId])}
                                 onPreviewVoice={onPreviewVoice}
                                 isPreviewingVoice={previewingSpeaker === segment.speakerId}
+                                voices={voices}
+                                needsVoiceCloning={voicesNeedCloning}
+                                pinnedVoice={pinnedVoices?.[segment.speakerId]}
+                                onPickVoice={onPickVoice}
                             />
                         ))}
                         {isTranscribing && (

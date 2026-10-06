@@ -109,7 +109,7 @@ export async function synthesizeSpeech(
   segmentId: string,
   text: string,
   voice?: string,
-  options?: { targetDuration?: number; targetLanguage?: string },
+  options?: { targetDuration?: number; targetLanguage?: string; accent?: string },
 ): Promise<TTSResult> {
   const response = await fetch(`${API_BASE}/videos/${videoId}/tts`, {
     method: 'POST',
@@ -120,6 +120,10 @@ export async function synthesizeSpeech(
       voice,
       target_duration: options?.targetDuration,
       target_language: options?.targetLanguage,
+      // Chinese dialect for this line. The backend checks it against its own
+      // list and ignores it unless the language is Chinese, so sending it for
+      // an English job is harmless rather than something to guard here.
+      accent: options?.accent,
     }),
   });
 
@@ -336,6 +340,8 @@ export async function processVideo(
     separationMode?: SeparationMode;
     enableVoiceClone?: boolean;
     exportVideo?: boolean;
+    /** Chinese dialect for the dub, e.g. "广东话". Empty means Mandarin. */
+    accent?: string;
   },
 ): Promise<void> {
   const response = await fetch(`${API_BASE}/videos/${videoId}/process`, {
@@ -343,6 +349,7 @@ export async function processVideo(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       target_language: targetLanguage,
+      accent: options?.accent ?? '',
       // Which backend splits the vocals: "client" (browser, default), "api"
       // (302.AI) or "off". The server validates this against the backends it
       // can actually run and degrades to "off" if the choice is unusable.
@@ -409,6 +416,114 @@ export async function resetVideo(videoId: string): Promise<void> {
 /**
  * Get voice clone status for all speakers.
  */
+export interface VoiceOption {
+  id: string;
+  label: string;
+}
+
+export interface VoiceList {
+  /**
+   * Voices that can speak this language. EMPTY when none can — see
+   * `needsVoiceCloning`; an empty list is not "still loading".
+   */
+  voices: VoiceOption[];
+  /** speaker_id -> voice_id, for the speakers that have been pinned. */
+  assigned: Record<string, string>;
+  /**
+   * True when NO built-in voice speaks this language, so the only way to dub it
+   * is voice cloning. The server decides this; the client never guesses, because
+   * the answer is a property of the voice models.
+   */
+  needsVoiceCloning: boolean;
+}
+
+/**
+ * The system voices available for a language, plus what each speaker is on.
+ *
+ * Filtered server-side: voice ids are model- AND language-specific, and a
+ * mismatched pair is rejected by the TTS service rather than ignored, so the
+ * rule lives in one place.
+ */
+export async function getVoices(videoId: string, language: string): Promise<VoiceList> {
+  const params = new URLSearchParams({ language });
+  const response = await fetch(`${API_BASE}/videos/${videoId}/voices?${params}`);
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(err.detail || 'Could not load voices');
+  }
+  const data = await response.json();
+  return {
+    voices: data.voices ?? [],
+    assigned: data.assigned ?? {},
+    needsVoiceCloning: Boolean(data.needs_voice_cloning),
+  };
+}
+
+export interface AsrLanguages {
+  /** Languages the transcription model can hear. */
+  languages: string[];
+  /** Chinese dialects it distinguishes — not languages in the same sense. */
+  dialects: string[];
+}
+
+/**
+ * What the ASR model can hear. Shown beside the upload on the landing page:
+ * it constrains which videos can be used at all, before any setting matters.
+ */
+export async function getAsrLanguages(): Promise<AsrLanguages> {
+  const response = await fetch(`${API_BASE}/asr/languages`);
+  if (!response.ok) {
+    throw new Error('Could not load the supported languages');
+  }
+  const data = await response.json();
+  return { languages: data.languages ?? [], dialects: data.dialects ?? [] };
+}
+
+/**
+ * Which built-in voices a language has, for a caller with no video yet.
+ *
+ * The landing page asks this to show what a language would sound like before
+ * anything is uploaded — the answer depends only on the language, so it does not
+ * need a job to exist.
+ */
+export async function getLanguageVoices(
+  language: string,
+): Promise<{ voices: VoiceOption[]; needsVoiceCloning: boolean }> {
+  const params = new URLSearchParams({ language });
+  const response = await fetch(`${API_BASE}/tts/voices?${params}`);
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(err.detail || 'Could not load voices');
+  }
+  const data = await response.json();
+  return {
+    voices: data.voices ?? [],
+    needsVoiceCloning: Boolean(data.needs_voice_cloning),
+  };
+}
+
+/**
+ * Pin a speaker to a voice (used when voice cloning is off).
+ *
+ * Per SPEAKER, not per line: a voice is the speaker's, and pinning it per line
+ * would let one speaker change voice mid-video.
+ */
+export async function setSpeakerVoice(
+  videoId: string,
+  speakerId: string,
+  voice: string,
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/videos/${videoId}/speaker-voice`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ speaker_id: speakerId, voice }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(err.detail || 'Could not set the voice');
+  }
+}
+
 export async function getVoiceCloneStatus(videoId: string): Promise<{ cloned_voices: Record<string, string> }> {
   const response = await fetch(`${API_BASE}/videos/${videoId}/voice-clone/status`);
 

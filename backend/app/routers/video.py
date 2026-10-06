@@ -38,6 +38,7 @@ from app.schemas import (
     UploadResponse,
     VideoStatusResponse,
     ProcessRequest,
+    SpeakerVoiceRequest,
 )
 from app.services import (
     asr_service,
@@ -52,6 +53,64 @@ from app.services import voice_clone_service
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/videos", tags=["videos"])
+
+# Which voices a language has is a property of the TTS MODEL, not of any video,
+# and the landing page needs that answer before anything is uploaded. Hence a
+# router of its own rather than another `/{video_id}/...` route — same split as
+# `subtitles.py`, which carries a `video_router` alongside its own.
+tts_router = APIRouter(prefix="/tts", tags=["tts"])
+
+# ASR languages are a model property for the same reason TTS voices are, and the
+# landing page shows them next to the upload — they constrain what can be
+# uploaded at all, which is a question about the input, not a preference.
+asr_router = APIRouter(prefix="/asr", tags=["asr"])
+
+
+@asr_router.get("/languages")
+async def asr_languages():
+    """
+    The languages and Chinese dialects the transcription model can hear.
+
+    Shown beside the upload, because it answers "can I even use this video?"
+    rather than anything about the settings. Deliberately separate from the TTS
+    voice list: the two cover different sets (30 languages heard vs 10 spoken by
+    a built-in voice) and conflating them is how a dub ends up mispronounced.
+    """
+    return {
+        "languages": list(config.ASR_SOURCE_LANGUAGES),
+        "dialects": list(config.ASR_CHINESE_DIALECTS),
+    }
+
+
+@tts_router.get("/voices")
+async def voices_for_language(language: Optional[str] = None):
+    """
+    The built-in voices that can speak `language`, for a caller with no video.
+
+    Same answer as `GET /videos/{id}/voices`, minus the per-speaker assignment.
+    The two exist separately because the question is asked at two different
+    times: "what will this sound like?" before an upload, and "who is on which
+    voice?" after a run.
+
+    `needs_voice_cloning` means no built-in voice speaks this language at all.
+    The list is empty in that case rather than filled with something close: the
+    fallback pool produces audio, but mispronounced, and the docs describe that
+    outcome as a quality problem rather than an error — so nothing would report
+    it.
+    """
+    supported = config.system_voices_support(language)
+    return {
+        "language": language,
+        "voices": (
+            [
+                {"id": v, "label": config.voice_label(v)}
+                for v in config.voices_for_language(language)
+            ]
+            if supported
+            else []
+        ),
+        "needs_voice_cloning": not supported,
+    }
 
 
 def _compute_md5(file_path: str) -> str:
@@ -201,6 +260,10 @@ async def reset_video(video_id: str):
             shutil.rmtree(item_path)
         else:
             os.remove(item_path)
+
+    # The directory is gone, so the cached voice map must go with it — otherwise
+    # it would both serve the old speakers' voices and write the file back.
+    tts_service.forget_voice_map(video_id)
 
     # Re-create clean state
     original_path = os.path.join(video_dir, original_video)
@@ -402,6 +465,10 @@ async def synthesize_speech(video_id: str, req: TTSRequest):
             voice,
             speech_rate=planned_rate,
             target_duration=req.target_duration,
+            # Same resolution the pipeline uses, so a single-segment re-synthesis
+            # ("Refit", or editing a line) stays in the accent the job was dubbed
+            # in instead of silently reverting that one line to Mandarin.
+            instruction=config.tts_instruction(req.target_language, req.accent),
         )
         logger.info(f"[{video_id}] TTS synthesis complete (Segment: {req.segment_id})")
 
@@ -598,6 +665,7 @@ async def process_video(video_id: str, req: ProcessRequest):
                     separation_mode=req.separation_mode,
                     enable_voice_clone=req.enable_voice_clone,
                     export_video=req.export_video,
+                    accent=req.accent,
                 )
             except Exception as e:
                 logger.error(f"[{video_id}] Pipeline error: {e}", exc_info=True)
@@ -682,6 +750,109 @@ async def get_voice_clone_status(video_id: str):
         "cloned_voices": usable,
         "target_model": current_model,
     }
+
+
+@router.get("/{video_id}/voices")
+async def list_voices(video_id: str, language: Optional[str] = None):
+    """
+    The voices a user can pick for `language`.
+
+    Driven by the TARGET LANGUAGE and nothing else: which language is being
+    dubbed decides which voices exist. Voice ids are model- AND language-specific
+    — most Mandarin "精品中文" voices reject an English line outright, answering
+    `InvalidParameter` / `Engine error [411]` instead of falling back — so the
+    filtering rule lives here rather than being duplicated in the client.
+
+    `voices` is EMPTY when no built-in voice speaks this language, with
+    `needs_voice_cloning` set. Returning the fallback pool instead would be a
+    lie the user only discovers by listening: the four multilingual voices are
+    not documented for Spanish, Russian, Thai and several others, and the docs
+    describe the result as 「可能发音错误或语音不自然」 — audio, produced badly.
+
+    `assigned` is EMPTY until something has picked voices; a speaker missing
+    from it is "automatic", not broken, since `assign_voice_for_speaker` chooses
+    on first use.
+    """
+    state = get_state(video_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    # The caller may ask about another language; default to what the job is set
+    # to, which is what `pin_speaker_voice` will validate against.
+    language = language or state.target_language
+    supported = config.system_voices_support(language)
+
+    return {
+        "video_id": video_id,
+        "language": language,
+        "voices": (
+            [
+                {"id": v, "label": config.voice_label(v)}
+                for v in config.voices_for_language(language)
+            ]
+            if supported
+            else []
+        ),
+        "assigned": tts_service.get_speaker_voice_map(video_id),
+        "needs_voice_cloning": not supported,
+    }
+
+
+@router.post("/{video_id}/speaker-voice")
+async def pin_speaker_voice(video_id: str, req: SpeakerVoiceRequest):
+    """
+    Pin one speaker to one voice, for when voice cloning is off.
+
+    Without this the user has no say at all: `assign_voice_for_speaker` picks
+    randomly from the language's pool, so which voice a speaker ends up with
+    changes between runs.
+
+    The pairing is checked against the pool for the CURRENT target language
+    before it is stored. Getting it wrong is not cosmetic — the service rejects
+    the pair at synthesis time, halfway through a run — so it is refused here
+    and the error names the language.
+    """
+    state = get_state(video_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    if not any(s.id == req.speaker_id for s in (state.speakers or [])):
+        raise HTTPException(status_code=404, detail="Speaker not found")
+
+    # An empty voice is "back to automatic", not an error. It has to be
+    # supported: the picker offers it, and without it a pinned speaker could
+    # never return to the random assignment. Checked BEFORE the language, so a
+    # speaker can always be released even if the pool later became unusable.
+    if not req.voice:
+        tts_service.clear_speaker_voice(video_id, req.speaker_id)
+        return {"video_id": video_id, "speaker_id": req.speaker_id, "voice": None}
+
+    target = state.target_language
+    if not config.system_voices_support(target):
+        # Same rule the listing applies: there is nothing valid to pin. Refusing
+        # here keeps the two endpoints from disagreeing — a picker that offers
+        # nothing while the API accepts anything is worse than either alone.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"No built-in voice can speak {target or 'the selected language'}. "
+                "Turn on voice cloning to dub this language."
+            ),
+        )
+
+    pool = config.voices_for_language(target)
+    if req.voice not in pool:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Voice '{req.voice}' cannot speak "
+                f"{state.target_language or 'the selected language'}. "
+                f"Pick one of: {', '.join(pool)}"
+            ),
+        )
+
+    tts_service.set_speaker_voice(video_id, req.speaker_id, req.voice)
+    return {"video_id": video_id, "speaker_id": req.speaker_id, "voice": req.voice}
 
 
 @router.post("/{video_id}/voice-clone/{speaker_id}/preview")

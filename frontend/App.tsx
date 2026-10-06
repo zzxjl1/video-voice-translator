@@ -17,6 +17,9 @@ import {
   getVideoStatus,
   resetVideo,
   getVoiceCloneStatus,
+  getLanguageVoices,
+  getVoices,
+  setSpeakerVoice,
   generateVoicePreview,
   exportVideo,
   getExportDownloadUrl,
@@ -38,6 +41,7 @@ import {
   type SubtitleExportFormat,
   type SubtitleStyle,
   type SubtitleStylePatch,
+  type VoiceOption,
 } from './services/apiService';
 import { getAudioWaveform, getAudioWaveformFromUrl } from './utils/audioProcessor';
 import { decodeAudio, separateAndUpload, isModelCached } from './utils/mdx/separatorClient';
@@ -51,6 +55,7 @@ import {
 } from './utils/subtitleStyle';
 import { probeBurnCapability, type BurnCapability } from './utils/burnCapability';
 import { burnSubtitles } from './utils/burnSubtitles';
+import { detectBrowserLanguage } from './utils/languages';
 
 /**
  * Replace a trailing, in-progress log line (identified by `prefix`) instead of
@@ -136,19 +141,30 @@ function restoreSeparationMode(
   return (backends?.[stored]?.available ?? true) ? stored : 'off';
 }
 
-function detectBrowserLanguage(): string {
-  const lang = (navigator.language || '').toLowerCase();
-  if (lang.startsWith('zh')) return 'Chinese';
-  if (lang.startsWith('ja')) return 'Japanese';
-  if (lang.startsWith('ko')) return 'Korean';
-  if (lang.startsWith('fr')) return 'French';
-  if (lang.startsWith('de')) return 'German';
-  if (lang.startsWith('es')) return 'Spanish';
-  return 'English';
-}
+/*
+ * `detectBrowserLanguage` now lives in `utils/languages.ts`, beside the list it
+ * has to agree with.
+ *
+ * It used to be here: a five-entry prefix table, while the list beside it held
+ * ten languages. Browsers set to Portuguese, Italian, Vietnamese or Indonesian
+ * therefore fell through to English even though all four are offered as
+ * targets. Two declarations of one intent, in two files, is what allowed that —
+ * so the guess moved next to the list, and the tags it matches on now live ON
+ * the options rather than in a table that can fall out of step.
+ */
 
 const App: React.FC = () => {
   const [videoFile, setVideoFile] = useState<File | null>(null);
+  /**
+   * A file the user has chosen but not started yet.
+   *
+   * Kept apart from `videoFile` on purpose: `isIndexPage` is `!videoFile &&
+   * !videoId`, so putting a merely-selected file into `videoFile` would tear the
+   * landing page down the instant a file was picked — before the user has had a
+   * chance to choose a language or turn cloning on. Choosing and starting are
+   * two steps now, and this is what keeps them two.
+   */
+  const [pendingVideoFile, setPendingVideoFile] = useState<File | null>(null);
   const [videoId, setVideoId] = useState<string>('');
   const [waveform, setWaveform] = useState<number[]>([]);
   const [duration, setDuration] = useState<number>(0);
@@ -165,11 +181,89 @@ const App: React.FC = () => {
   // Voice clone state
   const [clonedVoices, setClonedVoices] = useState<Record<string, string>>({});
   const [previewingSpeaker, setPreviewingSpeaker] = useState<string>('');
+  /**
+   * System voices for the current language, and which speaker is pinned to
+   * which. Only populated while voice cloning is OFF.
+   *
+   * Cloned voices win over system ones (`/tts` resolves explicit > cloned >
+   * assigned, and the pipeline does the same), so offering the picker while
+   * cloning is on would offer choices that change nothing. An empty list is
+   * what hides it.
+   */
+  const [voiceOptions, setVoiceOptions] = useState<VoiceOption[]>([]);
+  const [pinnedVoices, setPinnedVoices] = useState<Record<string, string>>({});
+  /** Target language has no built-in voice; dubbing it needs voice cloning. */
+  const [voicesNeedCloning, setVoicesNeedCloning] = useState(false);
 
   // Settings State
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [targetLanguage, setTargetLanguage] = useState<string>(detectBrowserLanguage);
+  /**
+   * Chinese dialect for the dub. '' means Mandarin, which is also what the
+   * backend expects for "no instruction" — see config.tts_instruction.
+   *
+   * Only Chinese has documented dialects, and only the backend decides whether
+   * a given value is real, so this is forwarded as-is rather than filtered here.
+   */
+  const [targetAccent, setTargetAccent] = useState<string>('');
   const [enableVoiceClone, setEnableVoiceClone] = useState(false);
+
+  useEffect(() => {
+    if (!videoId || segments.length === 0 || enableVoiceClone) {
+      setVoiceOptions([]);
+      setPinnedVoices({});
+      setVoicesNeedCloning(false);
+      return;
+    }
+    let cancelled = false;
+    getVoices(videoId, targetLanguage)
+      .then(list => {
+        if (cancelled) return;
+        // The server decides which languages have built-in voices; `voices`
+        // being empty AND needsVoiceCloning being set is the case the menu
+        // explains rather than leaving blank.
+        setVoiceOptions(list.voices);
+        setPinnedVoices(list.assigned);
+        setVoicesNeedCloning(list.needsVoiceCloning);
+      })
+      .catch(() => {
+        // Not fatal: the picker simply does not appear. Synthesis still works,
+        // it just stays on whatever `assign_voice_for_speaker` chose.
+        if (!cancelled) {
+          setVoiceOptions([]);
+          setVoicesNeedCloning(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [videoId, targetLanguage, enableVoiceClone, segments.length]);
+
+  const handlePickVoice = useCallback(
+    async (speakerId: string, voiceId: string) => {
+      if (!videoId) return;
+      /*
+       * Applied locally first. The picker is a leaf control and the choice is
+       * usually kept, so waiting for a round trip would make the label feel
+       * broken; the previous map is restored if the server disagrees.
+       */
+      const previous = pinnedVoices;
+      setPinnedVoices(prev => {
+        const next = { ...prev };
+        if (voiceId) next[speakerId] = voiceId;
+        else delete next[speakerId];
+        return next;
+      });
+      try {
+        await setSpeakerVoice(videoId, speakerId, voiceId);
+      } catch (e) {
+        setPinnedVoices(previous);
+        const message = e instanceof Error ? e.message : String(e);
+        setRawLog(prev => prev + `Could not set the voice: ${message}\n`);
+      }
+    },
+    [videoId, pinnedVoices],
+  );
 
   // Vocal separation. `separationMode` is the single source of truth; the old
   // on/off boolean is derived from it so the two can never disagree.
@@ -944,6 +1038,9 @@ const App: React.FC = () => {
         separationMode: opts.separationMode ?? separationMode,
         enableVoiceClone,
         exportVideo: true,
+        // Chinese dialect for the whole dub. The backend ignores it unless the
+        // target really is Chinese.
+        accent: targetAccent,
       });
 
       await new Promise(resolve => setTimeout(resolve, 2000));
@@ -955,7 +1052,7 @@ const App: React.FC = () => {
     } finally {
       setIsTranscribing(false);
     }
-  }, [targetLanguage, enableVoiceClone, separationMode]);
+  }, [targetLanguage, targetAccent, enableVoiceClone, separationMode]);
 
   /**
    * Run vocal separation locally in the browser and hand the stems to the
@@ -1113,6 +1210,7 @@ const App: React.FC = () => {
         // Navigated back to index — reset all state
         setVideoId('');
         setVideoFile(null);
+    setPendingVideoFile(null);
         setVideoUrl(null);
         setSegments([]);
         setSpeakers([]);
@@ -1129,6 +1227,7 @@ const App: React.FC = () => {
         // Forward navigation to a /{md5} page — recover session
         setVideoId(idFromUrl);
         setVideoFile(null);
+    setPendingVideoFile(null);
         setSegments([]);
         setSpeakers([]);
         setWaveform([]);
@@ -1214,6 +1313,11 @@ const App: React.FC = () => {
     // `startPipeline` carries the current separation mode, so a stale `runPipeline`
     // can no longer be used to start a job without browser separation.
   }, [videoId, startPipeline]);
+
+  /** The user picked a file. Nothing is uploaded until they press start. */
+  const handleFilePicked = useCallback((file: File) => {
+    setPendingVideoFile(file);
+  }, []);
 
   const handleVideoSelect = useCallback(async (file: File) => {
     setVideoFile(file);
@@ -1330,6 +1434,17 @@ const App: React.FC = () => {
     }
   }, [targetLanguage, runPipeline, startPipeline]);
 
+  /**
+   * Start the job for the file that was picked.
+   *
+   * Declared after `handleVideoSelect` because it calls it — a useCallback's
+   * dependency array is read during render, so referencing a `const` defined
+   * further down would throw before it ever ran.
+   */
+  const handleStartProcessing = useCallback(() => {
+    if (pendingVideoFile) void handleVideoSelect(pendingVideoFile);
+  }, [pendingVideoFile, handleVideoSelect]);
+
   const handleTranslateSegmentImpl = useCallback(async (id: string, textToTranslate?: string) => {
     // Find the latest segment data from state
     const segmentToTranslate = segments.find(s => s.id === id);
@@ -1384,6 +1499,9 @@ const App: React.FC = () => {
       const result = await synthesizeSpeech(videoId, targetSegment.id, text, undefined, {
         targetDuration: Math.max(0.5, targetSegment.endTime - targetSegment.startTime),
         targetLanguage,
+        // Without this, re-recording ONE line would drop it back to Mandarin
+        // while the rest of the video stayed in the chosen dialect.
+        accent: targetAccent,
       });
       // Cache-buster: the file at this URL has just been replaced, and without
       // it the browser serves the previous take and `actualDuration` never
@@ -1396,7 +1514,7 @@ const App: React.FC = () => {
     } finally {
       setSegments(prev => prev.map(s => s.id === id ? { ...s, isSynthesizing: false } : s));
     }
-  }, [videoId, segments, targetLanguage]);
+  }, [videoId, segments, targetLanguage, targetAccent]);
 
   /**
    * Re-synthesize one line so it fits its own time slot.
@@ -1798,10 +1916,14 @@ const App: React.FC = () => {
 
       {isIndexPage ? (
         <VideoUpload
-          onVideoSelect={handleVideoSelect}
+          onFilePicked={handleFilePicked}
+          pendingFileName={pendingVideoFile?.name}
+          onStart={handleStartProcessing}
           isLoading={isTranscribing || isSeparating}
           targetLanguage={targetLanguage}
           onLanguageChange={setTargetLanguage}
+          targetAccent={targetAccent}
+          onAccentChange={setTargetAccent}
           enableVoiceClone={enableVoiceClone}
           onVoiceCloneChange={handleVoiceCloneChange}
           separationMode={separationMode}
@@ -1816,6 +1938,8 @@ const App: React.FC = () => {
             onReprocess={handleReprocess}
             targetLanguage={targetLanguage}
             onLanguageChange={setTargetLanguage}
+            targetAccent={targetAccent}
+            onAccentChange={setTargetAccent}
             isProcessing={isBatchProcessing}
             hasSegments={segments.length > 0}
             onExport={() => setShowExportModal(true)}
@@ -2022,6 +2146,10 @@ const App: React.FC = () => {
                     clonedVoices={clonedVoices}
                     onPreviewVoice={handlePreviewVoice}
                     previewingSpeaker={previewingSpeaker}
+                    voices={voiceOptions}
+                    pinnedVoices={pinnedVoices}
+                    onPickVoice={handlePickVoice}
+                    voicesNeedCloning={voicesNeedCloning}
                   />
                 </div>
 

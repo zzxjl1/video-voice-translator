@@ -268,6 +268,31 @@ ASR_DIARIZATION_ENABLED = _env_bool("ASR_DIARIZATION_ENABLED", True)
 # different model family so a provider-side outage of one line still works.
 ASR_FALLBACK_MODEL = _env("ASR_FALLBACK_MODEL", "fun-asr")
 
+# What the ASR model can hear, from the Model Studio model-comparison page.
+#
+# Listed here rather than derived anywhere in the client for the same reason as
+# SYSTEM_VOICE_LANGUAGES: it is a property of the model, the landing page shows
+# it before a video exists, and the last time this knowledge was duplicated the
+# UI offered a language no voice could speak.
+#
+# Note the asymmetry with the TTS side: 30 languages can be HEARD, 10 can be
+# SAID by a built-in voice. That gap is why the landing page shows both lists —
+# a user with, say, a Greek video needs to know up front that the transcription
+# will work but the dub needs voice cloning.
+ASR_SOURCE_LANGUAGES = (
+    "中文", "英语", "日语", "韩语", "越南语", "泰语", "印尼语", "马来语",
+    "菲律宾语", "印地语", "阿拉伯语", "法语", "德语", "西班牙语", "葡萄牙语",
+    "俄语", "意大利语", "荷兰语", "瑞典语", "丹麦语", "芬兰语", "挪威语",
+    "希腊语", "波兰语", "捷克语", "匈牙利语", "罗马尼亚语", "保加利亚语",
+    "克罗地亚语", "斯洛伐克语",
+)
+
+# The Chinese dialects/accents ASR distinguishes, listed separately because they
+# are not "languages" in the same sense — a Cantonese video is still Chinese.
+ASR_CHINESE_DIALECTS = (
+    "上海", "南昌", "宁波", "客家", "杭州", "温州", "湖南", "福建", "粤语", "苏州",
+)
+
 ASR_SERVICE_URL = _env(
     "ASR_SERVICE_URL",
     "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcription",
@@ -394,15 +419,56 @@ TTS_VOICES_BY_LANGUAGE: dict[str, list[str]] = {
     "Italian": TTS_MULTILINGUAL_VOICES,
     "Vietnamese": TTS_MULTILINGUAL_VOICES,
     "Indonesian": TTS_MULTILINGUAL_VOICES,
-    # KNOWN GAP: the four multilingual *system* voices are documented for
-    # Japanese/Korean/French/German/Portuguese/Italian/Vietnamese/Indonesian —
-    # Spanish is NOT among them, and the UI offers Spanish. Spanish therefore
-    # falls back to the multilingual pool, which may mispronounce (the docs
-    # warn "可能发音错误或语音不自然" for unsupported pairs; it is a quality
-    # issue, not an error). Voice *cloning* does cover Spanish, so for Spanish
-    # output prefer enabling voice cloning, or drop Spanish from the UI list.
-    "Spanish": TTS_MULTILINGUAL_VOICES,
+    # Deliberately NO entry for Spanish — nor for Russian, Thai, Malay,
+    # Filipino, Arabic and the rest. No built-in voice speaks them, and listing
+    # one anyway is exactly how the UI came to offer Spanish with a voice that
+    # mispronounced every line while nothing reported a problem.
+    #
+    # Those languages are still reachable, through voice CLONING, which is
+    # documented for 16 foreign languages. That is the only honest way to offer
+    # them: with a cloned voice, not with a system voice that cannot do it.
+    # See SYSTEM_VOICE_LANGUAGES.
 }
+
+# The languages a SYSTEM voice can actually speak.
+#
+# Exactly what the four multilingual voices are documented for, plus Mandarin
+# and English which have their own dedicated pools. Everything else the ASR
+# model can HEAR needs voice CLONING to be SAID — there simply is no built-in
+# voice for it.
+#
+# This matters because the two directions have different coverage: the ASR
+# model understands 30 languages, while the system voices can only speak these
+# 10. A language outside this set is not an error — it is a "turn on voice
+# cloning", and saying so is the difference between a quality problem and a
+# silent one. The docs describe an unsupported pair as
+# 「可能发音错误或语音不自然」: it produces audio, badly.
+SYSTEM_VOICE_LANGUAGES = frozenset(
+    {
+        "Chinese",
+        "English",
+        "Japanese",
+        "Korean",
+        "French",
+        "German",
+        "Portuguese",
+        "Italian",
+        "Vietnamese",
+        "Indonesian",
+    }
+)
+
+
+def system_voices_support(language: Optional[str]) -> bool:
+    """
+    Whether any built-in voice can speak `language`.
+
+    False means the synthesizer has nothing valid to offer and the job needs
+    voice cloning — NOT that nothing can be done. `voices_for_language` still
+    returns a pool for such a language, because refusing outright would fail a
+    run that the user can still salvage; the pool just is not a good one.
+    """
+    return bool(language) and language in SYSTEM_VOICE_LANGUAGES
 
 # Fallback pool / manual override. Defaults to the multilingual set because it
 # is the only one that is safe for an unknown target language.
@@ -412,6 +478,95 @@ TTS_VOICES = [
     if v.strip()
 ]
 TTS_DEFAULT_VOICE = _env("TTS_DEFAULT_VOICE", "longanhuan_v3.1")
+
+
+# ----- Chinese accents (TTS `instruction`) -----
+#
+# Qwen-Audio-TTS has no accent parameter. Dialect output is requested through
+# `instruction` on the synthesizer — the SDK documents it as "the instruction of
+# the synthesizer, max length is 128", and the docs' own example is
+# 「请用河南话表达。」.
+#
+# The set below is the eight dialects the four multilingual SYSTEM voices are
+# documented to speak. Deliberately NOT the 23-dialect list from the voice
+# cloning page: that one needs cloning enabled to mean anything, and listing it
+# would offer 15 dialects that quietly come out as Mandarin.
+#
+# Membership is checked here rather than trusted from the client, because the
+# value is interpolated into a prompt. A stale or hand-made request naming
+# something else is dropped, not forwarded.
+CHINESE_ACCENTS = (
+    "广东话",
+    "上海话",
+    "东北话",
+    "重庆话",
+    "陕西话",
+    "云南话",
+    "宁波话",
+    "甘肃话",
+)
+
+
+def tts_instruction(target_language: str | None, accent: str | None) -> str | None:
+    """
+    The `instruction` to send with a synthesis call, or None for plain speech.
+
+    Mandarin is the ABSENCE of an instruction, not an instruction saying so: the
+    default voices already speak it, and a no-op sentence is one more thing the
+    service can reject or misread. Accents apply to Chinese only — the other
+    languages have no documented dialect control.
+    """
+    if not accent or target_language != "Chinese":
+        return None
+    if accent not in CHINESE_ACCENTS:
+        return None
+    return f"请用{accent}表达。"
+
+
+# Display names, from the "Qwen-Audio-TTS 音色列表" page. Only the pools the UI
+# can actually reach need entries; anything missing falls back to the raw id,
+# which is ugly but never wrong.
+#
+# The English voices are named after the voice itself (`Emily_v3.1` -> "Emily"),
+# so they need no entry.
+VOICE_LABELS = {
+    # 精品中文
+    "yuxiaoyun_v3.1": "于小云",
+    "qiaoxiaojiao_v3.1": "乔小娇",
+    "xiaxiaochen_v3.1": "夏小晨",
+    "anmingyuan_v3.1": "安明远",
+    "wenhuaiqing_v3.1": "温怀清",
+    "anxiaolan_v3.1": "安小岚",
+    "xieshurou_v3.1": "谢舒柔",
+    "baiqinglan_v3.1": "白清岚",
+    "xuyuyuan_v3.1": "许玉远",
+    "anruorou_v3.1": "安若柔",
+    "wenhuaizhi_v3.1": "闻怀之",
+    "xiaoxingzhi_v3.1": "萧行之",
+    "guyunshu_v3.1": "顾云舒",
+    "huozhuoshi_v3.1": "霍拙石",
+    "yeqinghe_v3.1": "叶清禾",
+    "yunhuanhuan_v3.1": "云欢欢",
+    "xuxiaoqiao_v3.1": "徐小俏",
+    "baianran_v3.1": "白安然",
+    "xuyanchu_v3.1": "许言初",
+    "yezhiqing_v3.1": "叶知晴",
+    "andi_v3.1": "安迪",
+    "anyuqing_v3.1": "安语晴",
+    # 多语言 — 这 4 个是唯一能说外语的系统音色，界面里必须认得出它们
+    "longanhuan_v3.1": "龙安欢",
+    "longanlingxin_v3.1": "龙安灵心",
+    "longanfengyue_v3.1": "龙安风悦",
+    "xunanchuan_v3.1": "许南川",
+}
+
+
+def voice_label(voice: str) -> str:
+    """Human name for a voice id."""
+    if voice in VOICE_LABELS:
+        return VOICE_LABELS[voice]
+    # `Emily_v3.1` -> `Emily`; leaves anything unexpected untouched.
+    return voice.split("_v3")[0] if "_v3" in voice else voice
 
 
 def voices_for_language(language: Optional[str]) -> list[str]:

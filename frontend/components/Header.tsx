@@ -1,10 +1,20 @@
 import React, { useState, useEffect } from 'react';
+import {
+  CHINESE_ACCENTS,
+  COMMON_LANGUAGES,
+  MORE_LANGUAGES,
+  accentLabel,
+  hasAccents,
+} from '../utils/languages';
 
 interface HeaderProps {
   onOpenSettings: () => void;
   onReprocess: () => void;
   targetLanguage: string;
   onLanguageChange: (lang: string) => void;
+  /** Chinese dialect for the dub; '' is Mandarin. Ignored for other languages. */
+  targetAccent: string;
+  onAccentChange: (accent: string) => void;
   isProcessing: boolean;
   hasSegments: boolean;
   /** Opens the export dialog. Same action in every state — see the button. */
@@ -13,21 +23,13 @@ interface HeaderProps {
   exportError?: string;
 }
 
-const LANGUAGES = [
-  'English',
-  'Chinese',
-  'Japanese',
-  'Korean',
-  'French',
-  'German',
-  'Spanish',
-];
-
 const Header: React.FC<HeaderProps> = ({
   onOpenSettings,
   onReprocess,
   targetLanguage,
   onLanguageChange,
+  targetAccent,
+  onAccentChange,
   isProcessing,
   hasSegments,
   onExport,
@@ -108,6 +110,7 @@ const Header: React.FC<HeaderProps> = ({
                   <div className="w-[1px] h-3 bg-gray-300"></div>
                   <span className="text-[10px] font-black uppercase tracking-widest text-claude-accent">
                     TARGET LANGUAGE: {targetLanguage}
+                    {hasAccents(targetLanguage) ? ` · ${accentLabel(targetAccent)}` : ''}
                   </span>
                 </>
               )}
@@ -124,18 +127,53 @@ const Header: React.FC<HeaderProps> = ({
 
           <div className="flex flex-col gap-2">
             <span className="text-[9px] font-bold uppercase tracking-widest text-gray-400 ml-1">Target Language</span>
-            <div className="relative group/lang">
-              <select
-                value={targetLanguage}
-                onChange={(e) => onLanguageChange(e.target.value)}
-                disabled={isProcessing}
-                className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-2 text-sm font-bold text-gray-700 focus:outline-none focus:border-claude-accent transition appearance-none cursor-pointer pr-10 hover:bg-white w-40"
-              >
-                {LANGUAGES.map(l => <option key={l} value={l}>{l}</option>)}
-              </select>
-              <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-claude-accent">
-                <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M19 9l-7 7-7-7"></path></svg>
+            <div className="flex items-center gap-2">
+              <div className="relative group/lang">
+                <select
+                  value={targetLanguage}
+                  onChange={(e) => onLanguageChange(e.target.value)}
+                  disabled={isProcessing}
+                  className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-2 text-sm font-bold text-gray-700 focus:outline-none focus:border-claude-accent transition appearance-none cursor-pointer pr-10 hover:bg-white w-36"
+                >
+                  {COMMON_LANGUAGES.map(l => (
+                    <option key={l.value} value={l.value}>{l.label}</option>
+                  ))}
+                  {/* The rest of the languages both models handle. Grouped rather
+                      than listed flat so the common case still reads as 7 items
+                      instead of 11 — a native <optgroup> because it needs no
+                      open/close state of its own. */}
+                  <optgroup label="更多">
+                    {MORE_LANGUAGES.map(l => (
+                      <option key={l.value} value={l.value}>{l.label}</option>
+                    ))}
+                  </optgroup>
+                </select>
+                <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-claude-accent">
+                  <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M19 9l-7 7-7-7"></path></svg>
+                </div>
               </div>
+
+              {/* Accent only exists for Chinese — the other languages have no
+                  documented dialect control, so showing the control would imply
+                  a choice that does nothing. */}
+              {hasAccents(targetLanguage) && (
+                <div className="relative group/accent">
+                  <select
+                    value={targetAccent}
+                    onChange={(e) => onAccentChange(e.target.value)}
+                    disabled={isProcessing}
+                    title="中文口音"
+                    className="bg-gray-50 border border-gray-200 rounded-xl pl-3 py-2 text-sm font-bold text-gray-700 focus:outline-none focus:border-claude-accent transition appearance-none cursor-pointer pr-8 hover:bg-white w-24"
+                  >
+                    {CHINESE_ACCENTS.map(a => (
+                      <option key={a.value} value={a.value}>{a.label}</option>
+                    ))}
+                  </select>
+                  <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-claude-accent">
+                    <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M19 9l-7 7-7-7"></path></svg>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 

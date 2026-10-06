@@ -17,12 +17,71 @@ logger = logging.getLogger(__name__)
 # Configure DashScope API key (reuse the existing ASR key)
 dashscope.api_key = config.DASHSCOPE_API_KEY
 
-# Speaker -> voice mapping cache (per video)
-_speaker_voice_map: dict[str, dict[str, str]] = {}
+# Speaker -> voice, persisted per video.
+#
+# Its own file rather than a field on `VideoState`, and `tts_results.json` is
+# separate for the same reason: the pipeline holds a `VideoState` of its own,
+# loaded once at the start of a run, while this module loads another. Every
+# `save_state(state)` the pipeline makes would write back ITS copy of the voice
+# map — the one from before any assignment happened — and wipe out whatever was
+# just chosen here. A file only this module touches cannot be clobbered that
+# way.
+_VOICE_MAP_FILE = "speaker_voices.json"
+
+# Read once per video per process: the pipeline calls
+# `assign_voice_for_speaker` for EVERY segment, and re-reading the file each
+# time would be pure waste. Safe to cache because every writer lives in this
+# module.
+_voice_map_cache: dict[str, dict[str, str]] = {}
+_voice_map_lock = threading.Lock()
 
 # `tts_results.json` is read-modify-written for every segment. The pipeline
 # now synthesizes segments concurrently, so guard those writes with a lock.
 _registry_lock = threading.Lock()
+
+
+def _voice_map_path(video_id: str) -> str:
+    return os.path.join(get_video_dir(video_id), _VOICE_MAP_FILE)
+
+
+def _read_voice_map(video_id: str) -> dict[str, str]:
+    """The cached map, loading it from disk on first use. Caller holds the lock."""
+    if video_id in _voice_map_cache:
+        return _voice_map_cache[video_id]
+
+    data: dict[str, str] = {}
+    path = _voice_map_path(video_id)
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                # Drop empty values: they would read as "pinned to nothing"
+                # rather than "automatic", which is a different state.
+                data = {str(k): str(v) for k, v in loaded.items() if v}
+        except Exception as e:
+            # A corrupt file must not stop a run; the worst case is that
+            # speakers get re-assigned.
+            logger.warning(f"[{video_id}] Could not read {_VOICE_MAP_FILE}: {e}")
+
+    _voice_map_cache[video_id] = data
+    return data
+
+
+def _write_voice_map(video_id: str) -> None:
+    """Persist the cached map. Caller holds the lock."""
+    path = _voice_map_path(video_id)
+    data = _voice_map_cache.get(video_id, {})
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        # Written to a temporary file and renamed, so an interrupted write
+        # cannot leave a half-file that the next run would read as corrupt.
+        tmp = f"{path}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+    except Exception as e:
+        logger.warning(f"[{video_id}] Could not persist {_VOICE_MAP_FILE}: {e}")
 
 
 def assign_voice_for_speaker(
@@ -40,35 +99,111 @@ def assign_voice_for_speaker(
     than silently ignored. Selection is random without replacement so
     different speakers get different voices.
     """
-    if video_id not in _speaker_voice_map:
-        _speaker_voice_map[video_id] = {}
+    with _voice_map_lock:
+        mapping = _read_voice_map(video_id)
 
-    mapping = _speaker_voice_map[video_id]
+        if speaker_id in mapping:
+            return mapping[speaker_id]
 
-    if speaker_id in mapping:
-        return mapping[speaker_id]
+        if not config.system_voices_support(language):
+            # Not fatal — there is a fallback pool, so the run still produces
+            # audio — but recorded so the cause is in the log when someone asks
+            # why that dub sounds off. Voice cloning is the real fix. Reachable
+            # only from a hand-made request now: the UI offers no such language.
+            logger.warning(
+                f"[{video_id}] No built-in voice is documented for '{language}'; using the "
+                f"multilingual pool anyway. Expect mispronunciation — voice cloning covers "
+                f"this language."
+            )
 
-    pool = config.voices_for_language(language)
-    used_voices = set(mapping.values())
-    available = [v for v in pool if v not in used_voices]
+        pool = config.voices_for_language(language)
+        used_voices = set(mapping.values())
+        available = [v for v in pool if v not in used_voices]
 
-    if not available:
-        # More speakers than voices — reuse, the caller usually has voice
-        # cloning enabled for multi-speaker videos anyway.
-        available = list(pool)
+        if not available:
+            # More speakers than voices — reuse, the caller usually has voice
+            # cloning enabled for multi-speaker videos anyway.
+            available = list(pool)
 
-    voice = random.choice(available)
-    mapping[speaker_id] = voice
-    logger.info(
-        f"[{video_id}] Assigned voice '{voice}' to speaker '{speaker_id}' "
-        f"(language={language or 'any'}, pool size={len(pool)})"
-    )
-    return voice
+        voice = random.choice(available)
+        mapping[speaker_id] = voice
+        _write_voice_map(video_id)
+        logger.info(
+            f"[{video_id}] Assigned voice '{voice}' to speaker '{speaker_id}' "
+            f"(language={language or 'any'}, pool size={len(pool)})"
+        )
+        return voice
+
+
+def forget_voice_map(video_id: str) -> None:
+    """
+    Drop the in-process copy for a video whose files were just deleted.
+
+    `reset_video` clears the directory — which removes `speaker_voices.json` —
+    but a cache that outlived the file would both keep serving the old mapping
+    and write it back on the next assignment, resurrecting exactly what the user
+    asked to have thrown away.
+    """
+    with _voice_map_lock:
+        _voice_map_cache.pop(video_id, None)
 
 
 def get_speaker_voice_map(video_id: str) -> dict[str, str]:
-    """Get the current speaker->voice mapping for a video."""
-    return _speaker_voice_map.get(video_id, {})
+    """The speaker->voice mapping for a video, as last saved."""
+    with _voice_map_lock:
+        return dict(_read_voice_map(video_id))
+
+
+def clear_speaker_voice(video_id: str, speaker_id: str) -> None:
+    """
+    Drop a speaker's pinned voice, handing them back to automatic assignment.
+
+    Without this, "automatic" would be a one-way door: the picker offers it, and
+    once a voice is pinned there would be no way back to the random choice.
+    """
+    with _voice_map_lock:
+        mapping = _read_voice_map(video_id)
+        if speaker_id in mapping:
+            removed = mapping.pop(speaker_id)
+            _write_voice_map(video_id)
+            logger.info(f"[{video_id}] Speaker '{speaker_id}' unpinned (was '{removed}')")
+
+
+def clear_speaker_voices(video_id: str) -> None:
+    """
+    Drop every pinned voice for a video, sending all speakers back to automatic.
+
+    Used when the target language changes: a voice id is language-specific, so a
+    pin made for Chinese is not merely suboptimal for an English dub — the
+    service rejects it outright, and it would do so halfway through the run.
+    """
+    with _voice_map_lock:
+        mapping = _read_voice_map(video_id)
+        if mapping:
+            mapping.clear()
+            _write_voice_map(video_id)
+            logger.info(f"[{video_id}] Cleared pinned voices (target language changed)")
+
+
+def set_speaker_voice(video_id: str, speaker_id: str, voice: str) -> None:
+    """
+    Pin a speaker to a specific voice, replacing whatever was auto-assigned.
+
+    Used when voice cloning is OFF: without it the user has no say at all, and
+    `assign_voice_for_speaker` picks at random — so two speakers can swap voices
+    between runs and there is no way to ask for a particular one.
+
+    The voice is NOT validated here; the caller checks it against
+    `config.voices_for_language` so the error can name the language it failed
+    for. Storing it per video, not per segment, is the point: a voice is a
+    property of the speaker, and pinning it per line would let one speaker
+    change voice halfway through the video.
+    """
+    with _voice_map_lock:
+        mapping = _read_voice_map(video_id)
+        mapping[speaker_id] = voice
+        _write_voice_map(video_id)
+    logger.info(f"[{video_id}] Speaker '{speaker_id}' pinned to voice '{voice}'")
 
 
 def _register_segment_audio(video_dir: str, segment_id: str, rel_path: str) -> None:
@@ -125,7 +260,10 @@ def _probe_duration(path: str) -> float | None:
 
 
 def _synthesize_blocking(
-    text: str, voice: str, speech_rate: float | None = None
+    text: str,
+    voice: str,
+    speech_rate: float | None = None,
+    instruction: str | None = None,
 ) -> bytes:
     """
     One blocking synthesis call.
@@ -133,10 +271,17 @@ def _synthesize_blocking(
     `speech_rate` is only sent when the caller provided one: the API's default
     is 1.0 and an unset value keeps the previous behaviour exactly (important
     for the manual re-synthesis and preview paths).
+
+    `instruction` is how a Chinese dialect is requested — Qwen-Audio-TTS has no
+    accent parameter. Also omitted when unset, for the same reason as
+    `speech_rate`. It is already validated by `config.tts_instruction`; this
+    layer only forwards it.
     """
     kwargs: dict = {"model": config.TTS_MODEL, "voice": voice}
     if speech_rate is not None:
         kwargs["speech_rate"] = speech_rate
+    if instruction:
+        kwargs["instruction"] = instruction
     return SpeechSynthesizer(**kwargs).call(text)
 
 
@@ -146,13 +291,14 @@ async def _synthesize_with_retries(
     voice: str,
     speech_rate: float | None,
     segment_id: str,
+    instruction: str | None = None,
 ) -> bytes:
     """Synthesize with the configured retry/backoff. Raises on total failure."""
     last_error: Exception | None = None
     for attempt in range(1, config.TTS_MAX_RETRIES + 2):
         try:
             audio = await loop.run_in_executor(
-                None, _synthesize_blocking, text, voice, speech_rate
+                None, _synthesize_blocking, text, voice, speech_rate, instruction
             )
             if audio:
                 return audio
@@ -184,6 +330,7 @@ async def _write_fitted_audio(
     target_duration: float | None,
     segment_id: str,
     video_id: str,
+    instruction: str | None = None,
 ) -> tuple[float | None, float | None]:
     """
     Store `first_take`, then measure it and correct it if it misses the slot.
@@ -227,7 +374,9 @@ async def _write_fitted_audio(
         video_id, segment_id, residual * 100, actual, target_duration, corrected,
     )
     try:
-        retry = await _synthesize_with_retries(loop, text, voice, corrected, segment_id)
+        retry = await _synthesize_with_retries(
+            loop, text, voice, corrected, segment_id, instruction
+        )
     except Exception as e:
         # Keep the first take: it is usable, just slightly long or short.
         logger.warning(
@@ -254,6 +403,7 @@ async def synthesize_speech(
     write_registry: bool = True,
     speech_rate: float | None = None,
     target_duration: float | None = None,
+    instruction: str | None = None,
 ) -> str:
     """
     Synthesize speech using Alibaba DashScope Qwen-Audio-TTS.
@@ -273,6 +423,11 @@ async def synthesize_speech(
             `config.TTS_FIT_TOLERANCE` — re-synthesized once at a corrected rate.
             That costs one extra call for the segments that need it, and nothing
             for the rest.
+        instruction: Dialect instruction, already resolved and validated by
+            `config.tts_instruction`. None for plain speech. It has to be passed
+            to the FITTING step too, or a line that gets re-synthesized at a
+            corrected rate would come back in Mandarin while every other line
+            stayed in the chosen dialect.
 
     Returns:
         Path to the saved audio file
@@ -281,14 +436,17 @@ async def synthesize_speech(
 
     logger.info(
         f"Submitting TTS task to DashScope ({config.TTS_MODEL}), Voice: {voice}, "
-        f"rate: {speech_rate if speech_rate is not None else 'default'} for {segment_id}"
+        f"rate: {speech_rate if speech_rate is not None else 'default'}"
+        f"{', instruction: ' + instruction if instruction else ''} for {segment_id}"
     )
 
     loop = asyncio.get_event_loop()
 
     # The SDK call is blocking -> run it in the thread pool so the event loop
     # (and other concurrent segment jobs) keep making progress.
-    audio = await _synthesize_with_retries(loop, text, voice, speech_rate, segment_id)
+    audio = await _synthesize_with_retries(
+        loop, text, voice, speech_rate, segment_id, instruction
+    )
 
     # Save to disk in tts/ subfolder
     video_dir = get_video_dir(video_id)
@@ -307,6 +465,7 @@ async def synthesize_speech(
             target_duration,
             segment_id,
             video_id,
+            instruction,
         )
         detail = f", {actual:.2f}s" if actual else ""
         detail += f" @ rate {applied:.2f}" if applied else ""

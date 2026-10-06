@@ -88,6 +88,8 @@ async def health():
 
 
 api_router.include_router(video.router)
+api_router.include_router(video.tts_router)
+api_router.include_router(video.asr_router)
 api_router.include_router(models.router)
 api_router.include_router(subtitles.router)
 api_router.include_router(subtitles.video_router)
