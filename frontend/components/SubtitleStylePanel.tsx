@@ -102,9 +102,54 @@ const LABEL = 'flex items-center gap-1 text-[10px] font-semibold text-gray-500 w
 const OPTION_BASE =
   'py-1.5 rounded-xl text-[11px] font-semibold border transition-all duration-200 ' +
   'flex items-center justify-center gap-1 cursor-pointer';
-/** Selected state uses the app accent, matching SeparationModeSelector. */
-const OPTION_ON = 'bg-claude-accent text-white border-claude-accent shadow-sm shadow-claude-accent/25';
+/**
+ * Selected = accent border + light tint, NOT a solid fill.
+ *
+ * That is how the sibling TranscriptionPanel marks the active card
+ * (`border-claude-accent` with a `ring-claude-accent/30`), and how its rate
+ * badges read (`bg-claude-accent/10 text-claude-accent`). Two solid orange
+ * slabs were the loudest thing in the panel and the furthest from that
+ * restraint — the sibling uses the accent as a small, repeated signal.
+ */
+const OPTION_ON =
+  'bg-claude-accent/10 text-claude-accent border-claude-accent shadow-sm shadow-claude-accent/10';
 const OPTION_OFF = 'bg-white text-gray-600 border-[#e5e5e0] hover:border-[#d1d1cc] hover:bg-claude-paper/50';
+
+/**
+ * The app accent, for the one place it has to be spelled out: a range input
+ * cannot read a Tailwind class inside an inline gradient.
+ */
+const ACCENT = '#DA7756';
+const TRACK = '#F2F0E9';
+
+/**
+ * A range input styled to match the rest of the card.
+ *
+ * The native control is NOT usable as-is: its appearance is decided by the
+ * browser and the OS, so the same markup renders as a heavy near-black bar on
+ * one platform and a thin line on another. Measured here: the unfilled track
+ * came out rgb(59,59,59) — an almost black slab in a card built from #fbfbf9
+ * and #e5e5e0. Everything else in this panel is drawn by us, so this is too.
+ *
+ * The filled portion is an inline gradient rather than `::-moz-range-progress`,
+ * because that pseudo-element does not exist in WebKit and the two would then
+ * disagree. The gradient is painted on the input itself, which is why the
+ * track pseudo-elements are made transparent below.
+ */
+const RANGE =
+  'flex-1 h-4 appearance-none bg-transparent cursor-pointer ' +
+  '[&::-webkit-slider-runnable-track]:bg-transparent ' +
+  '[&::-moz-range-track]:bg-transparent ' +
+  '[&::-moz-range-progress]:bg-transparent ' +
+  '[&::-webkit-slider-thumb]:appearance-none ' +
+  '[&::-webkit-slider-thumb]:w-3.5 [&::-webkit-slider-thumb]:h-3.5 ' +
+  '[&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-white ' +
+  '[&::-webkit-slider-thumb]:border [&::-webkit-slider-thumb]:border-[#d1d1cc] ' +
+  '[&::-webkit-slider-thumb]:shadow-sm [&::-webkit-slider-thumb]:transition-colors ' +
+  '[&::-webkit-slider-thumb]:hover:border-claude-accent ' +
+  '[&::-moz-range-thumb]:w-3.5 [&::-moz-range-thumb]:h-3.5 ' +
+  '[&::-moz-range-thumb]:rounded-full [&::-moz-range-thumb]:bg-white ' +
+  '[&::-moz-range-thumb]:border [&::-moz-range-thumb]:border-[#d1d1cc]';
 
 /**
  * A titled band of related controls.
@@ -303,7 +348,12 @@ const ColorField: React.FC<ColorFieldProps> = ({ label, value, presets, onChange
       onChange={e => onChange(e.target.value)}
       className="w-[4.25rem] text-[10px] font-mono border border-[#e5e5e0] rounded-md px-1.5 py-0.5"
     />
-    <div className="flex gap-1 ml-auto">
+    {/*
+      * Deliberately NOT `ml-auto`. Pushing the swatches to the right edge
+      * detached them from the swatch and hex they belong to and made the row
+      * read as two separate controls; they are one control with quick picks.
+      */}
+    <div className="flex gap-1">
       {presets.map(color => (
         /*
          * `title` here is a NAME, not an explanation — it tells you which hex a
@@ -345,29 +395,41 @@ const Slider: React.FC<SliderProps> = ({
   display,
   hint,
   onChange,
-}) => (
-  <div className="flex items-center gap-2">
-    <span className={LABEL}>
-      {label}
-      {hint && <InfoHint text={hint} standalone />}
-    </span>
-    {/*
-      * The range carries NO `title`: the old one was attached to the input, so
-      * a tooltip appeared and tracked the pointer for the whole drag.
-      */}
-    <input
-      type="range"
-      aria-label={label}
-      min={min}
-      max={max}
-      step={step}
-      value={value}
-      onChange={e => onChange(Number(e.target.value))}
-      className="flex-1 accent-claude-accent"
-    />
-    <span className="text-[10px] text-gray-400 w-12 text-right tabular-nums">{display}</span>
-  </div>
-);
+}) => {
+  const pct = max > min ? ((value - min) / (max - min)) * 100 : 0;
+
+  return (
+    <div className="flex items-center gap-2">
+      <span className={LABEL}>
+        {label}
+        {hint && <InfoHint text={hint} standalone />}
+      </span>
+      {/*
+        * The range carries NO `title`: the old one was attached to the input, so
+        * a tooltip appeared and tracked the pointer for the whole drag.
+        */}
+      <input
+        type="range"
+        aria-label={label}
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={e => onChange(Number(e.target.value))}
+        // The filled portion. A 4px bar centred in a taller box, so the thumb
+        // has room to sit on the track without being clipped.
+        style={{
+          backgroundImage: `linear-gradient(to right, ${ACCENT} 0%, ${ACCENT} ${pct}%, ${TRACK} ${pct}%, ${TRACK} 100%)`,
+          backgroundSize: '100% 4px',
+          backgroundPosition: 'center',
+          backgroundRepeat: 'no-repeat',
+        }}
+        className={RANGE}
+      />
+      <span className="text-[10px] text-gray-400 w-12 text-right tabular-nums">{display}</span>
+    </div>
+  );
+};
 
 interface CheckProps {
   label: string;
