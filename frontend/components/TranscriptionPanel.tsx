@@ -89,7 +89,7 @@ const EditableTextArea: React.FC<{
                 )}
 
                 {isLoading && (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/60 backdrop-blur-[1px] animate-in fade-in duration-300">
+                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/60 backdrop-blur-[1px]">
                         <div className="flex gap-1 mb-1">
                             <span className="w-1 h-1 bg-claude-accent rounded-full animate-bounce [animation-delay:-0.3s]"></span>
                             <span className="w-1 h-1 bg-claude-accent rounded-full animate-bounce [animation-delay:-0.15s]"></span>
@@ -226,7 +226,7 @@ const SegmentCard: React.FC<{
 
             <div className="pt-2">
                 {segment.audioUrl ? (
-                    <div className="animate-in fade-in slide-in-from-top-2 duration-500">
+                    <div>
                         <audio
                             src={segment.audioUrl}
                             controls
@@ -239,7 +239,7 @@ const SegmentCard: React.FC<{
                             className="w-full h-8 opacity-70 hover:opacity-100 transition-opacity"
                         />
                         {segment.actualDuration && (
-                            <div className="mt-3 flex items-center gap-2 px-3 py-2 bg-claude-paper/50 rounded-xl border border-claude-border/50 animate-in fade-in duration-500">
+                            <div className="mt-3 flex items-center gap-2 px-3 py-2 bg-claude-paper/50 rounded-xl border border-claude-border/50">
                                 <div className={`flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[9px] font-bold uppercase tracking-wider ${audioRate !== 1.0 ? 'bg-claude-accent/10 text-claude-accent' : 'bg-gray-100 text-gray-400'}`}>
                                     Audio: {audioRate.toFixed(2)}x
                                 </div>
@@ -252,7 +252,7 @@ const SegmentCard: React.FC<{
                     </div>
                 ) : (
                     (segment.translatedText || segment.isTranslating) && (
-                        <div className="animate-in fade-in duration-300">
+                        <div>
                             <button
                                 onClick={() => !segment.isSynthesizing && !segment.isTranslating && onSynthesize(segment.id)}
                                 disabled={segment.isSynthesizing || segment.isTranslating}
@@ -334,7 +334,7 @@ export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = memo(({
 
             <div
                 ref={listRef}
-                className="flex-grow overflow-y-auto p-6 space-y-6 custom-scrollbar scroll-smooth"
+                className="flex-grow overflow-y-auto p-6 space-y-6 scroll-smooth"
             >
                 {segments.length === 0 && !isTranscribing ? (
                     <div className="flex flex-col items-center justify-center h-full text-center space-y-4 opacity-40">

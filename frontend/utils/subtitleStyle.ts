@@ -92,6 +92,17 @@ export function overlayLineStyle(style: SubtitleStyle, rect: Rect): CSSPropertie
   return {
     fontSize: px(metrics.fontSize),
     fontWeight: style.bold ? 700 : 400,
+    /*
+     * Same chain the burn-in uses (`ctx.font = … ${font_family}, sans-serif`),
+     * so the preview and the burned file fail over the same way.
+     *
+     * Caveat worth knowing: the ASS track names ONE font and lets the player
+     * resolve it, while this resolves against whatever is installed HERE. If
+     * the named font is missing locally the preview falls back — which is
+     * exactly what a viewer without that font will also see, so it is not a
+     * lie, just not a promise.
+     */
+    fontFamily: `${style.font_family}, sans-serif`,
     color: style.primary_color,
     textAlign: 'center',
     lineHeight: 1.35,

@@ -404,6 +404,10 @@ const App: React.FC = () => {
         style: {
           max_chars_per_line: subtitleStyle.max_chars_per_line,
           max_lines: subtitleStyle.max_lines,
+          // `min_duration` changes when a cue ENDS, so unlike the purely
+          // cosmetic fields it cannot be applied locally — it has to go back to
+          // the same code the export uses.
+          min_duration: subtitleStyle.min_duration,
         },
       })
         .then(response => {
@@ -434,6 +438,7 @@ const App: React.FC = () => {
     subtitleStyle.track,
     subtitleStyle.max_chars_per_line,
     subtitleStyle.max_lines,
+    subtitleStyle.min_duration,
   ]);
 
   // Where the video actually renders inside its box. `object-contain` leaves
@@ -1713,13 +1718,13 @@ const App: React.FC = () => {
 
           <main className="flex-grow flex flex-col container mx-auto p-4 lg:p-6 pt-12 lg:pt-14 min-h-0">
             {isBatchProcessing && batchProgress && (
-              <div className="mb-4 bg-claude-accent/10 border border-claude-accent/20 rounded-xl px-4 py-2 flex items-center justify-between animate-in slide-in-from-top-2 duration-300">
+              <div className="mb-4 bg-claude-accent/10 border border-claude-accent/20 rounded-xl px-4 py-2 flex items-center justify-between">
                 <div className="flex items-center gap-3">
                   <div className="w-2 h-2 bg-claude-accent rounded-full animate-pulse"></div>
                   <span className="text-xs font-bold uppercase tracking-wider text-claude-accent">{batchProgress}</span>
                 </div>
                 <div className="h-1 bg-claude-accent/20 flex-grow mx-8 rounded-full overflow-hidden">
-                  <div className="h-full bg-claude-accent animate-progress" style={{ width: '60%' }}></div>
+                  <div className="h-full bg-claude-accent" style={{ width: '60%' }}></div>
                 </div>
               </div>
             )}

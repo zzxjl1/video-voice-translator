@@ -47,7 +47,7 @@ const StreamingLog: React.FC<StreamingLogProps> = ({ logs, isOpen, onClose, titl
                 )}
             </div>
         </div>
-        <div className="flex-grow overflow-y-auto p-6 text-green-400 bg-black custom-scrollbar">
+        <div className="flex-grow overflow-y-auto p-6 text-green-400 bg-black">
             <pre className="whitespace-pre-wrap break-words leading-relaxed font-mono">
                 {logs}
                 {isProcessing && <span className="inline-block w-2 h-4 bg-green-500 ml-1 animate-pulse align-middle"></span>}

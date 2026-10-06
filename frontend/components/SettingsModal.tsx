@@ -41,8 +41,8 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, enableVo
     if (!isOpen) return null;
 
     return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-claude-text/40 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-            <div className="bg-white border border-gray-200 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden animate-in zoom-in-95 duration-200">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-claude-text/40 backdrop-blur-sm p-4">
+            <div className="bg-white border border-gray-200 rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
                 <div className="px-8 py-6 border-b border-gray-100 flex justify-between items-center bg-claude-bg">
                     <h2 className="text-xl font-serif font-bold text-gray-800 flex items-center gap-3">
                         <span className="w-8 h-8 rounded-lg bg-claude-paper text-claude-accent flex items-center justify-center">

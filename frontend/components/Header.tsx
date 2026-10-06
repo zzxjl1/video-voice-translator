@@ -199,7 +199,7 @@ const Header: React.FC<HeaderProps> = ({
         {/* Right Side: Settings & Affordance */}
         <div className={`flex items-center transition-all duration-500 ${expanded ? 'gap-0' : 'gap-4'}`}>
           {!expanded && (
-            <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-gray-400 group-indicator flex items-center gap-1.5 cursor-pointer hover:text-claude-accent transition-colors border px-2 py-0.5 rounded-full border-gray-200">
+            <div className="text-[10px] font-bold uppercase tracking-[0.2em] text-gray-400 flex items-center gap-1.5 cursor-pointer hover:text-claude-accent transition-colors border px-2 py-0.5 rounded-full border-gray-200">
               <span className="mt-0.5">Show Tools</span>
               <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />

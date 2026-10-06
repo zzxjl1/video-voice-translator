@@ -55,7 +55,7 @@ const CARD_HEAD =
 const CARD_TITLE =
   'text-xs font-serif font-bold text-gray-700 flex items-center gap-2 tracking-wide';
 const CARD_BODY =
-  'flex-grow overflow-y-auto p-6 space-y-5 custom-scrollbar scroll-smooth';
+  'flex-grow overflow-y-auto p-6 space-y-5 scroll-smooth';
 
 /**
  * No `hint` on the alignments on purpose. These labels describe themselves; an
@@ -92,6 +92,22 @@ const CONTENTS: { value: SubtitleTrack; label: string; hint?: string }[] = [
 
 const TEXT_COLOR_PRESETS = ['#FFFFFF', '#FFE066', '#FFCC00', '#7DF9FF', '#FF9AA2'];
 const OUTLINE_COLOR_PRESETS = ['#000000', '#FFFFFF', '#374151', '#7F1D1D', '#1E3A8A'];
+
+/**
+ * Faces common enough to be worth naming.
+ *
+ * Deliberately a list and not a text box: the name is written into the subtitle
+ * file and resolved by whoever opens it, so a typo produces a silent fallback
+ * on their machine and nothing at all on ours.
+ */
+const FONT_CHOICES = [
+  'Source Han Sans',
+  'Noto Sans SC',
+  'PingFang SC',
+  'Microsoft YaHei',
+  'SimHei',
+  'SimSun',
+];
 
 /**
  * One label column for every row, so the controls line up. Wide enough for the
@@ -249,6 +265,19 @@ const SubtitleStylePanel: React.FC<SubtitleStylePanelProps> = ({
           display={`${style.margin_v_percent.toFixed(1)}% 高`}
           onChange={v => onStyleChange({ margin_v_percent: v })}
         />
+
+        {/* Measured against the frame WIDTH, unlike the row above — hence the
+            different unit. It is what keeps a long line off the edges, and it
+            maps to MarginL/MarginR in the ASS track. */}
+        <Slider
+          label="左右边距"
+          value={style.margin_h_percent}
+          min={0}
+          max={30}
+          step={0.5}
+          display={`${style.margin_h_percent.toFixed(1)}% 宽`}
+          onChange={v => onStyleChange({ margin_h_percent: v })}
+        />
       </Group>
 
       <Group title="颜色">
@@ -276,6 +305,20 @@ const SubtitleStylePanel: React.FC<SubtitleStylePanelProps> = ({
           display={`${style.outline_width.toFixed(1)} px`}
           onChange={v => onStyleChange({ outline_width: v })}
         />
+
+        {/* The drop shadow behind the text. Its scale is the same as the
+            outline's (0–8, clamped server-side), and it lands in the ASS
+            `Shadow` field. */}
+        <Slider
+          label="阴影"
+          value={style.shadow}
+          min={0}
+          max={5}
+          step={0.5}
+          display={style.shadow.toFixed(1)}
+          hint="文字后面的一层柔和阴影，画面很亮时能托住字幕。和描边是两回事：描边贴字形，阴影在更后面。"
+          onChange={v => onStyleChange({ shadow: v })}
+        />
         {/*
           * A checkbox's own text IS its label, so these sit at the left edge
           * like the row labels above rather than getting a second, redundant
@@ -289,6 +332,19 @@ const SubtitleStylePanel: React.FC<SubtitleStylePanelProps> = ({
       </Group>
 
       <Group title="排版">
+        {/*
+          * Only the MKV/ASS track and the burn-in can carry a font NAME; an MP4
+          * `mov_text` track cannot, and the player decides there. The name is
+          * resolved on the VIEWER's machine, which is why this is a short list
+          * of faces that are actually common rather than free text.
+          */}
+        <SelectRow
+          label="字体"
+          value={style.font_family}
+          options={FONT_CHOICES}
+          hint="写进字幕文件的字体名，由播放器（或烧录时本机的字库）解析。列表里没有的字体名不会被改掉。"
+          onChange={v => onStyleChange({ font_family: v })}
+        />
         <Check label="加粗" checked={style.bold} onChange={v => onStyleChange({ bold: v })} />
         {/*
           * "宽度", not "字数": the value counts DISPLAY CELLS, where a CJK
@@ -314,6 +370,24 @@ const SubtitleStylePanel: React.FC<SubtitleStylePanelProps> = ({
           step={1}
           display={`${style.max_lines} 行`}
           onChange={v => onStyleChange({ max_lines: v })}
+        />
+      </Group>
+
+      {/*
+        * Its own group because it is a different KIND of setting: everything
+        * above changes how a line LOOKS, this changes how long it STAYS. Mixing
+        * it into 排版 would hide that it moves the timeline.
+        */}
+      <Group title="时间">
+        <Slider
+          label="最短时长"
+          value={style.min_duration}
+          min={0.5}
+          max={5}
+          step={0.1}
+          display={`${style.min_duration.toFixed(1)} 秒`}
+          hint="一句话再短也至少停留这么久，避免一闪而过。它改变的是字幕出现和消失的时刻，不只是外观。"
+          onChange={v => onStyleChange({ min_duration: v })}
         />
       </Group>
     </div>
@@ -371,6 +445,41 @@ const ColorField: React.FC<ColorFieldProps> = ({ label, value, presets, onChange
         />
       ))}
     </div>
+  </div>
+);
+
+interface SelectRowProps {
+  label: string;
+  value: string;
+  options: string[];
+  hint?: string;
+  onChange: (value: string) => void;
+}
+
+const SelectRow: React.FC<SelectRowProps> = ({ label, value, options, hint, onChange }) => (
+  <div className="flex items-center gap-2">
+    <span className={LABEL}>
+      {label}
+      {hint && <InfoHint text={hint} standalone />}
+    </span>
+    <select
+      aria-label={label}
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      className="flex-1 text-[11px] text-gray-700 bg-white border border-[#e5e5e0] rounded-lg px-2 py-1 cursor-pointer"
+    >
+      {/*
+        * A video saved with a font that is not in the list must still render
+        * its own value. Without this the select would snap to the first option
+        * on mount and quietly rewrite the style of every older video.
+      */}
+      {!options.includes(value) && <option value={value}>{value}</option>}
+      {options.map(option => (
+        <option key={option} value={option}>
+          {option}
+        </option>
+      ))}
+    </select>
   </div>
 );
 

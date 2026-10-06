@@ -53,7 +53,8 @@ const DELIVERIES: DeliveryOption[] = [
   {
     value: 'burn',
     label: '烧录字幕',
-    summary: '字幕渲染进画面，任何播放器都可见。需要重新编码，耗时较长。',
+    summary:
+      '字幕渲染进画面，任何播放器都可见。由这台设备的浏览器重新编码一遍视频，比内嵌慢，但画面里真的有字。',
     styleKept: 'yes',
   },
 ];

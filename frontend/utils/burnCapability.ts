@@ -6,10 +6,20 @@
  * greyed out with a concrete reason when the browser cannot do it, exactly like
  * the server-side separation and subtitle capabilities.
  *
+ * The renderer is built on WebCodecs, which encodes as fast as this machine
+ * allows rather than in real time. That is the whole reason for choosing it:
+ * a recorder-based path would take one minute of wall clock per minute of
+ * video, and the wait would be the user's, not the server's.
+ *
  * The check is a real `isConfigSupported` probe rather than a feature sniff:
- * `VideoEncoder` existing says nothing about whether this machine has an H.264
- * encoder, and a user with the API but no encoder would otherwise get a failure
- * halfway through a long render.
+ * the API existing says nothing about whether this machine has the encoders,
+ * and a user with the API but no encoder would otherwise get a failure halfway
+ * through a long export.
+ *
+ * BOTH tracks are probed. The original version only checked video, which means
+ * a browser with an H.264 encoder and no AAC encoder would have been reported
+ * usable and then failed at the end of the render — precisely what this probe
+ * exists to prevent.
  */
 
 export interface BurnCapability {
@@ -19,7 +29,13 @@ export interface BurnCapability {
   codecs: string[];
 }
 
-const CANDIDATE_CODECS = ['avc1.42E01E', 'avc1.4D401E', 'avc1.640028'];
+const CANDIDATE_VIDEO_CODECS = ['avc1.42E01E', 'avc1.4D401E', 'avc1.640028'];
+/**
+ * AAC-LC. Required rather than preferred: an MP4 with Opus audio is not what
+ * the server's own export produces, and offering two different containers from
+ * one button is worse than saying the browser cannot do it.
+ */
+const REQUIRED_AUDIO_CODEC = 'mp4a.40.2';
 
 /**
  * Whether the browser-side renderer exists yet.
@@ -53,6 +69,7 @@ export async function probeBurnCapability(): Promise<BurnCapability> {
       typeof VideoEncoder === 'undefined' ? 'VideoEncoder' :
       typeof VideoDecoder === 'undefined' ? 'VideoDecoder' :
       typeof AudioEncoder === 'undefined' ? 'AudioEncoder' :
+      typeof AudioDecoder === 'undefined' ? 'AudioDecoder' :
       typeof AudioContext === 'undefined' ? 'AudioContext' :
       null
     );
@@ -67,7 +84,7 @@ export async function probeBurnCapability(): Promise<BurnCapability> {
     }
 
     const supported: string[] = [];
-    for (const codec of CANDIDATE_CODECS) {
+    for (const codec of CANDIDATE_VIDEO_CODECS) {
       try {
         const result = await VideoEncoder.isConfigSupported({
           codec,
@@ -86,6 +103,31 @@ export async function probeBurnCapability(): Promise<BurnCapability> {
       const result: BurnCapability = {
         available: false,
         reason: 'this browser has WebCodecs but no H.264 encoder, so nothing could be rendered',
+        codecs: [],
+      };
+      cached = result;
+      return result;
+    }
+
+    let audioOk = false;
+    try {
+      const probed = await AudioEncoder.isConfigSupported({
+        codec: REQUIRED_AUDIO_CODEC,
+        sampleRate: 48_000,
+        numberOfChannels: 2,
+      });
+      audioOk = probed.supported === true;
+    } catch {
+      audioOk = false;
+    }
+
+    if (!audioOk) {
+      // Deliberately fatal rather than falling back to Opus/WebM: the server's
+      // export is H.264+AAC in MP4, and a burn-in that quietly returned a
+      // different container would be a surprise at the end of a long render.
+      const result: BurnCapability = {
+        available: false,
+        reason: 'this browser has no AAC encoder, so the burned file could not match the .mp4 the server produces',
         codecs: [],
       };
       cached = result;
