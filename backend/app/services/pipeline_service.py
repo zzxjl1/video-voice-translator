@@ -359,7 +359,9 @@ async def run_pipeline(
                 for seg in state.segments
             ]
 
-            results = await llm_service.translate_script(video_id, context, target_language)
+            results = await llm_service.translate_script(
+                video_id, context, target_language, emit=emit
+            )
 
             # Update state with translations
             result_map = {r["id"]: r["translatedText"] for r in results}

@@ -980,6 +980,16 @@ const App: React.FC = () => {
               return match ? { ...seg, translatedText: match.translated_text } : seg;
             }));
             setRawLog(prev => prev + `Translation: already done (${translations.length} segments), skipping.\n`);
+          } else if (event.status === 'progress') {
+            setRawLog(prev => prev + `Translated ${event.done}/${event.total}.\n`);
+          } else if (event.status === 'repairing') {
+            setRawLog(prev => prev + `Retrying ${event.count} dropped segment(s)...\n`);
+          } else if (event.status === 'repair_done') {
+            setRawLog(prev => prev + (
+              event.still_failed > 0
+                ? `Repair recovered ${event.recovered}; ${event.still_failed} segment(s) still failed — those lines will have no dub audio.\n`
+                : `Repair recovered all ${event.recovered} dropped segment(s).\n`
+            ));
           } else if (event.status === 'done') {
             const translations = event.translations || [];
             setSegments(prev => prev.map(seg => {

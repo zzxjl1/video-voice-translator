@@ -148,7 +148,9 @@ def _parse_json_array(raw: str) -> list[dict]:
     Case 2 also rescues a TRUNCATED array: the surviving complete lines parse
     even when the closing bracket never arrived.
     """
-    clean = raw.replace("```json", "").replace("```", "").strip()
+    # A leading BOM (\ufeff) is NOT stripped by str.strip() and json.loads
+    # rejects it outright — seen from some gateways. Remove it explicitly.
+    clean = raw.replace("```json", "").replace("```", "").lstrip("\ufeff").strip()
 
     start, end = clean.find("["), clean.rfind("]")
     if start != -1 and end > start:
@@ -327,7 +329,7 @@ Script:
 
     try:
         raw, _ = await _chat(prompt, video_id=video_id, detail="glossary")
-        clean = raw.replace("```json", "").replace("```", "").strip()
+        clean = raw.replace("```json", "").replace("```", "").lstrip("\ufeff").strip()
         start, end = clean.find("{"), clean.rfind("}")
         if start == -1 or end == -1:
             raise ValueError("no JSON object found")
@@ -513,6 +515,9 @@ async def _translate_chunk(
 
     chunk_ids = {item["id"] for item in chunk}
     last_error: Optional[Exception] = None
+    # Best-effort result, kept across attempts: if the FINAL attempt fails to
+    # parse but an earlier one produced valid lines, those lines survive.
+    result: dict[str, str] = {}
 
     for attempt in range(1, config.LLM_CHUNK_MAX_RETRIES + 2):
         try:
@@ -522,14 +527,45 @@ async def _translate_chunk(
                 raw,
                 "response",
             )
-            parsed = _parse_json_array(raw)
-            result = {
-                str(entry["id"]): str(entry.get("translatedText", "")).strip()
-                for entry in parsed
-                if isinstance(entry, dict) and entry.get("id") is not None
-            }
-            # Only accept ids that belong to this chunk.
-            result = {k: v for k, v in result.items() if k in chunk_ids}
+            try:
+                parsed = _parse_json_array(raw)
+            except ValueError as e:
+                # 解析失败也要把原因带回下一次 prompt。盲试被实测证明无用：
+                # 同一段中文 3/3 次返回同样形状（NDJSON），三次机会全灭。
+                last_error = e
+                logger.warning(
+                    f"Chunk {chunk_index} attempt {attempt} unparseable: {e}"
+                )
+                prompt = (
+                    _build_chunk_prompt(chunk, context, glossary, target_language)
+                    + "\n\nIMPORTANT: your previous reply could not be parsed ("
+                    + str(e)[:200]
+                    + "). Reply with ONE JSON array of objects — "
+                    '[{"id": "...", "translatedText": "..."}] — never one object '
+                    "per line, and never with a BOM."
+                )
+                continue
+            result: dict[str, str] = {}
+            duplicates: list[str] = []
+            for entry in parsed:
+                if not isinstance(entry, dict) or entry.get("id") is None:
+                    continue
+                key = str(entry["id"])
+                if key not in chunk_ids:
+                    continue
+                if key in result:
+                    duplicates.append(key)
+                # An EMPTY translation is not a translation: downstream
+                # `to_synthesize` filters on `seg.translated_text`, so keeping
+                # "" here would make the line silently vanish from the dub.
+                # Dropped below by the same `v` filter as missing ids.
+                result[key] = str(entry.get("translatedText", "")).strip()
+            if duplicates:
+                logger.warning(
+                    f"Chunk {chunk_index}: model returned duplicate ids "
+                    f"{sorted(set(duplicates))} — keeping the last answer"
+                )
+            result = {k: v for k, v in result.items() if v}
             missing = chunk_ids - set(result.keys())
             if not missing:
                 return result, set()
@@ -551,37 +587,27 @@ async def _translate_chunk(
             logger.warning(f"Chunk {chunk_index} attempt {attempt} failed: {e}")
 
     logger.error(f"Chunk {chunk_index} failed after retries: {last_error}")
-    return {}, chunk_ids
+    # Never throw away what the last attempt DID produce: a truncated response
+    # often yields most of the chunk, and dropping it would send every one of
+    # those lines to the second pass — or out of the dub entirely.
+    return result, chunk_ids - set(result.keys())
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-async def translate_single(text: str, target_language: str) -> str:
-    """Translate a single piece of text."""
-    response = await _client.chat.completions.create(
-        model=config.LLM_MODEL,
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    f"You are a professional translator. Translate the given text to "
-                    f"{target_language}. Provide ONLY the translation, no explanations."
-                ),
-            },
-            {"role": "user", "content": text},
-        ],
-        # Plain text, not JSON — do not constrain the output format.
-        **_request_kwargs(json_mode=False),
-    )
-    return (response.choices[0].message.content or "").strip()
+# `translate_single` was removed: it had no callers, recorded nothing in the
+# usage ledger, and had no retry — the two things every LLM entry in this
+# service must have. If a single-line endpoint is ever needed, route it through
+# `_chat` so it inherits both.
 
 
 async def translate_script(
     video_id: str,
     segments: list[dict],
     target_language: str = "English",
+    emit=None,
 ) -> list[dict]:
     """
     Translate an entire script in chunks, with glossary consistency and a
@@ -696,8 +722,61 @@ async def translate_script(
             f"[{video_id}] Chunk {index + 1}/{len(chunks)} done "
             f"({len(chunk_result)} translated, {len(chunk_failed)} failed)"
         )
+        # Per-chunk progress. Without this the whole LLM phase is one silent
+        # wait between `started` and `done`.
+        if emit:
+            await emit({
+                "phase": "translation",
+                "status": "progress",
+                "done": len(translations),
+                "total": len(items),
+            })
+
+    # ---- Second pass: one targeted retry for everything the chunks dropped ----
+    #
+    # A failed segment currently means NO dub audio for that line (TTS skips
+    # empty translations), which the user would only discover by ear. Before
+    # giving up, re-request exactly the dropped ids — they are few, they can go
+    # in one request, and the retry machinery inside _translate_chunk applies
+    # to them as well.
+    if failed_ids:
+        retry_items = [item for item in items if item["id"] in failed_ids]
+        logger.info(
+            f"[{video_id}] Second pass: re-translating {len(retry_items)} dropped segment(s)"
+        )
+        if emit:
+            await emit({
+                "phase": "translation",
+                "status": "repairing",
+                "count": len(retry_items),
+            })
+        recovered = 0
+        for index, chunk in enumerate(_chunk(retry_items, target_language)):
+            result, still_failed = await _translate_chunk(
+                chunk,
+                context=[],
+                glossary=glossary,
+                target_language=target_language,
+                llm_dir=llm_dir,
+                chunk_index=900 + index,  # distinct prefix in the saved diagnostics
+                video_id=video_id,
+            )
+            recovered += len(result)
+            translations.update(result)
+            failed_ids = (failed_ids - set(result.keys())) | still_failed
+        if emit:
+            await emit({
+                "phase": "translation",
+                "status": "repair_done",
+                "recovered": recovered,
+                "still_failed": len(failed_ids),
+            })
+        if recovered:
+            logger.info(f"[{video_id}] Second pass recovered {recovered} segment(s)")
 
     if not translations:
+        # The raise sits AFTER the second pass on purpose: a first pass that
+        # failed entirely still gets its repair chance before this is an error.
         raise RuntimeError(
             "Translation produced no results at all — check the LLM credentials "
             f"and the saved prompts in {llm_dir}"

@@ -188,34 +188,44 @@ def record(
         entry["price_note"] = note
 
     path = os.path.join(get_video_dir(video_id), _LEDGER_FILENAME)
-    with _lock:
-        try:
-            with open(path, encoding="utf-8") as f:
-                ledger = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            ledger = {}
+    try:
+        with _lock:
+            try:
+                with open(path, encoding="utf-8") as f:
+                    ledger = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                ledger = {}
 
-        entries = ledger.get("entries", []) + [entry]
-        by_step: dict[str, dict] = {}
-        for e in entries:
-            bucket = by_step.setdefault(e["step"], {"calls": 0, "cost_yuan": 0.0, "cost_missing": 0})
-            bucket["calls"] += 1
-            if e.get("cost_yuan") is None:
-                bucket["cost_missing"] += 1
-            else:
-                bucket["cost_yuan"] = round(bucket["cost_yuan"] + e["cost_yuan"], 6)
+            entries = ledger.get("entries", []) + [entry]
+            by_step: dict[str, dict] = {}
+            for e in entries:
+                bucket = by_step.setdefault(e["step"], {"calls": 0, "cost_yuan": 0.0, "cost_missing": 0})
+                bucket["calls"] += 1
+                if e.get("cost_yuan") is None:
+                    bucket["cost_missing"] += 1
+                else:
+                    bucket["cost_yuan"] = round(bucket["cost_yuan"] + e["cost_yuan"], 6)
 
-        total_cost = sum(b["cost_yuan"] for b in by_step.values())
-        missing = sum(b["cost_missing"] for b in by_step.values())
-        ledger["entries"] = entries
-        ledger["totals"] = {
-            "calls": len(entries),
-            "cost_yuan": round(total_cost, 6),
-            "cost_missing_calls": missing,
-            "by_step": by_step,
-        }
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(ledger, f, ensure_ascii=False, indent=1)
+            total_cost = sum(b["cost_yuan"] for b in by_step.values())
+            missing = sum(b["cost_missing"] for b in by_step.values())
+            ledger["entries"] = entries
+            ledger["totals"] = {
+                "calls": len(entries),
+                "cost_yuan": round(total_cost, 6),
+                "cost_missing_calls": missing,
+                "by_step": by_step,
+            }
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(ledger, f, ensure_ascii=False, indent=1)
+    except Exception as e:
+        # The ledger is auxiliary. A full disk or an unwritable directory must
+        # never kill the work it is trying to account for: the API call has
+        # already happened and its cost is sunk either way. Log and move on.
+        logger.warning(
+            f"Usage ledger write failed for {video_id} ({step}/{model}): {e} "
+            "— call NOT recorded"
+        )
+        return
 
     cost_str = (
         f"¥{entry['cost_yuan']:.6f} [{entry['cost_source']}]"
