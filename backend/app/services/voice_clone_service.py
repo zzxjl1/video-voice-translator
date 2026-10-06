@@ -378,7 +378,7 @@ async def clone_voice_for_speaker(
     speaker_id: str,
     segments: list[Segment],
     server_url_base: str,
-) -> str:
+) -> tuple[str, bool]:
     """
     Clone voice for a speaker:
     1. Use LLM to intelligently select the best audio segments
@@ -386,9 +386,11 @@ async def clone_voice_for_speaker(
     3. Serve it via public URL
     4. Call DashScope voice enrollment
     5. Poll until ready
-    6. Return voice_id
+    6. Return (voice_id, reused)
 
-    The cloned voice_id is cached and persisted to disk.
+    The cloned voice_id is cached and persisted to disk. `reused` is False only
+    when a NEW enrollment actually happened — the one path that consumes
+    enrollment quota; the two cache-hit paths log "ALREADY EXISTS" and are free.
     """
     logger.info(
         f"[Clone] ========== Start voice cloning for {speaker_id} (video={video_id}) =========="
@@ -398,8 +400,8 @@ async def clone_voice_for_speaker(
     # Check cache first
     if video_id in _cloned_voice_map and speaker_id in _cloned_voice_map[video_id]:
         voice_id = _cloned_voice_map[video_id][speaker_id]
-        logger.info(f"[Clone] Hit memory cache for {speaker_id}: {voice_id}")
-        return voice_id
+        logger.info(f"[Clone] {speaker_id}: voice ALREADY EXISTS (memory cache): {voice_id}")
+        return voice_id, True
 
     video_dir = get_video_dir(video_id)
 
@@ -419,10 +421,10 @@ async def clone_voice_for_speaker(
             if status == "OK":
                 _cloned_voice_map.setdefault(video_id, {})[speaker_id] = cached_voice_id
                 logger.info(
-                    f"[Clone] Restored cloned voice from disk for {speaker_id}: "
-                    f"{cached_voice_id}"
+                    f"[Clone] {speaker_id}: voice ALREADY EXISTS on server "
+                    f"(disk cache, verified): {cached_voice_id}"
                 )
-                return cached_voice_id
+                return cached_voice_id, True
             # Voices idle for over a year are deleted server-side, so a
             # non-OK status is expected occasionally and means re-clone.
             logger.warning(
@@ -578,7 +580,9 @@ async def clone_voice_for_speaker(
         f"voice_id={voice_id} (target_model={target_model}) =========="
     )
 
-    return voice_id
+    # A genuinely new enrollment — the one path that consumes quota (0.01 元/音色,
+    # 1000 free per account in Beijing). Cache hits above are free.
+    return voice_id, False
 
 
 def get_cloned_voice(video_id: str, speaker_id: str) -> Optional[str]:

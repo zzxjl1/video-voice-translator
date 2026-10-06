@@ -5,13 +5,13 @@ import os
 import random
 import subprocess
 import threading
-from datetime import datetime
 
 import dashscope
 from dashscope.audio.tts_v2 import SpeechSynthesizer
 
 from app import config
 from app.models import get_video_dir
+from app.services import usage_service
 
 logger = logging.getLogger(__name__)
 
@@ -260,79 +260,6 @@ def _probe_duration(path: str) -> float | None:
     return None
 
 
-# Per-video synthesis ledger. DashScope's task-finished payload carries the
-# token usage (payload.usage) this model actually bills on — captured per call,
-# summed per video, and annotated with a cost estimate from config prices.
-_USAGE_FILENAME = "tts_usage.json"
-_usage_lock = threading.Lock()
-
-
-def _record_usage(
-    video_id: str | None,
-    text: str,
-    voice: str,
-    synthesizer: SpeechSynthesizer,
-) -> None:
-    """
-    Capture one synthesis call's token usage into the video's tts_usage.json.
-
-    Runs inside the worker thread, so the ledger read-modify-write is locked.
-    A response without usage is skipped rather than recorded as zeros: the
-    payload shape could change, and fabricating numbers is worse than showing
-    none.
-    """
-    if not video_id:
-        return
-    response = synthesizer.get_response() or {}
-    usage = ((response.get("payload") or {}).get("usage")) or {}
-    input_tokens = int(usage.get("input_tokens") or 0)
-    output_tokens = int(usage.get("output_tokens") or 0)
-    if not input_tokens and not output_tokens:
-        logger.debug("No usage in TTS task-finished payload; usage not recorded")
-        return
-
-    cost = (
-        input_tokens * config.TTS_PRICE_INPUT_PER_MTOKEN
-        + output_tokens * config.TTS_PRICE_OUTPUT_PER_MTOKEN
-    ) / 1_000_000
-
-    path = os.path.join(get_video_dir(video_id), _USAGE_FILENAME)
-    with _usage_lock:
-        try:
-            with open(path, encoding="utf-8") as f:
-                ledger = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            ledger = {}
-
-        entries = ledger.get("entries", [])
-        entries.append({
-            "at": datetime.now().isoformat(timespec="seconds"),
-            "voice": voice,
-            "characters": len(text),
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "cost_yuan": round(cost, 6),
-        })
-        total_in = sum(entry["input_tokens"] for entry in entries)
-        total_out = sum(entry["output_tokens"] for entry in entries)
-        total_cost = sum(entry["cost_yuan"] for entry in entries)
-        ledger.update({
-            "model": config.TTS_MODEL,
-            "calls": len(entries),
-            "input_tokens": total_in,
-            "output_tokens": total_out,
-            "estimated_cost_yuan": round(total_cost, 4),
-            "entries": entries,
-        })
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(ledger, f, ensure_ascii=False, indent=1)
-
-    logger.info(
-        f"[TTS usage] {video_id}: in={input_tokens} out={output_tokens} tok, "
-        f"≈¥{cost:.5f} (video total ≈¥{total_cost:.4f} over {len(entries)} calls)"
-    )
-
-
 def _synthesize_blocking(
     text: str,
     voice: str,
@@ -362,7 +289,14 @@ def _synthesize_blocking(
         kwargs["instruction"] = instruction
     synthesizer = SpeechSynthesizer(**kwargs)
     audio = synthesizer.call(text)
-    _record_usage(video_id, text, voice, synthesizer)
+    response = synthesizer.get_response() or {}
+    usage_service.record(
+        video_id=video_id,
+        step="tts",
+        model=config.TTS_MODEL,
+        detail=voice,
+        usage=((response.get("payload") or {}).get("usage")) or {},
+    )
     return audio
 
 

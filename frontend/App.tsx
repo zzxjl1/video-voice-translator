@@ -998,7 +998,11 @@ const App: React.FC = () => {
             setRawLog(prev => prev + `[${event.progress}/${event.total}] Cloning voice for ${event.speaker_id}...\n`);
           } else if (event.status === 'done' && event.voice_id) {
             setClonedVoices(prev => ({ ...prev, [event.speaker_id]: event.voice_id }));
-            setRawLog(prev => prev + `[${event.progress}/${event.total}] ${event.speaker_id}: ${event.voice_id}\n`);
+            setRawLog(prev => prev + (
+              event.reused
+                ? `[${event.progress}/${event.total}] ${event.speaker_id}: voice ALREADY EXISTS, reusing (${event.voice_id})\n`
+                : `[${event.progress}/${event.total}] ${event.speaker_id}: new voice cloned (${event.voice_id})\n`
+            ));
           } else if (event.status === 'failed') {
             setRawLog(prev => prev + `[${event.progress}/${event.total}] ${event.speaker_id}: FAILED (${event.error})\n`);
           } else if (event.status === 'complete') {

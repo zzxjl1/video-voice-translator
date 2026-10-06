@@ -324,13 +324,6 @@ ASR_MAX_WAIT = _env_int("ASR_MAX_WAIT", 600)
 # the model alongside each voice id so a model switch invalidates the cache
 # instead of silently shipping broken audio.
 TTS_MODEL = _env("TTS_MODEL", "qwen-audio-3.1-tts-flash")
-# This model bills on input AND output TOKENS (元 per million), unlike the 3.0
-# series which bills per character. The numbers below are the Beijing-region
-# list prices as of 2026-10 and are used ONLY to annotate the per-video usage
-# ledger (tts_usage.json) — a stale price can mislead a human reading it, never
-# the pipeline. Update them (or set via env) if TTS_MODEL or billing changes.
-TTS_PRICE_INPUT_PER_MTOKEN = _env_float("TTS_PRICE_INPUT_PER_MTOKEN", 1.5)
-TTS_PRICE_OUTPUT_PER_MTOKEN = _env_float("TTS_PRICE_OUTPUT_PER_MTOKEN", 12.0)
 TTS_TIMEOUT = _env_int("TTS_TIMEOUT", 60)
 
 # Number of concurrent synthesis calls. This is I/O bound (blocking SDK call

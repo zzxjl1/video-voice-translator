@@ -408,7 +408,7 @@ async def run_pipeline(
                         "speaker_id": spk_id,
                         "status": "cloning",
                     })
-                    voice_id = await voice_clone_service.clone_voice_for_speaker(
+                    voice_id, reused = await voice_clone_service.clone_voice_for_speaker(
                         video_id=video_id,
                         speaker_id=spk_id,
                         segments=state.segments,
@@ -421,6 +421,9 @@ async def run_pipeline(
                         "speaker_id": spk_id,
                         "voice_id": voice_id,
                         "status": "done",
+                        # False only when a NEW enrollment happened; the frontend
+                        # words the line accordingly so reuse is visible.
+                        "reused": reused,
                     })
                 except Exception as e:
                     logger.error(f"[{video_id}] Voice clone failed for {spk_id}: {e}")
