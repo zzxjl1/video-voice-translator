@@ -132,6 +132,64 @@ def plan_speech_rate(text: str, language: str, target_duration: float) -> float:
 
 
 def _parse_json_array(raw: str) -> list[dict]:
+    """
+    Extract the translation objects from a model response.
+
+    Tolerates the three shapes this model actually produces, in order of
+    preference:
+
+      1. a JSON array (what the prompt asks for);
+      2. NDJSON — one object per line — which it returned on 3/3 attempts for a
+         measured 12-segment Chinese script despite an explicit "STRICT JSON
+         ARRAY" instruction. Every retry failed identically before this, so the
+         whole chunk was reported as failed rather than retried usefully;
+      3. an object wrapping the array under some key.
+
+    Case 2 also rescues a TRUNCATED array: the surviving complete lines parse
+    even when the closing bracket never arrived.
+    """
+    clean = raw.replace("```json", "").replace("```", "").strip()
+
+    start, end = clean.find("["), clean.rfind("]")
+    if start != -1 and end > start:
+        try:
+            data = json.loads(clean[start : end + 1])
+            if isinstance(data, list):
+                objects = [item for item in data if isinstance(item, dict)]
+                if objects:
+                    return objects
+        except json.JSONDecodeError:
+            pass  # fall through: probably NDJSON or truncated
+
+    objects = []
+    for line in clean.splitlines():
+        # lstrip("[") so a truncated array — `[{"id":…},\n{"id":…}` with no
+        # closing bracket — still yields every complete object instead of
+        # losing the first one.
+        line = line.strip().lstrip("[").strip().rstrip(",")
+        if not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            objects.append(obj)
+    if objects:
+        return objects
+
+    start, end = clean.find("{"), clean.rfind("}")
+    if start != -1 and end > start:
+        try:
+            data = json.loads(clean[start : end + 1])
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, dict):
+            for value in data.values():
+                if isinstance(value, list) and all(isinstance(v, dict) for v in value):
+                    return value
+
+    raise ValueError(f"No translation objects found in response: {raw[:200]}")
     """Extract a JSON array from a model response, tolerating fences/preamble."""
     clean = raw.replace("```json", "").replace("```", "").strip()
     start = clean.find("[")
@@ -288,22 +346,85 @@ Script:
 # Chunking
 # ---------------------------------------------------------------------------
 
-def _chunk(items: list[dict]) -> list[list[dict]]:
-    """Split segments into chunks bounded by segment count and character count."""
+"""Wrapper tokens around one entry, both directions (id + text keys, quotes)."""
+_JSON_ENTRY_OVERHEAD_TOKENS = 12
+
+
+def _estimate_segment_tokens(item: dict, target_language: str) -> tuple[float, float]:
+    """
+    Pessimistic (source_tokens, answer_tokens) estimate for one segment.
+
+    The answer side is derived from `maxLength` — the length budget the model
+    was already asked to hit, which makes it the best available guess at how
+    long the translation will be, per speaker slot, without knowing the words.
+    """
+    source_chars = len(item.get("text") or "")
+    source = source_chars / config.LLM_SOURCE_CHARS_PER_TOKEN + _JSON_ENTRY_OVERHEAD_TOKENS
+
+    length = item.get("maxLength") or max(4, source_chars)
+    if target_language in ("Chinese", "Japanese", "Korean"):
+        answer = length  # roughly one token per character
+    else:
+        answer = length / 0.75  # roughly one token per 0.75 words
+    return source, answer + _JSON_ENTRY_OVERHEAD_TOKENS
+
+
+def _chunk_budgets() -> tuple[int, int]:
+    """(input_tokens, answer_tokens) one request may spend. See config."""
+    input_budget = int(
+        config.LLM_CONTEXT_TOKENS * config.LLM_CHUNK_CONTEXT_USAGE
+    ) - config.LLM_CHUNK_RESERVE_TOKENS
+    answer_budget = (
+        config.LLM_MAX_TOKENS
+        - config.LLM_CHUNK_OUTPUT_RESERVE_TOKENS
+        - config.LLM_CHUNK_REASONING_ALLOWANCE_TOKENS
+    )
+    return input_budget, answer_budget
+
+
+def _chunk(items: list[dict], target_language: str) -> list[list[dict]]:
+    """
+    Split the script by a TOKEN budget derived from the model's own limits.
+
+    Both sides bind and neither is a guess about prose: the input side is the
+    context window (a whole script fits in one for a 1M-token model), and the
+    answer side is `max_tokens` minus what the model spends thinking. Splitting
+    is now a fallback for scripts that genuinely exceed those budgets, not the
+    default shape of every translation.
+
+    There is no segment-count cap on purpose: line count is an output of the
+    budget, and a second limit would be one more number to keep in sync.
+    """
+    input_budget, answer_budget = _chunk_budgets()
+    if input_budget <= 0 or answer_budget <= 0:
+        logger.warning(
+            "Chunk budget is not positive (input=%s, answer=%s) — check "
+            "LLM_CONTEXT_TOKENS / LLM_MAX_TOKENS / LLM_CHUNK_*_RESERVE_TOKENS. "
+            "Falling back to one segment per request.",
+            input_budget, answer_budget,
+        )
+
     chunks: list[list[dict]] = []
     current: list[dict] = []
-    current_chars = 0
+    used_source = 0.0
+    used_answer = 0.0
 
     for item in items:
-        text_len = len(item.get("text") or "")
-        too_many = len(current) >= config.LLM_CHUNK_MAX_SEGMENTS
-        too_long = current and (current_chars + text_len) > config.LLM_CHUNK_MAX_CHARS
-        if too_many or too_long:
+        seg_source, seg_answer = _estimate_segment_tokens(item, target_language)
+        # A chunk never starts empty, so an oversized single segment still
+        # lands somewhere instead of looping forever.
+        exceeds = current and (
+            used_source + seg_source > input_budget
+            or used_answer + seg_answer > answer_budget
+        )
+        if exceeds:
             chunks.append(current)
             current = []
-            current_chars = 0
+            used_source = 0.0
+            used_answer = 0.0
         current.append(item)
-        current_chars += text_len
+        used_source += seg_source
+        used_answer += seg_answer
 
     if current:
         chunks.append(current)
@@ -364,6 +485,8 @@ def _build_chunk_prompt(
         "## Output format",
         "Return a STRICT JSON ARRAY. One object per segment, exactly two keys:",
         '[{"id": "<same id as input>", "translatedText": "<translation>"}]',
+        "The WHOLE response must be that single array — not one object per line "
+        "(NDJSON), not separate objects.",
         "Include ONLY ids listed under 'Segments to translate'. "
         "No markdown fences, no explanation.",
     ]
@@ -530,8 +653,14 @@ async def translate_script(
         _dump(os.path.join(llm_dir, f"glossary_{timestamp}.json"), glossary, "glossary")
 
     # ---- Chunked translation ----
-    chunks = _chunk(items)
-    logger.info(f"[{video_id}] Split script into {len(chunks)} chunk(s)")
+    chunks = _chunk(items, target_language)
+    input_budget, answer_budget = _chunk_budgets()
+    sizes = [len(chunk) for chunk in chunks]
+    logger.info(
+        f"[{video_id}] Split {len(items)} segments into {len(chunks)} chunk(s) "
+        f"{sizes if len(chunks) <= 12 else sizes[:12] + ['…']} "
+        f"(budgets: input {input_budget} tok / answer {answer_budget} tok)"
+    )
 
     translations: dict[str, str] = {}
     failed_ids: set[str] = set()

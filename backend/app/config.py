@@ -152,10 +152,30 @@ LLM_JSON_MODE = _env_bool("LLM_JSON_MODE", True)
 # minimal / low / medium / high.
 LLM_REASONING_EFFORT = _env("LLM_REASONING_EFFORT", "")
 
-# Long scripts are translated in chunks so a single response can never be
-# truncated mid-JSON. Chunks overlap so the model keeps conversational context.
-LLM_CHUNK_MAX_SEGMENTS = _env_int("LLM_CHUNK_MAX_SEGMENTS", 25)
-LLM_CHUNK_MAX_CHARS = _env_int("LLM_CHUNK_MAX_CHARS", 4000)
+# Chunking is DERIVED from the model's own limits rather than hand-tuned. The
+# old pair (25 segments / 4000 chars) was sized for a small window and cut long
+# scripts into pieces the model then had to understand one at a time.
+#
+# Verified 2026-10-07 against DeepSeek's docs: `deepseek-flash` has a
+# 1M-token context and a 384K output cap, and its price does NOT step up with
+# input length — so one request can hold a whole script, and doing so is cheap.
+LLM_CONTEXT_TOKENS = _env_int("LLM_CONTEXT_TOKENS", 1_000_000)
+# Fraction of the window one request may use; the rest is headroom.
+LLM_CHUNK_CONTEXT_USAGE = _env_float("LLM_CHUNK_CONTEXT_USAGE", 0.8)
+# Fixed per-request cost: rules + length budget + glossary + JSON format block +
+# the context tail. Measured on a real run: ~1.7K chars of scaffolding.
+LLM_CHUNK_RESERVE_TOKENS = _env_int("LLM_CHUNK_RESERVE_TOKENS", 6000)
+# The answer shares `max_tokens` with the model's hidden thinking, and with
+# provider defaults that thinking is ON: a measured one-line translation spent
+# 208 of its 223 output tokens on reasoning. Setting LLM_REASONING_EFFORT=none
+# removes that entirely; this allowance keeps chunks honest while it is on.
+LLM_CHUNK_REASONING_ALLOWANCE_TOKENS = _env_int("LLM_CHUNK_REASONING_ALLOWANCE_TOKENS", 8000)
+LLM_CHUNK_OUTPUT_RESERVE_TOKENS = _env_int("LLM_CHUNK_OUTPUT_RESERVE_TOKENS", 2000)
+# Token estimates, deliberately pessimistic (see _estimate_segment_tokens).
+LLM_SOURCE_CHARS_PER_TOKEN = _env_float("LLM_SOURCE_CHARS_PER_TOKEN", 1.5)
+# Deliberately NO segment-count cap: a script is split by token usage alone, so
+# how many lines a request may carry is a consequence of the budget, never a
+# separate limit someone has to keep in sync with it.
 LLM_CHUNK_CONTEXT_SEGMENTS = _env_int("LLM_CHUNK_CONTEXT_SEGMENTS", 3)
 LLM_CHUNK_MAX_RETRIES = _env_int("LLM_CHUNK_MAX_RETRIES", 2)
 
