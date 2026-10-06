@@ -29,6 +29,7 @@ from openai import AsyncOpenAI
 
 from app import config
 from app.models import get_video_dir
+from app.services import usage_service
 
 logger = logging.getLogger(__name__)
 
@@ -182,7 +183,17 @@ def _request_kwargs(*, json_mode: bool) -> dict:
     return kwargs
 
 
-async def _chat(prompt: str, system: str = _SYSTEM_PROMPT) -> str:
+async def _chat(
+    prompt: str,
+    system: str = _SYSTEM_PROMPT,
+    video_id: str | None = None,
+    detail: str = "",
+) -> tuple[str, dict]:
+    """
+    One chat completion. Returns (content, raw_usage) — and hands the usage to
+    the cost ledger, which for DeepSeek needs the cache-hit/miss split the API
+    includes in `usage`.
+    """
     response = await _client.chat.completions.create(
         model=config.LLM_MODEL,
         messages=[
@@ -191,7 +202,20 @@ async def _chat(prompt: str, system: str = _SYSTEM_PROMPT) -> str:
         ],
         **_request_kwargs(json_mode=True),
     )
-    return (response.choices[0].message.content or "").strip()
+    try:
+        usage = response.usage.model_dump() if response.usage else {}
+    except Exception:  # defensive: a shape change must not break translation
+        usage = {}
+    usage_service.record(
+        video_id=video_id,
+        step="llm",
+        # Keyed by what WE asked for, not response.model: the price table must
+        # match the config the request was built from.
+        model=config.LLM_MODEL,
+        detail=detail,
+        usage=usage,
+    )
+    return (response.choices[0].message.content or "").strip(), usage
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +238,9 @@ def _load_local_glossary(video_dir: str) -> dict[str, str]:
     return {}
 
 
-async def _extract_glossary(video_dir: str, segments: list[dict], llm_dir: str) -> dict[str, str]:
+async def _extract_glossary(
+    video_dir: str, segments: list[dict], llm_dir: str, video_id: str | None = None
+) -> dict[str, str]:
     """
     Ask the model to list proper nouns / jargon that must stay consistent.
     Output is deliberately small, so this is safe even for long scripts.
@@ -242,7 +268,7 @@ Script:
 """
 
     try:
-        raw = await _chat(prompt)
+        raw, _ = await _chat(prompt, video_id=video_id, detail="glossary")
         clean = raw.replace("```json", "").replace("```", "").strip()
         start, end = clean.find("{"), clean.rfind("}")
         if start == -1 or end == -1:
@@ -351,6 +377,7 @@ async def _translate_chunk(
     target_language: str,
     llm_dir: str,
     chunk_index: int,
+    video_id: str | None = None,
 ) -> tuple[dict[str, str], set[str]]:
     """
     Translate one chunk. Returns (id -> translation, failed ids).
@@ -366,7 +393,7 @@ async def _translate_chunk(
 
     for attempt in range(1, config.LLM_CHUNK_MAX_RETRIES + 2):
         try:
-            raw = await _chat(prompt)
+            raw, _ = await _chat(prompt, video_id=video_id, detail=f"chunk{chunk_index:03d}")
             _dump(
                 os.path.join(llm_dir, f"response_chunk{chunk_index:03d}_try{attempt}.json"),
                 raw,
@@ -494,7 +521,7 @@ async def translate_script(
     # ---- Glossary: local file wins, then auto-extraction ----
     glossary = _load_local_glossary(video_dir)
     if config.GLOSSARY_AUTO_EXTRACT:
-        extracted = await _extract_glossary(video_dir, items, llm_dir)
+        extracted = await _extract_glossary(video_dir, items, llm_dir, video_id=video_id)
         # Explicit local entries always take precedence over auto-extracted ones.
         merged = dict(extracted)
         merged.update(glossary)
@@ -532,6 +559,7 @@ async def translate_script(
             target_language=target_language,
             llm_dir=llm_dir,
             chunk_index=index,
+            video_id=video_id,
         )
         translations.update(chunk_result)
         failed_ids |= chunk_failed
