@@ -55,6 +55,43 @@ const InfoTooltip: React.FC<{ text: string }> = ({ text }) => {
   );
 };
 
+/*
+ * The three capabilities shown before any file is chosen.
+ *
+ * One row, three answers — each to a question the product name leaves open.
+ * Kept as data so the row stays a single `map` and adding a fourth means
+ * confronting the grid, not editing markup.
+ */
+const FEATURES: { label: string; sub: string; icon: React.ReactNode }[] = [
+  {
+    label: 'AI 重新配音',
+    sub: '译文用新的声音说出来',
+    icon: (
+      <svg className="h-4 w-4 text-claude-accent" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M12 18.75a6 6 0 0 0 6-6v-1.5m-6 7.5a6 6 0 0 1-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 0 1-3-3V4.5a3 3 0 1 1 6 0v8.25a3 3 0 0 1-3 3Z" />
+      </svg>
+    ),
+  },
+  {
+    label: '保留背景音乐',
+    sub: '只替换人声，BGM 不动',
+    icon: (
+      <svg className="h-4 w-4 text-claude-accent" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" d="m9 9 10.5-3m0 6.553v3.75a2.25 2.25 0 0 1-1.632 2.163l-1.32.377a1.803 1.803 0 1 1-.99-3.467l2.31-.66a2.25 2.25 0 0 0 1.632-2.163Zm0 0V2.25L9 5.25v10.303m0 0v3.75a2.25 2.25 0 0 1-1.632 2.163l-1.32.377a1.803 1.803 0 0 1-.99-3.467l2.31-.66A2.25 2.25 0 0 0 9 15.553Z" />
+      </svg>
+    ),
+  },
+  {
+    label: '双语字幕',
+    sub: '可内嵌、烧录或导出',
+    icon: (
+      <svg className="h-4 w-4 text-claude-accent" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M2.25 6.75A2.25 2.25 0 0 1 4.5 4.5h15a2.25 2.25 0 0 1 2.25 2.25v10.5a2.25 2.25 0 0 1-2.25 2.25h-15a2.25 2.25 0 0 1-2.25-2.25V6.75Zm3.75 5.25h4.5m-4.5 3.75h4.5m4.5-3.75h3m-3 3.75h3" />
+      </svg>
+    ),
+  },
+];
+
 const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName, onStart, isLoading, targetLanguage, onLanguageChange, targetAccent, onAccentChange, enableVoiceClone, onVoiceCloneChange, separationMode, onSeparationModeChange, separationBackends, bgmSeparationLocked }) => {
   /**
    * Whether the second column exists yet.
@@ -126,7 +163,6 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
 
   /** What the ASR model can hear — shown beside the upload. */
   const [asrLanguages, setAsrLanguages] = useState<string[]>([]);
-  const [asrDialects, setAsrDialects] = useState<string[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -134,13 +170,11 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
       .then(result => {
         if (cancelled) return;
         setAsrLanguages(result.languages);
-        setAsrDialects(result.dialects);
       })
       .catch(() => {
         // A preview; losing it must not block uploading.
         if (!cancelled) {
           setAsrLanguages([]);
-          setAsrDialects([]);
         }
       });
     return () => {
@@ -309,19 +343,41 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
             </svg>
           </div>
 
-          <h2 className="text-xl font-serif font-bold mb-2 text-claude-text">Upload Your Video</h2>
-          {/* What the job will do is stated next to the button that starts it,
-              not here: this card is about choosing a file, and the sentence
-              describes an outcome the user has not asked for yet. */}
+          {/*
+           * What this product IS, before asking anything of the visitor.
+           *
+           * A first-time visitor decides within seconds whether a tool applies
+           * to their job. Before this block the only hint was the product name
+           * — "Video Voice Translator" could mean subtitles, could mean dubbing
+           * — and the one sentence that actually answered it sat in the second
+           * column, which is not rendered until a file has already been chosen.
+           * Nobody uploads first and understands after.
+           */}
           {pendingFileName ? (
-            <p className="text-sm text-gray-500 mb-5 leading-relaxed max-w-sm break-all">
+            <p className="text-sm text-gray-500 mb-4 leading-relaxed max-w-sm break-all">
               已选择 <span className="font-bold text-claude-accent">{pendingFileName}</span>
             </p>
           ) : (
-            <p className="text-sm text-gray-500 mb-5 leading-relaxed max-w-sm">
-              选一个视频。下一步再决定配音语言和处理方式。
+            <p className="text-[15px] leading-relaxed text-gray-700 mb-4 max-w-sm">
+              把视频里的话<strong className="font-bold text-claude-text">翻译成另一种语言</strong>，再用 AI 重新配音。
             </p>
           )}
+
+          {/* The three capabilities a novice is deciding between. Each earns its
+              place by answering a question the name does not: does my background
+              music survive? do I get subtitles? what exactly comes out? */}
+          <div className="mb-6 grid w-full grid-cols-3 gap-2">
+            {FEATURES.map(feature => (
+              <div
+                key={feature.label}
+                className="flex flex-col items-center gap-1 rounded-xl bg-gray-50/80 px-1 py-2.5"
+              >
+                {feature.icon}
+                <span className="text-[11px] font-bold text-gray-700">{feature.label}</span>
+                <span className="text-center text-[10px] leading-tight text-gray-400">{feature.sub}</span>
+              </div>
+            ))}
+          </div>
 
           <input
             type="file"
@@ -340,22 +396,31 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
                 : 'bg-claude-accent text-white hover:bg-claude-accentHover shadow-lg shadow-claude-accent/20 hover:shadow-xl hover:shadow-claude-accent/30 hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.98]'
             } disabled:bg-gray-300 disabled:text-white disabled:cursor-not-allowed`}
           >
-            {pendingFileName ? '重新选择视频' : 'Select Video File'}
+            {pendingFileName ? '重新选择视频' : '上传视频文件'}
           </button>
           </div>
 
           {/* ASR languages — with the upload, not with the settings: they are a
-              constraint on what can be uploaded, not a preference. */}
+              constraint on what can be uploaded, not a preference.
+
+              Titled and explained in the visitor's words, not the model's: the
+              old heading "能识别的语言 · ASR" made a novice decode an acronym
+              before learning anything. The Chinese-dialect roll call that used
+              to sit under the chips was a spec detail, not a decision — the
+              model hears them whether or not they are listed, nobody picks one
+              here, and it cost a whole block of vertical space. */}
           <div className="w-full bg-white/80 backdrop-blur-xl rounded-2xl border border-gray-200/80 shadow-[0_8px_30px_rgba(0,0,0,0.06)] p-6">
-            <div className="flex items-baseline justify-between mb-2.5">
+            <div className="flex items-baseline justify-between mb-1">
               <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">
-                能识别的语言 · ASR
+                能听懂的语言
               </span>
               <span className="text-[10px] text-gray-400">
-                {asrLanguages.length} 种语言
-                {asrDialects.length ? ` · ${asrDialects.length} 种方言` : ''}
+                {asrLanguages.length} 种 · 自动识别
               </span>
             </div>
+            <p className="mb-2.5 text-[10px] leading-relaxed text-gray-400">
+              视频里说的话会自动转写成文字，不需要你选语言。
+            </p>
             <div className="flex flex-wrap gap-1">
               {asrLanguages.map(lang => (
                 <span
@@ -366,16 +431,6 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
                 </span>
               ))}
             </div>
-            {asrDialects.length > 0 && (
-              <div className="mt-2.5 pt-2.5 border-t border-gray-100 flex items-start gap-2">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-gray-400 shrink-0 pt-0.5">
-                  中文方言
-                </span>
-                <span className="text-[10px] text-gray-500 leading-relaxed">
-                  {asrDialects.join('、')}
-                </span>
-              </div>
-            )}
           </div>
 
         </div>
