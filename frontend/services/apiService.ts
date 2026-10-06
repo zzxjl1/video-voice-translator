@@ -2,7 +2,7 @@
  * API Service - calls the FastAPI backend
  */
 
-const API_BASE = '/api';
+export const API_BASE = '/api';
 
 export interface UploadResult {
   video_id: string;

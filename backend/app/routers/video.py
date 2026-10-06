@@ -224,10 +224,17 @@ async def get_video_status(video_id: str):
             getattr(state, "subtitle_export", None)
         ).to_dict(),
         subtitle_capabilities=subtitle_service.capabilities(),
-        separation_mode=config.SEPARATION_MODE,
+        # The project's own mode once a pipeline has run — that is the choice the
+        # user made and the one a recovery must adopt. Before any run the state
+        # field is empty, and the server default is the honest answer, so a
+        # project that has not started cannot read as one run with separation
+        # deliberately off.
+        separation_mode=state.separation_mode or config.SEPARATION_MODE,
         separation_backends=config.separation_capabilities(),
         enable_bgm_separation=state.enable_bgm_separation,
         enable_voice_clone=state.enable_voice_clone,
+        target_language=state.target_language,
+        accent=state.accent,
     )
 
 

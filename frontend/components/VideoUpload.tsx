@@ -10,6 +10,19 @@ import {
   accentLabel,
   hasAccents,
 } from '../utils/languages';
+import { formatRelativeTime, type RecentProject } from '../utils/recentProjects';
+
+/**
+ * Dot colour for a project's server status. Absent (server unreachable at
+ * validation time) stays neutral rather than pretending to know.
+ */
+function statusDotClass(status?: string): string {
+  if (status === 'completed') return 'bg-emerald-500';
+  if (status === 'error') return 'bg-red-400';
+  if (!status) return 'bg-gray-300';
+  // processing / uploaded / anything else still in flight
+  return 'bg-amber-400';
+}
 
 interface VideoUploadProps {
   /** The user picked a file. Nothing is uploaded until they press start. */
@@ -30,6 +43,10 @@ interface VideoUploadProps {
   onSeparationModeChange: (mode: SeparationMode) => void;
   separationBackends: SeparationBackends;
   bgmSeparationLocked?: boolean;
+  /** Projects this browser opened before, validated against the server. */
+  recentProjects: RecentProject[];
+  /** Open a previous project — the app recovers it from the URL. */
+  onOpenProject: (videoId: string) => void;
 }
 
 const InfoTooltip: React.FC<{ text: string }> = ({ text }) => {
@@ -92,7 +109,7 @@ const FEATURES: { label: string; sub: string; icon: React.ReactNode }[] = [
   },
 ];
 
-const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName, onStart, isLoading, targetLanguage, onLanguageChange, targetAccent, onAccentChange, enableVoiceClone, onVoiceCloneChange, separationMode, onSeparationModeChange, separationBackends, bgmSeparationLocked }) => {
+const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName, onStart, isLoading, targetLanguage, onLanguageChange, targetAccent, onAccentChange, enableVoiceClone, onVoiceCloneChange, separationMode, onSeparationModeChange, separationBackends, bgmSeparationLocked, recentProjects, onOpenProject }) => {
   /**
    * Whether the second column exists yet.
    *
@@ -295,6 +312,66 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
           from { opacity: 0; }
           to { opacity: 1; }
         }
+        /*
+         * The start button: an entrance ring, then a breath.
+         *
+         * The ring is a one-shot pseudo-element that starts oversized and
+         * collapses onto the button; the breath is a slow scale-plus-halo that
+         * runs forever after. Both are delayed so the column has finished
+         * arriving first — the button calls to you only once it is there.
+         *
+         * The halo lives on ::before rather than the button's own box-shadow,
+         * which would fight the hover-shadow classes every frame. The scale
+         * lives on the button itself; its active:scale is only meaningful while
+         * enabled, and these classes are only applied while enabled, so they do
+         * not contend.
+         */
+        @keyframes cta-ring-in {
+          0% { opacity: 0; transform: scale(1.6); }
+          30% { opacity: 0.85; }
+          100% { opacity: 0; transform: scale(1); }
+        }
+        @keyframes cta-breathe {
+          0%, 100% { transform: scale(1); }
+          50% { transform: scale(1.035); }
+        }
+        @keyframes cta-halo {
+          0%, 100% { box-shadow: 0 0 0 0 rgba(218, 119, 86, 0); }
+          50% { box-shadow: 0 0 0 7px rgba(218, 119, 86, 0.22); }
+        }
+        .start-cta { position: relative; }
+        .start-cta::after {
+          content: '';
+          position: absolute;
+          inset: 0;
+          border-radius: inherit;
+          border: 2px solid rgba(218, 119, 86, 0.8);
+          opacity: 0;
+          pointer-events: none;
+        }
+        .start-cta::before {
+          content: '';
+          position: absolute;
+          inset: 0;
+          border-radius: inherit;
+          pointer-events: none;
+        }
+        .start-cta-live::after {
+          animation: cta-ring-in 620ms cubic-bezier(0.22, 1, 0.36, 1) 450ms both;
+        }
+        .start-cta-live {
+          animation: cta-breathe 2.4s ease-in-out 1.15s infinite;
+        }
+        .start-cta-live::before {
+          animation: cta-halo 2.4s ease-in-out 1.15s infinite;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .start-cta-live,
+          .start-cta-live::after,
+          .start-cta-live::before {
+            animation: none;
+          }
+        }
       `}</style>
 
       {/* Logo — a row of its own, with the space under it stated here.
@@ -399,6 +476,47 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
             {pendingFileName ? '重新选择视频' : '上传视频文件'}
           </button>
           </div>
+
+          {/* Recent projects — the memory that makes a 32-character URL
+              unnecessary. localStorage only remembers WHICH projects this
+              browser touched; everything shown was validated against the
+              server moments ago, and entries it no longer has are simply not
+              here. Hidden entirely when the list is empty: an empty "recent"
+              section is noise on a first visit. */}
+          {recentProjects.length > 0 && (
+            <div className="w-full bg-white/80 backdrop-blur-xl rounded-2xl border border-gray-200/80 shadow-[0_8px_30px_rgba(0,0,0,0.06)] p-6">
+              <div className="flex items-baseline justify-between mb-2">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">
+                  最近工程
+                </span>
+                <span className="text-[10px] text-gray-400">
+                  {recentProjects.length} 个 · 仅本浏览器
+                </span>
+              </div>
+              <div className="flex flex-col gap-0.5">
+                {recentProjects.map(project => (
+                  <button
+                    key={project.videoId}
+                    onClick={() => onOpenProject(project.videoId)}
+                    className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left hover:bg-gray-50 transition-colors cursor-pointer"
+                  >
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusDotClass(project.status)}`}
+                    />
+                    <span className="flex-1 min-w-0 truncate text-xs text-gray-700">
+                      {project.filename || project.videoId.slice(0, 8)}
+                    </span>
+                    <span className="shrink-0 text-[10px] text-gray-400">
+                      {formatRelativeTime(project.updatedAt)}
+                    </span>
+                  </button>
+                ))}
+              </div>
+              <p className="mt-2 text-[10px] text-gray-400">
+                点开即回到当时的进度和设置。
+              </p>
+            </div>
+          )}
 
           {/* ASR languages — with the upload, not with the settings: they are a
               constraint on what can be uploaded, not a preference.
@@ -668,7 +786,7 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
             <button
               onClick={onStart}
               disabled={isLoading}
-              className="shrink-0 px-5 py-3 bg-claude-accent text-white text-sm font-semibold rounded-xl hover:bg-claude-accentHover disabled:bg-gray-300 disabled:cursor-not-allowed transition-all duration-300 shadow-lg shadow-claude-accent/20 hover:shadow-xl hover:shadow-claude-accent/30 active:scale-[0.98]"
+              className={`shrink-0 px-5 py-3 bg-claude-accent text-white text-sm font-semibold rounded-xl hover:bg-claude-accentHover disabled:bg-gray-300 disabled:cursor-not-allowed transition-all duration-300 shadow-lg shadow-claude-accent/20 hover:shadow-xl hover:shadow-claude-accent/30 active:scale-[0.98] ${isLoading ? '' : 'start-cta start-cta-live'}`}
             >
               {isLoading ? (
                 <span className="flex items-center gap-2">

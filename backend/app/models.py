@@ -70,9 +70,11 @@ class VideoState:
     speakers: list[Speaker] = field(default_factory=list)
     enable_bgm_separation: bool = True
     # Which backend performed separation: "client" (browser), "api" (302.AI)
-    # or "off". Persisted so a resumed run keeps the same choice. Defaults to
-    # "off" so info.json files written by older versions stay valid.
-    separation_mode: str = "off"
+    # or "off". Persisted so a resumed run keeps the same choice. Empty string
+    # means "no pipeline has run yet", so the status endpoint reports the server
+    # default for a project that has not started instead of reading as one that
+    # was deliberately run with separation off.
+    separation_mode: str = ""
     enable_voice_clone: bool = False
     # Subtitle look, as a plain dict so it round-trips through JSON untouched.
     # Empty means "use config defaults" — see subtitle_service.SubtitleStyle.
@@ -87,6 +89,11 @@ class VideoState:
     # need an ISO language tag so players can auto-select one, and the tag
     # cannot be recovered from the segments after the fact.
     target_language: str = ""
+    # Chinese dialect requested for the dub ("广东话"…). None means Mandarin.
+    # Persisted because the client otherwise sends the accent per request: after
+    # a session recovery the client only knows its own default, and a refit or
+    # single-line regen would quietly switch a Cantonese dub back to Mandarin.
+    accent: Optional[str] = None
     created_at: str = field(default_factory=lambda: datetime.datetime.now().isoformat())
 
     def to_dict(self):

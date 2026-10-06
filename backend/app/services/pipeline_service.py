@@ -166,6 +166,10 @@ async def run_pipeline(
     # Kept for the subtitle tracks: they need an ISO language tag so a player
     # can auto-select a track, and the tag is not recoverable from the segments.
     state.target_language = target_language
+    # Same reasoning, one field over: the client sends the accent per request,
+    # so without storing it a recovered session could not reproduce the dialect
+    # this dub was requested in — a refit would fall back to its own default.
+    state.accent = accent
     save_state(state)
 
     video_dir = get_video_dir(video_id)

@@ -42,6 +42,7 @@ import {
   type SubtitleStyle,
   type SubtitleStylePatch,
   type VoiceOption,
+  API_BASE,
 } from './services/apiService';
 import { getAudioWaveform, getAudioWaveformFromUrl } from './utils/audioProcessor';
 import { decodeAudio, separateAndUpload, isModelCached } from './utils/mdx/separatorClient';
@@ -56,6 +57,11 @@ import {
 import { probeBurnCapability, type BurnCapability } from './utils/burnCapability';
 import { burnSubtitles } from './utils/burnSubtitles';
 import { detectBrowserLanguage } from './utils/languages';
+import {
+  loadRecentProjects,
+  touchRecentProject,
+  type RecentProject,
+} from './utils/recentProjects';
 
 /**
  * Replace a trailing, in-progress log line (identified by `prefix`) instead of
@@ -631,6 +637,27 @@ const App: React.FC = () => {
           setSeparationMode(restoredMode);
           if (data.enable_voice_clone !== undefined) setEnableVoiceClone(data.enable_voice_clone);
 
+          /*
+           * Resume the PROJECT's choices, not this browser's.
+           *
+           * Browser-language detection only picks a landing-page starting value;
+           * a recovered session has to come back exactly as this project was
+           * configured — the language it was dubbed into, the accent (without
+           * which a later refit would quietly switch a Cantonese dub to
+           * Mandarin), and the subtitle look the preview was showing when the
+           * user left. Empty fields mean the pipeline never chose: keep the
+           * client's initial values.
+           */
+          if (data.target_language) setTargetLanguage(data.target_language);
+          if (data.accent !== undefined && data.accent !== null) setTargetAccent(data.accent);
+          if (data.subtitle_style && Object.keys(data.subtitle_style).length > 0) {
+            setSubtitleStyle(prev => ({ ...prev, ...data.subtitle_style }));
+          }
+
+          // This browser has now touched this project; remember it for the
+          // landing page's recent list.
+          touchRecentProject(idFromUrl, data.filename || '');
+
           // Always load existing segments/speakers
           if (data.segments && data.segments.length > 0) {
             const recoveredSegments: TranscriptionSegment[] = data.segments.map((seg: any) => ({
@@ -705,6 +732,27 @@ const App: React.FC = () => {
       window.history.pushState({ videoId }, '', `/${videoId}`);
     }
   }, [videoId]);
+
+  // Recent-projects index for the landing page. localStorage only remembers
+  // WHICH projects this browser touched; the server validates each one (and
+  // supplies filename/status) before anything is displayed.
+  //
+  // Raw fetch rather than getVideoStatus, deliberately: the contract below
+  // distinguishes "404 — the project is gone, drop the entry" from "the server
+  // is unreachable — keep it". getVideoStatus throws for both, which would
+  // make every validation failure look like a live entry.
+  const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
+  useEffect(() => {
+    loadRecentProjects(async id => {
+      const res = await fetch(`${API_BASE}/videos/${id}/status`);
+      if (res.status === 404) return null;
+      if (!res.ok) throw new Error(`status ${res.status}`);
+      const data = await res.json();
+      return { filename: data.filename, status: data.status };
+    })
+      .then(setRecentProjects)
+      .catch(() => {});
+  }, []);
 
   const handleTimeUpdate = () => {
     if (!videoRef.current) return;
@@ -1226,6 +1274,9 @@ const App: React.FC = () => {
       } else if (idFromUrl !== videoId) {
         // Forward navigation to a /{md5} page — recover session
         setVideoId(idFromUrl);
+        // Filename is unknown here; the landing list backfills it from the
+        // server the next time it validates.
+        touchRecentProject(idFromUrl);
         setVideoFile(null);
     setPendingVideoFile(null);
         setSegments([]);
@@ -1332,6 +1383,7 @@ const App: React.FC = () => {
       setRawLog(prev => prev + 'Uploading video to server...\n');
       const uploadResult = await uploadVideo(file);
       setVideoId(uploadResult.video_id);
+      touchRecentProject(uploadResult.video_id, file.name);
       setRawLog(prev => prev + `Upload complete. Video ID: ${uploadResult.video_id}\n`);
 
       if (uploadResult.exists) {
@@ -1930,6 +1982,8 @@ const App: React.FC = () => {
           onSeparationModeChange={handleSeparationModeChange}
           separationBackends={effectiveBackends}
           bgmSeparationLocked={enableVoiceClone}
+          recentProjects={recentProjects}
+          onOpenProject={id => window.location.assign(`/${id}`)}
         />
       ) : (
         <div className="h-screen flex flex-col bg-claude-bg text-claude-text font-sans selection:bg-claude-accent/20 overflow-hidden">

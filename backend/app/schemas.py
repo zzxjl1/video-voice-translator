@@ -131,6 +131,12 @@ class VideoStatusResponse(BaseModel):
     separation_backends: dict = {}
     enable_bgm_separation: bool = False
     enable_voice_clone: bool = False
+    # The dub's target language and Chinese accent as stored on THIS project, so
+    # a recovered session resumes the project's own choices instead of whatever
+    # the current browser would guess. Empty/None means the pipeline has not
+    # chosen yet and the client keeps its initial values.
+    target_language: str = ""
+    accent: Optional[str] = None
 
 
 # ----- Pipeline -----
