@@ -5,6 +5,7 @@ import os
 import random
 import subprocess
 import threading
+from datetime import datetime
 
 import dashscope
 from dashscope.audio.tts_v2 import SpeechSynthesizer
@@ -259,11 +260,85 @@ def _probe_duration(path: str) -> float | None:
     return None
 
 
+# Per-video synthesis ledger. DashScope's task-finished payload carries the
+# token usage (payload.usage) this model actually bills on — captured per call,
+# summed per video, and annotated with a cost estimate from config prices.
+_USAGE_FILENAME = "tts_usage.json"
+_usage_lock = threading.Lock()
+
+
+def _record_usage(
+    video_id: str | None,
+    text: str,
+    voice: str,
+    synthesizer: SpeechSynthesizer,
+) -> None:
+    """
+    Capture one synthesis call's token usage into the video's tts_usage.json.
+
+    Runs inside the worker thread, so the ledger read-modify-write is locked.
+    A response without usage is skipped rather than recorded as zeros: the
+    payload shape could change, and fabricating numbers is worse than showing
+    none.
+    """
+    if not video_id:
+        return
+    response = synthesizer.get_response() or {}
+    usage = ((response.get("payload") or {}).get("usage")) or {}
+    input_tokens = int(usage.get("input_tokens") or 0)
+    output_tokens = int(usage.get("output_tokens") or 0)
+    if not input_tokens and not output_tokens:
+        logger.debug("No usage in TTS task-finished payload; usage not recorded")
+        return
+
+    cost = (
+        input_tokens * config.TTS_PRICE_INPUT_PER_MTOKEN
+        + output_tokens * config.TTS_PRICE_OUTPUT_PER_MTOKEN
+    ) / 1_000_000
+
+    path = os.path.join(get_video_dir(video_id), _USAGE_FILENAME)
+    with _usage_lock:
+        try:
+            with open(path, encoding="utf-8") as f:
+                ledger = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            ledger = {}
+
+        entries = ledger.get("entries", [])
+        entries.append({
+            "at": datetime.now().isoformat(timespec="seconds"),
+            "voice": voice,
+            "characters": len(text),
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cost_yuan": round(cost, 6),
+        })
+        total_in = sum(entry["input_tokens"] for entry in entries)
+        total_out = sum(entry["output_tokens"] for entry in entries)
+        total_cost = sum(entry["cost_yuan"] for entry in entries)
+        ledger.update({
+            "model": config.TTS_MODEL,
+            "calls": len(entries),
+            "input_tokens": total_in,
+            "output_tokens": total_out,
+            "estimated_cost_yuan": round(total_cost, 4),
+            "entries": entries,
+        })
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(ledger, f, ensure_ascii=False, indent=1)
+
+    logger.info(
+        f"[TTS usage] {video_id}: in={input_tokens} out={output_tokens} tok, "
+        f"≈¥{cost:.5f} (video total ≈¥{total_cost:.4f} over {len(entries)} calls)"
+    )
+
+
 def _synthesize_blocking(
     text: str,
     voice: str,
     speech_rate: float | None = None,
     instruction: str | None = None,
+    video_id: str | None = None,
 ) -> bytes:
     """
     One blocking synthesis call.
@@ -276,13 +351,19 @@ def _synthesize_blocking(
     accent parameter. Also omitted when unset, for the same reason as
     `speech_rate`. It is already validated by `config.tts_instruction`; this
     layer only forwards it.
+
+    Usage is captured HERE, not in the retry wrapper: the synthesizer instance
+    holds the finished task's response, and only the audio bytes travel back.
     """
     kwargs: dict = {"model": config.TTS_MODEL, "voice": voice}
     if speech_rate is not None:
         kwargs["speech_rate"] = speech_rate
     if instruction:
         kwargs["instruction"] = instruction
-    return SpeechSynthesizer(**kwargs).call(text)
+    synthesizer = SpeechSynthesizer(**kwargs)
+    audio = synthesizer.call(text)
+    _record_usage(video_id, text, voice, synthesizer)
+    return audio
 
 
 async def _synthesize_with_retries(
@@ -292,13 +373,14 @@ async def _synthesize_with_retries(
     speech_rate: float | None,
     segment_id: str,
     instruction: str | None = None,
+    video_id: str | None = None,
 ) -> bytes:
     """Synthesize with the configured retry/backoff. Raises on total failure."""
     last_error: Exception | None = None
     for attempt in range(1, config.TTS_MAX_RETRIES + 2):
         try:
             audio = await loop.run_in_executor(
-                None, _synthesize_blocking, text, voice, speech_rate, instruction
+                None, _synthesize_blocking, text, voice, speech_rate, instruction, video_id
             )
             if audio:
                 return audio
@@ -375,7 +457,7 @@ async def _write_fitted_audio(
     )
     try:
         retry = await _synthesize_with_retries(
-            loop, text, voice, corrected, segment_id, instruction
+            loop, text, voice, corrected, segment_id, instruction, video_id
         )
     except Exception as e:
         # Keep the first take: it is usable, just slightly long or short.
@@ -445,7 +527,7 @@ async def synthesize_speech(
     # The SDK call is blocking -> run it in the thread pool so the event loop
     # (and other concurrent segment jobs) keep making progress.
     audio = await _synthesize_with_retries(
-        loop, text, voice, speech_rate, segment_id, instruction
+        loop, text, voice, speech_rate, segment_id, instruction, video_id
     )
 
     # Save to disk in tts/ subfolder
