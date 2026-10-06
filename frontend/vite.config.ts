@@ -29,6 +29,33 @@ export default defineConfig({
       },
     },
   },
+  /**
+   * Mirror the dev proxy for `vite preview`, so the PRODUCTION build can be
+   * exercised locally before it goes anywhere near a server.
+   *
+   * Without this there is no way to run the built app at all. `dist` is static
+   * files with nothing in front of them, so every /api call hits the preview
+   * server and 404s — feature detection fails, buttons grey out, and the only
+   * remaining way to answer "does the build actually work?" is to deploy it and
+   * find out. That is the wrong order, and it is how a missing nginx directive
+   * becomes an outage.
+   *
+   * This is also the closest local stand-in for the nginx setup: the built
+   * assets are served from disk with the API proxied, which is exactly what
+   * nginx will do.
+   */
+  preview: {
+    port: 3300,
+    strictPort: true,
+    host: '0.0.0.0',
+    allowedHosts: ['video-voice-translator.idealbroker.cn'],
+    proxy: {
+      '/api': {
+        target: BACKEND_ORIGIN,
+        changeOrigin: true,
+      },
+    },
+  },
   plugins: [react()],
   /**
    * Do NOT pre-bundle onnxruntime-web. DO NOT remove this.

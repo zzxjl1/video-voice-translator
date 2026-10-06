@@ -6,10 +6,10 @@
  * greyed out with a concrete reason when the browser cannot do it, exactly like
  * the server-side separation and subtitle capabilities.
  *
- * The renderer is built on WebCodecs, which encodes as fast as this machine
- * allows rather than in real time. That is the whole reason for choosing it:
- * a recorder-based path would take one minute of wall clock per minute of
- * video, and the wait would be the user's, not the server's.
+ * The renderer runs on WebCodecs (wrapped by mediabunny), which encodes as fast
+ * as this machine allows rather than in real time. That is the whole reason for
+ * choosing it: a recorder-based path would take one minute of wall clock per
+ * minute of video, and the wait would be the user's, not the server's.
  *
  * The check is a real `isConfigSupported` probe rather than a feature sniff:
  * the API existing says nothing about whether this machine has the encoders,
@@ -37,32 +37,12 @@ const CANDIDATE_VIDEO_CODECS = ['avc1.42E01E', 'avc1.4D401E', 'avc1.640028'];
  */
 const REQUIRED_AUDIO_CODEC = 'mp4a.40.2';
 
-/**
- * Whether the browser-side renderer exists yet.
- *
- * `VideoEncoder` being present is necessary but NOT sufficient — a capability
- * probe that only checks the API would offer "Burn in" and then fail at the
- * end of a long render. Until the WebCodecs pipeline ships, burn-in is
- * reported unavailable for this honest reason rather than being silently
- * downgraded to an embedded track server-side.
- */
-const BURN_RENDERER_IMPLEMENTED = false;
-
 let cached: BurnCapability | null = null;
 let inFlight: Promise<BurnCapability> | null = null;
 
 export async function probeBurnCapability(): Promise<BurnCapability> {
   if (cached) return cached;
   if (inFlight) return inFlight;
-
-  if (!BURN_RENDERER_IMPLEMENTED) {
-    cached = {
-      available: false,
-      reason: '浏览器端烧录功能尚未实现',
-      codecs: [],
-    };
-    return cached;
-  }
 
   inFlight = (async (): Promise<BurnCapability> => {
     const missing = (

@@ -54,7 +54,7 @@ const DELIVERIES: DeliveryOption[] = [
     value: 'burn',
     label: '烧录字幕',
     summary:
-      '字幕渲染进画面，任何播放器都可见。由这台设备的浏览器重新编码一遍视频，比内嵌慢，但画面里真的有字。',
+      '字幕渲染进画面，任何播放器都可见，不依赖播放器支持样式。会由这台设备重新编码一遍视频，比内嵌慢，期间请保持页面打开。',
     styleKept: 'yes',
   },
 ];
@@ -73,6 +73,14 @@ interface ExportModalProps {
   onOpenStyleEditor: () => void;
   onExport: () => void;
   isExporting: boolean;
+  /**
+   * 0..1 while burning subtitles in this browser, null otherwise.
+   *
+   * Only burn-in gets a bar. Every other delivery is a remux on the server that
+   * answers in well under a second, and a bar that flashes past is noise; this
+   * one re-encodes the whole video locally, so the user needs to see it move.
+   */
+  burnProgress: number | null;
   exportError?: string;
   hasCues: boolean;
 }
@@ -90,6 +98,7 @@ const ExportModal: React.FC<ExportModalProps> = ({
   onOpenStyleEditor,
   onExport,
   isExporting,
+  burnProgress,
   exportError,
   hasCues,
 }) => {
@@ -230,22 +239,40 @@ const ExportModal: React.FC<ExportModalProps> = ({
           )}
         </div>
 
-        <div className="flex items-center justify-end gap-2 px-6 pb-5">
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-4 py-2 rounded-lg text-xs font-medium text-gray-500 hover:bg-gray-100 hover:text-gray-800 transition-colors cursor-pointer"
-          >
-            取消
-          </button>
-          <button
-            type="button"
-            onClick={onExport}
-            disabled={isExporting || !hasCues}
-            className="px-4 py-2 rounded-lg text-xs font-medium bg-claude-accent text-white hover:bg-claude-accent/90 transition-colors disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed cursor-pointer"
-          >
-            {isExporting ? '导出中…' : '导出'}
-          </button>
+        <div className="flex items-center gap-3 px-6 pb-5">
+          {burnProgress !== null && (
+            <div className="flex-1 flex items-center gap-2 min-w-0">
+              <span className="text-[11px] text-gray-500 shrink-0">烧录中</span>
+              <div className="flex-1 h-1.5 min-w-8 rounded-full bg-gray-200 overflow-hidden">
+                {/* Floor of 2% so the bar reads as "started" at 0 rather than
+                    looking like an empty track that failed to appear. */}
+                <div
+                  className="h-full rounded-full bg-claude-accent transition-[width] duration-200 ease-out"
+                  style={{ width: `${Math.max(2, Math.round(burnProgress * 100))}%` }}
+                />
+              </div>
+              <span className="text-[11px] tabular-nums text-gray-500 shrink-0 w-8 text-right">
+                {Math.round(burnProgress * 100)}%
+              </span>
+            </div>
+          )}
+          <div className="flex items-center gap-2 ml-auto shrink-0">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 rounded-lg text-xs font-medium text-gray-500 hover:bg-gray-100 hover:text-gray-800 transition-colors cursor-pointer"
+            >
+              取消
+            </button>
+            <button
+              type="button"
+              onClick={onExport}
+              disabled={isExporting || !hasCues}
+              className="px-4 py-2 rounded-lg text-xs font-medium bg-claude-accent text-white hover:bg-claude-accent/90 transition-colors disabled:bg-gray-200 disabled:text-gray-400 disabled:cursor-not-allowed cursor-pointer"
+            >
+              {isExporting ? '导出中…' : '导出'}
+            </button>
+          </div>
         </div>
       </div>
     </div>

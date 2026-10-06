@@ -50,6 +50,7 @@ import {
   type Rect,
 } from './utils/subtitleStyle';
 import { probeBurnCapability, type BurnCapability } from './utils/burnCapability';
+import { burnSubtitles } from './utils/burnSubtitles';
 
 /**
  * Replace a trailing, in-progress log line (identified by `prefix`) instead of
@@ -67,19 +68,30 @@ function withTrailingLine(prev: string, prefix: string, text: string): string {
 }
 
 /**
- * Trigger a browser download for a URL.
+ * Trigger a browser download for a URL or a Blob.
  *
  * `download` matters: without it the browser may navigate or pick the filename
  * from the URL, which drops the extension the backend chose (and a styled
  * export is an .mkv, not an .mp4).
+ *
+ * The Blob case is burn-in, where the file is produced in this tab and has no
+ * server URL. One helper rather than two, so the anchor wiring and the revoke
+ * live in a single place.
  */
-function downloadFile(url: string, filename: string): void {
+function downloadFile(source: string | Blob, filename: string): void {
+  const isBlob = typeof source !== 'string';
+  const url = isBlob ? URL.createObjectURL(source as Blob) : (source as string);
   const anchor = document.createElement('a');
   anchor.href = url;
   anchor.download = filename;
   document.body.appendChild(anchor);
   anchor.click();
   document.body.removeChild(anchor);
+  if (isBlob) {
+    // Long enough that the click has certainly been handled, short enough not
+    // to keep a whole video alive in memory for the rest of the session.
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  }
 }
 
 /** Human-readable names for the separation backends. */
@@ -162,6 +174,15 @@ const App: React.FC = () => {
   // demand and the browser downloads it, so remembering a URL only created
   // state to keep in sync (and a button that had to change meaning).
   const [isExporting, setIsExporting] = useState(false);
+  /**
+   * Burn-in progress, 0..1, or null when not burning.
+   *
+   * Separate from the export spinner because the two waits are nothing alike:
+   * a server-side export answers in under a second, while burning re-encodes
+   * the whole video on this machine. A spinner cannot tell the user whether
+   * that is a 10-second wait or a five-minute one.
+   */
+  const [burnProgress, setBurnProgress] = useState<number | null>(null);
   const [exportError, setExportError] = useState<string>('');
 
   // ------------------------------------------------------------------
@@ -1469,6 +1490,57 @@ const App: React.FC = () => {
     setExportError('');
 
     try {
+      /*
+       * Burn-in runs HERE, before the normal export.
+       *
+       * The server cannot do it (no libass, no CJK font, and re-encoding is not
+       * affordable on this host — see capabilities()["burn_server"]), so it
+       * produces the dubbed video with NO subtitle track and this tab paints
+       * the lines into the picture. Same division of labour as in-browser vocal
+       * separation: the heavy rasterisation stays on the user's machine.
+       */
+      if (subtitleDelivery === 'burn') {
+        if (subtitleCues.length === 0) {
+          // Burning nothing would produce a clean video with no subtitles and
+          // no sign anything was skipped — the one outcome worth refusing.
+          throw new Error(
+            '没有可烧录的字幕。先完成翻译；如果已经翻译过，请检查画面上的字幕是否加载成功。',
+          );
+        }
+
+        const plain = await exportVideo(videoId, { enabled: false, format: 'off' });
+        const source = plain.url || getExportDownloadUrl(videoId);
+
+        setRawLog(
+          prev =>
+            prev +
+            '--- Burning subtitles in the browser ---\n' +
+            'Re-encoding on this device; leaving the tab open is enough.\n',
+        );
+
+        // 0 rather than null, so the bar appears the moment work starts instead
+        // of after the first progress callback — the gap before that is the
+        // demuxing, which can take a while on a long video.
+        setBurnProgress(0);
+
+        const blob = await burnSubtitles({
+          videoUrl: source,
+          cues: subtitleCues,
+          style: subtitleStyle,
+          onProgress: fraction => {
+            setBurnProgress(fraction);
+            setRawLog(prev =>
+              withTrailingLine(prev, 'Burn', `Burn ${Math.round(fraction * 100)}%`),
+            );
+          },
+        });
+
+        setRawLog(prev => prev + `Burn complete (${(blob.size / 1_048_576).toFixed(1)} MB).\n`);
+        downloadFile(blob, `translated_${videoId.slice(0, 8)}.mp4`);
+        setShowExportModal(false);
+        return null;
+      }
+
       const result = await exportVideo(videoId, {
         enabled: effectiveSubtitleFormat !== 'off',
         format: effectiveSubtitleFormat,
@@ -1511,6 +1583,9 @@ const App: React.FC = () => {
       return null;
     } finally {
       setIsExporting(false);
+      // Covers every exit, including the error paths: a bar stuck part-way is
+      // worse than no bar, because it looks like work still in flight.
+      setBurnProgress(null);
     }
   }, [
     videoId,
@@ -1518,6 +1593,10 @@ const App: React.FC = () => {
     subtitleStyle.track,
     subtitleDelivery,
     handleDownloadSrt,
+    // Only the burn branch reads these: it renders the cue list the preview is
+    // currently showing, in the style the preview is currently showing it in.
+    subtitleCues,
+    subtitleStyle,
   ]);
 
   const handleReprocess = useCallback(async () => {
@@ -1712,6 +1791,7 @@ const App: React.FC = () => {
             }}
             onExport={() => handleExport(false)}
             isExporting={isExporting}
+            burnProgress={burnProgress}
             exportError={exportError}
             hasCues={segments.some(segment => Boolean(segment.translatedText))}
           />
