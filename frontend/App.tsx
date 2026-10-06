@@ -1592,20 +1592,24 @@ const App: React.FC = () => {
    */
   const overlayCue = useMemo(() => {
     /*
-     * The style editor takes the picture over completely: while it is open, the
-     * overlay always shows the server's sample cue and never the real one.
-     *
-     * Showing the real line instead would mean the text changes every time the
-     * playhead crosses a cue or a gap — while the user is dragging sliders,
-     * that is motion in the exact thing they are trying to look at. A fixed
-     * line makes the picture a stable test subject, and it is the same
-     * `Cue.lines()` the export runs, so what it shows is still true.
-     *
-     * Outside the editor the overlay is unchanged and simply follows the
-     * playhead.
+     * A real cue always wins, whether or not the style editor is open.
      */
-    if (showStylePanel) return sampleCue;
-    return cueAtTime(subtitleCues, currentTime);
+    const cue = cueAtTime(subtitleCues, currentTime);
+    if (cue) return cue;
+
+    /*
+     * Nothing to draw at this instant — a gap between lines, or the playhead
+     * parked outside every cue. With the editor open that used to mean tuning
+     * sliders against a bare picture, so fall back to the server's sample cue:
+     * built by the same `Cue.lines()` the export runs, so previewing it cannot
+     * teach the wrong thing about line breaking.
+     *
+     * The editor briefly took the picture over completely instead. That was
+     * wrong: it made the line under the playhead impossible to check, which is
+     * one of the reasons to open the editor in the first place. The sample
+     * fills gaps; it does not replace the video.
+     */
+    return showStylePanel ? sampleCue : null;
   }, [subtitleCues, currentTime, showStylePanel, sampleCue]);
 
   const handlePreviewVoice = useCallback(async (speakerId: string) => {
@@ -1722,9 +1726,19 @@ const App: React.FC = () => {
 
             <div className="flex-grow grid grid-cols-1 lg:grid-cols-12 gap-6 min-h-0 items-stretch">
               <div className="w-full lg:col-span-7 flex flex-col gap-4 min-h-0">
+                {/*
+                  NOTE: no `overflow-hidden` here. It existed only to clip the
+                  video to the frame's rounded corners, and it would also clip
+                  the style tab below, which has to hang past the left edge. The
+                  video clips ITSELF instead (`rounded-2xl` on the element), so
+                  the frame still has no square corners.
+
+                  Nothing else needs clipping: the subtitle overlay is sized to
+                  the video's rendered rect and wraps inside it.
+                */}
                 <div
                   ref={videoBoxRef}
-                  className="flex-grow bg-black rounded-2xl overflow-hidden shadow-xl border border-gray-800 relative min-h-[300px]"
+                  className="flex-grow bg-black rounded-2xl shadow-xl border border-gray-800 relative min-h-[300px]"
                 >
                   {videoUrl && (
                     <video
@@ -1732,7 +1746,9 @@ const App: React.FC = () => {
                       src={videoUrl}
                       controls
                       muted={!!backgroundAudioUrl}
-                      className="w-full h-full object-contain"
+                      // Clips its own corners, replacing the `overflow-hidden`
+                      // the frame used to carry. See the note on the frame.
+                      className="w-full h-full object-contain rounded-2xl"
                       onTimeUpdate={handleTimeUpdate}
                       onLoadedMetadata={(e) => {
                         setDuration(e.currentTarget.duration);
@@ -1780,26 +1796,29 @@ const App: React.FC = () => {
                     </div>
                   )}
 
-                  {/* Style pill, stuck to the left edge of the picture.
-                      Vertical so it reads as a tab on the frame rather than yet
-                      another toolbar button, and its position down the edge
-                      keeps it clear of the subtitle it is used to adjust.
-                      It swaps the RIGHT column to the style editor instead of
-                      opening anything over the video: the picture then stays at
-                      full size and uncropped, which is what makes the preview
-                      trustworthy. */}
+                  {/* Style tab, hanging on the OUTSIDE of the frame's left edge.
+                      It used to sit INside, over the picture, as a dark
+                      translucent pill — that styling was there to stay legible
+                      on top of whatever footage was underneath, which also meant
+                      it covered part of the very frame it is used to judge.
+
+                      `-translate-x-full` puts its right edge on the frame edge
+                      and its body in the page gutter; `rounded-l-lg` so the
+                      rounded side faces outward, like a tab on a book cover.
+                      The colours are light now because it sits on the page, not
+                      on the video, so a translucent dark pill would be wrong. */}
                   <button
                     type="button"
                     onClick={() => setShowStylePanel(v => !v)}
                     title="调整字幕的字体、大小、颜色和位置，画面上的字幕会实时跟着变"
                     style={{ writingMode: 'vertical-rl' }}
                     className={[
-                      'absolute left-0 top-1/2 -translate-y-1/2 z-20',
-                      'px-1.5 py-3 rounded-r-lg backdrop-blur-sm transition-colors cursor-pointer',
+                      'absolute left-0 top-1/2 -translate-y-1/2 -translate-x-full z-20',
+                      'px-1 py-3 rounded-l-lg border transition-colors cursor-pointer',
                       'text-[10px] font-bold tracking-[0.25em]',
                       showStylePanel
-                        ? 'bg-claude-accent text-white'
-                        : 'bg-black/55 text-white/80 hover:bg-black/75 hover:text-white',
+                        ? 'bg-claude-accent text-white border-claude-accent shadow-md shadow-claude-accent/25'
+                        : 'bg-white text-claude-accent border-claude-accent shadow-sm hover:bg-claude-accent/10',
                     ].join(' ')}
                   >
                     字幕样式
