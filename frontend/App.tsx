@@ -754,6 +754,11 @@ const App: React.FC = () => {
   // make every validation failure look like a live entry.
   const [recentProjects, setRecentProjects] = useState<RecentProject[]>([]);
   useEffect(() => {
+    // The list only renders on the landing page — and must RELOAD when the
+    // user returns to it, so a project touched this session (or one whose
+    // status changed) shows its current filename/status instead of whatever
+    // was true at first mount. Inside a project the card is not rendered.
+    if (videoId) return;
     loadRecentProjects(async id => {
       const res = await fetch(`${API_BASE}/videos/${id}/status`);
       if (res.status === 404) return null;
@@ -763,7 +768,7 @@ const App: React.FC = () => {
     })
       .then(setRecentProjects)
       .catch(() => {});
-  }, []);
+  }, [videoId]);
 
   const handleTimeUpdate = () => {
     if (!videoRef.current) return;

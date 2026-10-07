@@ -32,8 +32,6 @@ interface TranscriptionPanelProps {
     /** speaker_id -> pinned voice_id. A speaker missing here is automatic. */
     pinnedVoices?: Record<string, string>;
     onPickVoice?: (speakerId: string, voiceId: string) => void;
-    /** Target language has no built-in voice at all; the picker explains this. */
-    voicesNeedCloning?: boolean;
 }
 
 
@@ -128,10 +126,9 @@ const SegmentCard: React.FC<{
     onPreviewVoice?: (speakerId: string) => void;
     isPreviewingVoice?: boolean;
     voices?: VoiceOption[];
-    needsVoiceCloning?: boolean;
     pinnedVoice?: string;
     onPickVoice?: (speakerId: string, voiceId: string) => void;
-}> = memo(({ segment, speaker, isActive, onSegmentUpdate, onSynthesize, onRefit, onSeek, hasClonedVoice, onPreviewVoice, isPreviewingVoice, voices, needsVoiceCloning, pinnedVoice, onPickVoice }) => {
+}> = memo(({ segment, speaker, isActive, onSegmentUpdate, onSynthesize, onRefit, onSeek, hasClonedVoice, onPreviewVoice, isPreviewingVoice, voices, pinnedVoice, onPickVoice }) => {
     const speakerColor = speaker ? getSpeakerColor(speaker.id) : '#9ca3af';
 
     // Speed stats come from the same helper the player uses, so what is shown
@@ -230,7 +227,6 @@ const SegmentCard: React.FC<{
                     <SegmentActionsMenu
                         speakerName={speaker?.name || '该说话人'}
                         voices={voices ?? []}
-                        needsVoiceCloning={needsVoiceCloning}
                         currentVoice={pinnedVoice}
                         onPickVoice={voiceId => onPickVoice?.(segment.speakerId, voiceId)}
                         actions={[
@@ -355,7 +351,7 @@ const SegmentCard: React.FC<{
 export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = memo(({
     segments, speakers, isTranscribing, currentTime, onSegmentUpdate, onSynthesize, onRefit, onSeek,
     clonedVoices, onPreviewVoice, previewingSpeaker,
-    voices, pinnedVoices, onPickVoice, voicesNeedCloning
+    voices, pinnedVoices, onPickVoice
 }) => {
     const speakerMap = new Map(speakers.map(s => [s.id, s]));
     const listRef = React.useRef<HTMLDivElement>(null);
@@ -423,7 +419,6 @@ export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = memo(({
                                 onPreviewVoice={onPreviewVoice}
                                 isPreviewingVoice={previewingSpeaker === segment.speakerId}
                                 voices={voices}
-                                needsVoiceCloning={voicesNeedCloning}
                                 pinnedVoice={pinnedVoices?.[segment.speakerId]}
                                 onPickVoice={onPickVoice}
                             />

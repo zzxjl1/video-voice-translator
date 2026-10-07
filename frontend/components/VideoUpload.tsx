@@ -4,9 +4,8 @@ import SeparationModeSelector from './SeparationModeSelector';
 import { getAsrLanguages, getLanguageVoices } from '../services/apiService';
 import type { SeparationMode, SeparationBackends, VoiceOption } from '../services/apiService';
 import {
+  ALL_LANGUAGES,
   CHINESE_ACCENTS,
-  COMMON_LANGUAGES,
-  MORE_LANGUAGES,
   accentLabel,
   hasAccents,
 } from '../utils/languages';
@@ -130,13 +129,6 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
    */
   const hasFile = Boolean(pendingFileName);
   /**
-   * The less-common half of the list stays collapsed.
-   *
-   * Six is what fits on two rows of the grid and covers almost every job; the
-   * other four are reachable but do not push the common ones down.
-   */
-  const [showMoreLanguages, setShowMoreLanguages] = useState(false);
-  /**
    * 高级项（自定义翻译要求）默认折叠。低频选项不能常驻占高度，也不能和
    * 上面几个开关争夺注意力 —— 一行小入口即可；有内容时用「已设置」角标
    * 露出状态，避免折叠成隐形状态（恢复回来的工程可能带着要求）。
@@ -144,24 +136,15 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
   const [showAdvanced, setShowAdvanced] = useState(false);
   /** Which language's accent menu is open, if any. */
   const [accentMenuFor, setAccentMenuFor] = useState<string | null>(null);
-  const visibleLanguages = showMoreLanguages
-    ? [...COMMON_LANGUAGES, ...MORE_LANGUAGES]
-    : [
-        ...COMMON_LANGUAGES,
-        /*
-         * The current choice is always on screen, even when it is one of the
-         * less-common four.
-         *
-         * This matters because the initial language comes from the BROWSER now:
-         * a Portuguese or Indonesian browser starts on a language that lives
-         * behind the "更多语言" toggle, and a selector with nothing highlighted
-         * reads as broken rather than as "your choice is one click away".
-         *
-         * Appended rather than prepended so the common six keep their order and
-         * nothing moves; the cost is a third row, and only in this case.
-         */
-        ...MORE_LANGUAGES.filter(lang => lang.value === targetLanguage),
-      ];
+  /**
+   * 全部语言直接展开，不再折叠。
+   *
+   * 曾经折着：常用六个 + 「更多语言」开关。折叠的代价反复出现 —— 浏览器
+   * 探测出的默认语言可能藏在开关后面（选择器无高亮像坏了）、多一次点击、
+   * 还要一段解释"更多里有什么"的心智负担。语言总共就 10 个，四列两行半
+   * 放得下，折叠省下的那点高度买不回这些。
+   */
+  const visibleLanguages = ALL_LANGUAGES;
 
   /**
    * The built-in voices the chosen language will actually use.
@@ -275,40 +258,22 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
           100% { transform: translateX(0); }
         }
         /*
-         * The one→two split: the columns grow, nothing slides sideways.
+         * Two columns on lg, always. (No backticks anywhere in this block: it
+         * is a JS template literal, so a stray backtick ends the string and the
+         * file stops parsing — that is what this comment did once.)
          *
-         * (No backticks anywhere in this block: it is a JS template literal, so
-         * a stray backtick ends the string and the file stops parsing. That is
-         * not hypothetical — it is what this comment did on the first attempt.)
-         *
-         * "grid-cols-1 → lg:grid-cols-2" cannot be transitioned: it is a
-         * discrete change in track COUNT, so it lands within a single frame.
-         * Measured on this page at the moment a file was picked:
-         *
-         *     left card   464px → 220px   in 11ms   (−53%)
-         *     container   512px → 512px   (had not started moving yet)
-         *
-         * The left card was slapped to half width and only then grew back to
-         * 476px over 500ms. That jolt is what this replaces.
-         *
-         * Two tracks are therefore kept at ALL times, so the track count never
-         * changes and the widths can interpolate. The closed state is "1fr 0fr"
-         * — a real but zero-width second track — and column-gap travels 0 →
-         * 24px with it. The honest movement is then a 12px squeeze (512 → 500)
-         * instead of a 244px jump.
-         *
-         * Scoped to lg, because below it the two columns stack and there are no
-         * columns to animate.
+         * This used to animate open on file-pick: two tracks kept at all times
+         * ("1fr 0fr" → "1fr 1fr") so the widths could interpolate instead of
+         * the track count snapping. That animation is gone — the landing now
+         * shows the recent-projects shelf in the right column from the start,
+         * so both columns are always occupied and there is nothing to animate.
+         * Below lg the columns stack.
          */
         .split-grid {
           grid-template-columns: 1fr;
         }
         @media (min-width: 1024px) {
           .split-grid {
-            grid-template-columns: 1fr 0fr;
-            column-gap: 0px;
-          }
-          .split-grid[data-open='true'] {
             grid-template-columns: 1fr 1fr;
             column-gap: 24px;
           }
@@ -413,15 +378,11 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
           the left card is squeezed rather than snapped. See `.split-grid`.
           The easing is stated rather than left at `ease-out` so the container
           and the columns move on one clock.
-          Left: the file, and what the ASR model can hear — that constrains the
-          upload, so it belongs with it.
-          Right: the target language, the settings, and the button that starts
-          the job. */}
+          Left: the file, its target language, and — on the landing — what
+          the ASR model can hear.
+          Right: the settings, and the button that starts the job. */}
       <div
-        data-open={hasFile ? 'true' : 'false'}
-        className={`split-grid relative z-10 grid w-full gap-6 px-6 transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)] ${
-          hasFile ? 'max-w-5xl lg:items-start' : 'max-w-lg'
-        }`}
+        className="split-grid relative z-10 grid w-full gap-6 px-6 max-w-5xl"
       >
         {/* `min-w-0` so the cell can actually shrink to the `0fr` track: a grid
             item's default `min-width: auto` would refuse to go below its
@@ -457,19 +418,23 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
 
           {/* The three capabilities a novice is deciding between. Each earns its
               place by answering a question the name does not: does my background
-              music survive? do I get subtitles? what exactly comes out? */}
-          <div className="mb-6 grid w-full grid-cols-3 gap-2">
-            {FEATURES.map(feature => (
-              <div
-                key={feature.label}
-                className="flex flex-col items-center gap-1 rounded-xl bg-gray-50/80 px-1 py-2.5"
-              >
-                {feature.icon}
-                <span className="text-[11px] font-bold text-gray-700">{feature.label}</span>
-                <span className="text-center text-[10px] leading-tight text-gray-400">{feature.sub}</span>
-              </div>
-            ))}
-          </div>
+              music survive? do I get subtitles? what exactly comes out?
+              Landing-only: once a file is chosen these are settled questions —
+              repeating them above the actual controls is noise. */}
+          {!hasFile && (
+            <div className="mb-6 grid w-full grid-cols-3 gap-2">
+              {FEATURES.map(feature => (
+                <div
+                  key={feature.label}
+                  className="flex flex-col items-center gap-1 rounded-xl bg-gray-50/80 px-1 py-2.5"
+                >
+                  {feature.icon}
+                  <span className="text-[11px] font-bold text-gray-700">{feature.label}</span>
+                  <span className="text-center text-[10px] leading-tight text-gray-400">{feature.sub}</span>
+                </div>
+              ))}
+            </div>
+          )}
 
           <input
             type="file"
@@ -485,53 +450,12 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
             className={`w-full px-8 py-4 font-semibold rounded-xl transition-all duration-300 text-base ${
               pendingFileName
                 ? 'bg-white text-[#da7756] border border-claude-border hover:bg-claude-paper active:scale-[0.98]'
-                : 'bg-claude-accent text-white hover:bg-claude-accentHover shadow-lg shadow-claude-accent/20 hover:shadow-xl hover:shadow-claude-accent/30 hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.98]'
+                : 'bg-claude-accent text-white hover:bg-claude-accentHover shadow-lg shadow-claude-accent/20 hover:shadow-xl hover:shadow-claude-accent/30 hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.98] start-cta start-cta-live'
             } disabled:bg-gray-300 disabled:text-white disabled:cursor-not-allowed`}
           >
             {pendingFileName ? '重新选择视频' : '上传视频文件'}
           </button>
           </div>
-
-          {/* Recent projects — the memory that makes a 32-character URL
-              unnecessary. localStorage only remembers WHICH projects this
-              browser touched; everything shown was validated against the
-              server moments ago, and entries it no longer has are simply not
-              here. Hidden entirely when the list is empty: an empty "recent"
-              section is noise on a first visit. */}
-          {recentProjects.length > 0 && (
-            <div className="w-full bg-white/80 backdrop-blur-xl rounded-2xl border border-gray-200/80 shadow-[0_8px_30px_rgba(0,0,0,0.06)] p-6">
-              <div className="flex items-baseline justify-between mb-2">
-                <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">
-                  最近工程
-                </span>
-                <span className="text-[10px] text-gray-400">
-                  {recentProjects.length} 个 · 仅本浏览器
-                </span>
-              </div>
-              <div className="flex flex-col gap-0.5">
-                {recentProjects.map(project => (
-                  <button
-                    key={project.videoId}
-                    onClick={() => onOpenProject(project.videoId)}
-                    className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left hover:bg-gray-50 transition-colors cursor-pointer"
-                  >
-                    <span
-                      className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusDotClass(project.status)}`}
-                    />
-                    <span className="flex-1 min-w-0 truncate text-xs text-gray-700">
-                      {project.filename || project.videoId.slice(0, 8)}
-                    </span>
-                    <span className="shrink-0 text-[10px] text-gray-400">
-                      {formatRelativeTime(project.updatedAt)}
-                    </span>
-                  </button>
-                ))}
-              </div>
-              <p className="mt-2 text-[10px] text-gray-400">
-                点开即回到当时的进度和设置。
-              </p>
-            </div>
-          )}
 
           {/* ASR languages — with the upload, not with the settings: they are a
               constraint on what can be uploaded, not a preference.
@@ -542,8 +466,11 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
               to sit under the chips was a spec detail, not a decision — the
               model hears them whether or not they are listed, nobody picks one
               here, and it cost a whole block of vertical space. */}
-          <div className="w-full bg-white/80 backdrop-blur-xl rounded-2xl border border-gray-200/80 shadow-[0_8px_30px_rgba(0,0,0,0.06)] p-6">
-            <div className="flex items-baseline justify-between mb-1">
+          {/* `grow` 兜底：落地右列（最近工程+糅合卡）通常比左列高，行高由右列
+              决定，ASR 卡补齐左列的差，两列底边对齐。 */}
+          {!hasFile && (
+          <div className="w-full grow rounded-2xl border border-gray-200/80 bg-white/80 p-6 shadow-[0_8px_30px_rgba(0,0,0,0.06)] backdrop-blur-xl">
+            <div className="mb-1 flex items-baseline justify-between">
               <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">
                 能听懂的语言
               </span>
@@ -565,150 +492,249 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
               ))}
             </div>
           </div>
-
-        </div>
-
-        {hasFile && (
-        /*
-         * ONE card with three zones, not three cards.
-         *
-         * Three stacked cards cost two extra paddings and two 20px gaps — about
-         * 140px — and this column measured 780px against the left column's 517.
-         * That difference is what pushed the page into scrolling on a 768px
-         * laptop (108px over), and merging is the cheapest way to get it back
-         * without hiding anything: every control stays on screen, and the last
-         * zone is separated by a rule instead of by whitespace.
-         *
-         * The zones are also the order the decisions get made in: what comes out
-         * (language), how the job runs (settings), then start it.
-         *
-         * `overflow-hidden` is required, not cosmetic — the footer's tinted
-         * background has to be clipped by the card's rounded corners.
-         */
-        <div className="min-w-0">
-        <div className="w-full bg-white/80 backdrop-blur-xl rounded-2xl border border-gray-200/80 shadow-[0_8px_30px_rgba(0,0,0,0.06)] overflow-hidden lg:sticky lg:top-6 animate-[split-in-right_250ms_ease-out_150ms_both]">
-          {/* Zone 1 — the target language, and the voice pool it selects. */}
-          <div className="p-6 pb-4">
-          <label className="block text-xs font-bold uppercase tracking-[0.15em] text-gray-500 mb-3 text-center">
-            Translate video to
-          </label>
-          <div className="grid grid-cols-4 gap-2 mb-1">
-            {visibleLanguages.map(lang => {
-              const selected = targetLanguage === lang.value;
-              const withAccent = hasAccents(lang.value);
-              return (
-                <div key={lang.value} className="relative">
-                  <button
-                    onClick={() => {
-                      onLanguageChange(lang.value);
-                      // Selecting a language closes any accent menu that belonged
-                      // to another one.
-                      setAccentMenuFor(null);
-                    }}
-                    className={`
-                      w-full py-2.5 px-3 rounded-xl text-sm font-semibold transition-all duration-200
-                      ${withAccent ? 'pr-7' : ''}
-                      ${selected
-                        ? 'bg-claude-accent text-white shadow-md shadow-claude-accent/25 scale-[1.02]'
-                        : 'bg-gray-50 text-gray-600 hover:bg-gray-100 hover:text-gray-800 border border-gray-100'
-                      }
-                    `}
-                  >
-                    {lang.label}
-                    {withAccent && selected && targetAccent ? (
-                      <span className="block text-[9px] font-medium opacity-80 leading-tight">
-                        {accentLabel(targetAccent)}
-                      </span>
-                    ) : null}
-                  </button>
-
-                  {/*
-                    A sibling, not a child. Interactive content cannot nest inside
-                    a <button> — the parser drops it out and its clicks become
-                    unpredictable — so the chevron is a real button positioned
-                    over the cell's right edge instead.
-                  */}
-                  {withAccent && (
+          )}
+          {hasFile && (
+            // 语言决策现在跟文件在同一列：先选要配什么语言，再在右列决定
+            // 怎么跑。入场动画与设置卡一致，让左列的这次替换也有来由。
+            <div className="w-full bg-white/80 backdrop-blur-xl rounded-2xl border border-gray-200/80 shadow-[0_8px_30px_rgba(0,0,0,0.06)] p-6 animate-[split-in-right_250ms_ease-out_150ms_both]">
+            <label className="block text-xs font-bold uppercase tracking-[0.15em] text-gray-500 mb-3 text-center">
+              Translate video to
+            </label>
+            <div className="grid grid-cols-4 gap-2 mb-1">
+              {visibleLanguages.map(lang => {
+                const selected = targetLanguage === lang.value;
+                const withAccent = hasAccents(lang.value);
+                return (
+                  <div key={lang.value} className="relative">
                     <button
-                      type="button"
-                      aria-label="选择中文口音"
-                      aria-expanded={accentMenuFor === lang.value}
-                      onClick={() =>
-                        setAccentMenuFor(open => (open === lang.value ? null : lang.value))
-                      }
+                      onClick={() => {
+                        onLanguageChange(lang.value);
+                        // Selecting a language closes any accent menu that belonged
+                        // to another one.
+                        setAccentMenuFor(null);
+                      }}
                       className={`
-                        absolute right-1 top-1/2 -translate-y-1/2 w-5 h-5 rounded-md
-                        flex items-center justify-center transition-colors cursor-pointer
-                        ${selected ? 'text-white/80 hover:bg-white/20' : 'text-gray-400 hover:bg-gray-200'}
+                        w-full py-2.5 px-3 rounded-xl text-sm font-semibold transition-all duration-200
+                        ${withAccent ? 'pr-7' : ''}
+                        ${selected
+                          ? 'bg-claude-accent text-white shadow-md shadow-claude-accent/25 scale-[1.02]'
+                          : 'bg-gray-50 text-gray-600 hover:bg-gray-100 hover:text-gray-800 border border-gray-100'
+                        }
                       `}
                     >
-                      <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M19 9l-7 7-7-7" />
-                      </svg>
+                      {lang.label}
+                      {withAccent && selected && targetAccent ? (
+                        <span className="block text-[9px] font-medium opacity-80 leading-tight">
+                          {accentLabel(targetAccent)}
+                        </span>
+                      ) : null}
                     </button>
-                  )}
 
-                  {withAccent && accentMenuFor === lang.value && (
-                    <>
-                      {/* Click-away layer: no document listeners to add and
-                          remove, and it cannot miss a click that lands on
-                          nothing. */}
-                      <span
-                        className="fixed inset-0 z-10"
-                        onClick={() => setAccentMenuFor(null)}
-                      />
-                      <div className="absolute left-0 right-0 top-full mt-1 z-20 bg-white rounded-xl border border-gray-200 shadow-xl py-1 max-h-56 overflow-y-auto">
-                        {CHINESE_ACCENTS.map(accent => (
-                          <button
-                            key={accent.value}
-                            type="button"
-                            onClick={() => {
-                              onAccentChange(accent.value);
-                              onLanguageChange('Chinese');
-                              setAccentMenuFor(null);
-                            }}
-                            className={`
-                              w-full text-left px-3 py-1.5 text-xs transition-colors cursor-pointer
-                              ${targetAccent === accent.value && selected
-                                ? 'bg-claude-accent/10 text-claude-accent font-bold'
-                                : 'text-gray-600 hover:bg-gray-50'
-                              }
-                            `}
-                          >
-                            {accent.label}
-                          </button>
-                        ))}
-                      </div>
-                    </>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+                    {/*
+                      A sibling, not a child. Interactive content cannot nest inside
+                      a <button> — the parser drops it out and its clicks become
+                      unpredictable — so the chevron is a real button positioned
+                      over the cell's right edge instead.
+                    */}
+                    {withAccent && (
+                      <button
+                        type="button"
+                        aria-label="选择中文口音"
+                        aria-expanded={accentMenuFor === lang.value}
+                        onClick={() =>
+                          setAccentMenuFor(open => (open === lang.value ? null : lang.value))
+                        }
+                        className={`
+                          absolute right-1 top-1/2 -translate-y-1/2 w-5 h-5 rounded-md
+                          flex items-center justify-center transition-colors cursor-pointer
+                          ${selected ? 'text-white/80 hover:bg-white/20' : 'text-gray-400 hover:bg-gray-200'}
+                        `}
+                      >
+                        <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M19 9l-7 7-7-7" />
+                        </svg>
+                      </button>
+                    )}
 
-          <button
-            type="button"
-            onClick={() => setShowMoreLanguages(v => !v)}
-            className="mt-1 mx-auto flex items-center gap-1 text-[11px] font-medium text-gray-400 hover:text-claude-accent transition-colors cursor-pointer"
-          >
-            {showMoreLanguages ? '收起' : '更多语言'}
-            <svg
-              className={`h-3 w-3 transition-transform ${showMoreLanguages ? 'rotate-180' : ''}`}
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 9l-7 7-7-7" />
-            </svg>
-          </button>
+                    {withAccent && accentMenuFor === lang.value && (
+                      <>
+                        {/* Click-away layer: no document listeners to add and
+                            remove, and it cannot miss a click that lands on
+                            nothing. */}
+                        <span
+                          className="fixed inset-0 z-10"
+                          onClick={() => setAccentMenuFor(null)}
+                        />
+                        <div className="absolute left-0 right-0 top-full mt-1 z-20 bg-white rounded-xl border border-gray-200 shadow-xl py-1 max-h-56 overflow-y-auto">
+                          {CHINESE_ACCENTS.map(accent => (
+                            <button
+                              key={accent.value}
+                              type="button"
+                              onClick={() => {
+                                onAccentChange(accent.value);
+                                onLanguageChange('Chinese');
+                                setAccentMenuFor(null);
+                              }}
+                              className={`
+                                w-full text-left px-3 py-1.5 text-xs transition-colors cursor-pointer
+                                ${targetAccent === accent.value && selected
+                                  ? 'bg-claude-accent/10 text-claude-accent font-bold'
+                                  : 'text-gray-600 hover:bg-gray-50'
+                                }
+                              `}
+                            >
+                              {accent.label}
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            </div>
+          )}
 
         </div>
 
-          {/* Zone 2 — how the job runs. Separation and cloning are the two
+        {/*
+         * The right cell always renders, with two tenants.
+         *
+         * Landing: the recent-projects shelf plus the how-it-works/what-you-get
+         * card under it. The shelf — the memory that makes a 32-character URL
+         * unnecessary — only remembers WHICH projects this browser touched;
+         * everything shown was validated against the server moments ago. An
+         * empty shelf shows its placeholder instead of collapsing the column:
+         * a first-time visitor gets the same two-column page, with the guide
+         * card answering what this product does. Once a file is picked both
+         * give way to the settings card, so neither ever competes with the
+         * configuration for attention.
+         *
+         * The settings card is ONE card with two zones, not three — the
+         * language decision lives on the LEFT column now, beside the file it
+         * translates, so this card is only about how the job runs and what
+         * it produces. `overflow-hidden` is required, not cosmetic — the
+         * footer's tinted background has to be clipped by the card's
+         * rounded corners.
+ * `flex flex-col gap-5` 与左列的间隔规则完全一致（左列同名 gap-5）；
+ * `min-w-0` 防止栅格单元被自身内容撑破列宽。
+         */}
+        <div className="flex min-w-0 flex-col gap-5">
+        {/* 最近工程卡负责吃掉右列的剩余高度（`grow`）：糅合卡保持自然紧凑
+            高度，多出来的空间给列表行，条目在卡内均匀分布。 */}
+        {!hasFile && (
+          <div className="flex min-h-[260px] w-full grow flex-col rounded-2xl border border-gray-200/80 bg-white/80 p-6 shadow-[0_8px_30px_rgba(0,0,0,0.06)] backdrop-blur-xl">
+            <div className="mb-2 flex items-baseline justify-between">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">
+                最近工程
+              </span>
+              <span className="text-[10px] text-gray-400">
+                仅本浏览器
+              </span>
+            </div>
+            {recentProjects.length > 0 ? (
+              <>
+                <div className="flex flex-1 flex-col justify-evenly gap-0.5">
+                  {recentProjects.map(project => (
+                    <button
+                      key={project.videoId}
+                      onClick={() => onOpenProject(project.videoId)}
+                      className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left hover:bg-gray-50 transition-colors cursor-pointer"
+                    >
+                      <span
+                        className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusDotClass(project.status)}`}
+                      />
+                      <span className="flex-1 min-w-0 truncate text-xs text-gray-700">
+                        {project.filename || project.videoId.slice(0, 8)}
+                      </span>
+                      <span className="shrink-0 text-[10px] text-gray-400">
+                        {formatRelativeTime(project.updatedAt)}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-2 text-[10px] text-gray-400">
+                  点开即回到当时的进度和设置。
+                </p>
+              </>
+            ) : (
+              /* 空态占位：告诉首次访客这个位置将来会是什么 —— 不是坏掉的
+                  空白，而是一个还没开始用的清单。 */
+              <div className="flex flex-1 flex-col items-center justify-center gap-1 text-center">
+                <p className="text-xs font-medium text-gray-400">还没有工程</p>
+                <p className="text-[10px] leading-relaxed text-gray-300">
+                  上传视频后，这里会记住它，
+                  <br />
+                  点开即回到当时的进度和设置。
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* A+C 糅合：怎么用 + 你会得到，一张卡上下两段。
+            紧跟最近工程下方，填住右列的下半 —— 上段回答"接下来会发生什么"，
+            下段回答"产出是什么"，两个都是落地页此前没答的小白疑问。
+            内容全部是产品事实（转写自动检测、克隆、mp4/mkv 导出、srt、
+            分离保 BGM），没有一句是装饰性文案。随最近工程一起只在落地右列
+            出现，选了文件就让位给设置卡。 */}
+        {!hasFile && (
+          <div className="w-full rounded-2xl border border-gray-200/80 bg-white/80 p-6 shadow-[0_8px_30px_rgba(0,0,0,0.06)] backdrop-blur-xl">
+            <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">
+              怎么用
+            </span>
+            <div className="mt-3 flex flex-col gap-3">
+              {[
+                ['选一个视频', '里面的话自动转写成文字，不需要你选语言。'],
+                ['选语言和声音', '每种语言都有预制音色，也可以克隆原声。'],
+                ['开始处理', '转写、翻译、配音一次完成。'],
+              ].map(([title, sub], i) => (
+                <div key={title} className="flex items-start gap-2.5">
+                  <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-claude-accent/10 text-[10px] font-bold text-claude-accent">
+                    {i + 1}
+                  </span>
+                  <div>
+                    <p className="text-xs font-bold text-gray-700">{title}</p>
+                    <p className="mt-0.5 text-[10px] leading-relaxed text-gray-400">{sub}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="my-3.5 border-t border-gray-100" />
+
+            <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">
+              处理完你会得到
+            </span>
+            <div className="mt-3 flex flex-col gap-2.5">
+              {[
+                ['重新配音的视频', 'mp4 / mkv，画面原样不动'],
+                ['双语字幕', '内嵌进视频，也可以导出 srt'],
+                ['保留背景音乐', '只替换人声，BGM 原样保留'],
+              ].map(([title, sub]) => (
+                <div key={title} className="flex items-start gap-2.5">
+                  <span className="mt-0.5 h-2.5 w-2.5 shrink-0 rounded bg-claude-accent/25" />
+                  <p className="text-[11px] leading-snug text-gray-600">
+                    <span className="font-bold text-gray-700">{title}</span>
+                    <span className="text-gray-400"> — {sub}</span>
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {hasFile && (
+        <div className="w-full bg-white/80 backdrop-blur-xl rounded-2xl border border-gray-200/80 shadow-[0_8px_30px_rgba(0,0,0,0.06)] overflow-hidden lg:sticky lg:top-6 animate-[split-in-right_250ms_ease-out_150ms_both]">
+
+          {/* Zone 1 — how the job runs. Separation and cloning are the two
               decisions that shape the dub, and the voice display sits under the
-              clone switch it is a consequence of. */}
-          <div className="px-6 pb-5">
-          <h2 className="text-sm font-serif font-bold text-gray-900 mb-4">处理设置</h2>
+              clone switch it is a consequence of. Now the FIRST zone: the
+              language selector moved to the left column, beside the file it
+              translates, so this card is purely about how the job runs. */}
+          <div className="p-6 pb-5">
+          <h2 className="text-sm font-serif font-bold text-gray-900 mb-4">系统设置</h2>
           {/* Processing Options. The old `mb-6` is gone: the footer's own rule
               and padding now do that job, and keeping both would waste the
               height this merge exists to save. */}
@@ -725,25 +751,13 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
                 locked={bgmSeparationLocked}
               />
             </div>
-            <div className="flex items-center justify-between py-1.5 px-3 bg-gray-50 rounded-xl">
-              <div className="flex items-center">
-                <span className="text-sm font-medium text-gray-700">Voice Cloning</span>
-                <InfoTooltip text="Clone the original speaker's voice for synthesis. The translated audio will sound like the original speaker. Requires more processing time." />
-              </div>
-              <button
-                onClick={() => onVoiceCloneChange(!enableVoiceClone)}
-                className={`relative w-10 h-[22px] rounded-full transition-colors duration-200 ${enableVoiceClone ? 'bg-claude-accent' : 'bg-gray-300'}`}
-              >
-                <span className={`absolute top-[2px] left-[2px] w-[18px] h-[18px] bg-white rounded-full shadow transition-transform duration-200 ${enableVoiceClone ? 'translate-x-[18px]' : ''}`} />
-              </button>
-            </div>
-
             {/* 多模态增强识别：omni 听原声 —— 纠正 ASR 错漏 + 标注语气标签，
-                翻译基于纠错后的文本。与克隆正交。 */}
+                翻译基于纠错后的文本进行。与克隆正交，且先于克隆出现：
+                它作用于转写与翻译，克隆只作用于声音。 */}
             <div className="flex items-center justify-between py-1.5 px-3 bg-gray-50 rounded-xl">
               <div className="flex items-center">
                 <span className="text-sm font-medium text-gray-700">多模态增强识别</span>
-                <InfoTooltip text="AI 听一遍原视频：纠正语音识别的错字漏字，并标注每句的语气（兴奋、耳语、大笑…），翻译基于纠错后的文本进行。由 qwen-omni 完成，会增加一些处理时间。" />
+                <InfoTooltip text="纠正语音识别的错字漏字，并标注每句的语气（兴奋、耳语、大笑…），翻译基于纠错后的文本进行。会增加一些处理时间。" />
               </div>
               <button
                 onClick={() => onMmEnhanceChange(!mmEnhance)}
@@ -753,69 +767,82 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
               </button>
             </div>
 
-            {/* 智能选材：依赖克隆开关 —— 不克隆就没有「选材」这件事。 */}
-            {enableVoiceClone && (
-              <div className="flex items-center justify-between py-1.5 px-3 bg-gray-50 rounded-xl">
+            {/* Voice Cloning 与它决定的内容同住一块灰底：开关、智能选材、
+                音色池（或克隆说明/警告）不再分成三块各自带底色 —— 它们是
+                同一个决策的开关与结果，视觉上就该是一体。内部以细分割线
+                分隔，子行不再自带灰底。 */}
+            <div className="px-3 py-1.5 bg-gray-50 rounded-xl">
+              <div className="flex items-center justify-between py-1.5">
                 <div className="flex items-center">
-                  <span className="text-sm font-medium text-gray-700">智能选材</span>
-                  <InfoTooltip text="AI 试听候选片段，挑出无重叠、情绪中性的部分做克隆参考素材；每轮选择都会校验，不过关自动重选，失败则退回规则选材。" />
+                  <span className="text-sm font-medium text-gray-700">Voice Cloning</span>
+                  <InfoTooltip text="Clone the original speaker's voice for synthesis. The translated audio will sound like the original speaker. Requires more processing time." />
                 </div>
                 <button
-                  onClick={() => onCloneSmartPickChange(!cloneSmartPick)}
-                  className={`relative w-10 h-[22px] rounded-full transition-colors duration-200 ${cloneSmartPick ? 'bg-claude-accent' : 'bg-gray-300'}`}
+                  onClick={() => onVoiceCloneChange(!enableVoiceClone)}
+                  className={`relative w-10 h-[22px] rounded-full transition-colors duration-200 ${enableVoiceClone ? 'bg-claude-accent' : 'bg-gray-300'}`}
                 >
-                  <span className={`absolute top-[2px] left-[2px] w-[18px] h-[18px] bg-white rounded-full shadow transition-transform duration-200 ${cloneSmartPick ? 'translate-x-[18px]' : ''}`} />
+                  <span className={`absolute top-[2px] left-[2px] w-[18px] h-[18px] bg-white rounded-full shadow transition-transform duration-200 ${enableVoiceClone ? 'translate-x-[18px]' : ''}`} />
                 </button>
               </div>
-            )}
 
-            {/* What the switch above actually decides.
-                Off: the built-in voices this language draws from, so the result
-                is visible instead of implied.
-                On: no list at all — cloning REPLACES them, so there is nothing
-                to choose and showing a list would suggest otherwise. */}
-            {enableVoiceClone ? (
-              <div className="py-2.5 px-3 bg-purple-50 border border-purple-100 rounded-xl">
-                <p className="text-[11px] leading-relaxed text-purple-700">
-                  会先克隆每位说话人自己的声音，再用它来配。
-                  <span className="font-semibold">预制音色不再参与</span>
-                  ——所以这里没有音色可选。
-                </p>
-              </div>
-            ) : languageNeedsCloning ? (
-              <div className="py-2.5 px-3 bg-amber-50 border border-amber-200 rounded-xl">
-                <p className="text-[11px] leading-relaxed text-amber-700">
-                  没有内置音色能说 {targetLanguage}，请开启声音复刻。
-                </p>
-              </div>
-            ) : languageVoices.length > 0 ? (
-              <div className="py-2.5 px-3 bg-gray-50 rounded-xl">
-                <div className="flex items-baseline justify-between mb-1.5">
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">
-                    预制音色 · {targetLanguage}
-                  </span>
-                  <span className="text-[10px] text-gray-400">{languageVoices.length} 个</span>
+              {/* 智能选材：克隆的子选项，白底小卡表明从属。开关本身的说明
+                  由 ⓘ 承担，不再重复一行文字。 */}
+              {enableVoiceClone && (
+                <>
+                  <div className="mb-1.5 rounded-lg border border-gray-200/70 bg-white/80">
+                    <div className="flex items-center justify-between py-1.5 px-2.5">
+                      <span className="text-xs font-medium text-gray-700">智能选材</span>
+                      <button
+                        onClick={() => onCloneSmartPickChange(!cloneSmartPick)}
+                        className={`relative w-10 h-[22px] rounded-full transition-colors duration-200 ${cloneSmartPick ? 'bg-claude-accent' : 'bg-gray-300'}`}
+                      >
+                        <span className={`absolute top-[2px] left-[2px] w-[18px] h-[18px] bg-white rounded-full shadow transition-transform duration-200 ${cloneSmartPick ? 'translate-x-[18px]' : ''}`} />
+                      </button>
+                    </div>
+                    <p className="px-2.5 pb-2 text-[10px] leading-relaxed text-gray-400">
+                      AI 试听候选片段，挑出无重叠、情绪中性的部分做克隆参考素材；每轮校验，不过关自动重选。
+                    </p>
+                  </div>
+                </>
+              )}
+
+              {/* 克隆关闭时的内容：本语言的音色池，或"该语言需要克隆"的提示。
+                  音色块用白底小片，在灰底上自带对比。 */}
+              {!enableVoiceClone && (languageNeedsCloning ? (
+                <div className="py-2 border-t border-gray-100">
+                  <p className="text-[11px] leading-relaxed text-amber-700">
+                    没有内置音色能说 {targetLanguage}，请开启声音复刻。
+                  </p>
                 </div>
-                <div className="flex flex-wrap gap-1">
-                  {languageVoices.slice(0, 12).map(voice => (
-                    <span
-                      key={voice.id}
-                      className="px-1.5 py-0.5 rounded-md bg-white border border-gray-200 text-[10px] text-gray-600"
-                    >
-                      {voice.label}
+              ) : languageVoices.length > 0 ? (
+                <div className="py-2 border-t border-gray-100">
+                  <div className="flex items-baseline justify-between mb-1.5">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">
+                      预制音色 · {targetLanguage}
                     </span>
-                  ))}
-                  {languageVoices.length > 12 && (
-                    <span className="px-1 py-0.5 text-[10px] text-gray-400">
-                      +{languageVoices.length - 12}
-                    </span>
-                  )}
+                    <span className="text-[10px] text-gray-400">{languageVoices.length} 个</span>
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    {languageVoices.slice(0, 12).map(voice => (
+                      <span
+                        key={voice.id}
+                        className="px-1.5 py-0.5 rounded-md bg-white border border-gray-200 text-[10px] text-gray-600"
+                      >
+                        {voice.label}
+                      </span>
+                    ))}
+                    {languageVoices.length > 12 && (
+                      <span className="px-1 py-0.5 text-[10px] text-gray-400">
+                        +{languageVoices.length - 12}
+                      </span>
+                    )}
+                  </div>
+                  <p className="mt-1.5 text-[10px] leading-snug text-gray-400">
+                    多说话人视频会自动为每位说话人分配不同的音色。生成后可在每一行的菜单里改。
+                  </p>
                 </div>
-                <p className="mt-1.5 text-[10px] leading-snug text-gray-400">
-                  多说话人视频会自动为每位说话人分配不同的音色。生成后可在每一行的菜单里改。
-                </p>
-              </div>
-            ) : null}
+              ) : null)}
+            </div>
 
             {/* 高级：自定义翻译要求。低频高级项的形态是折叠的一行 ——
                 它改的是 DS 翻译的默认行为，绝大多数人不需要碰；展开后
@@ -849,7 +876,7 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
                     value={customPrompt}
                     onChange={e => onCustomPromptChange(e.target.value.slice(0, 500))}
                     rows={3}
-                    placeholder={'例：专有名词保留英文原文；语气正式，面向企业客户；数字一律写成阿拉伯数字…'}
+                    placeholder={'例：专有名词保留英文原文；语气调整为正式，面向企业客户…'}
                     className="w-full resize-none rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-xs leading-relaxed text-gray-700 placeholder:text-gray-300 focus:outline-none focus:border-claude-accent/50"
                   />
                   <div className="mt-1 flex items-baseline justify-between text-[10px] text-gray-400">
@@ -886,8 +913,8 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
             </button>
           </div>
         </div>
-        </div>
         )}
+        </div>
       </div>
     </div>
   );
