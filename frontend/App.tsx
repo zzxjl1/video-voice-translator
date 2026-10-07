@@ -17,6 +17,7 @@ import {
   getVideoStatus,
   resetVideo,
   cancelProcessing,
+  setSegmentHidden,
   getVoiceCloneStatus,
   getLanguageVoices,
   getVoices,
@@ -575,6 +576,12 @@ const App: React.FC = () => {
     [segments],
   );
 
+  /** 隐藏集合的指纹：让上面的 cue 拉取在"隐藏"变化时重跑。 */
+  const hiddenSignature = useMemo(
+    () => segments.filter(s => s.hidden).map(s => s.id).join(','),
+    [segments]
+  );
+
   // Pull the cues. Debounced, and only for the parts that cannot be computed
   // locally: the TIMING comes from probed audio durations, and the line
   // breaking is done by the same code the export uses, so the preview cannot
@@ -622,6 +629,9 @@ const App: React.FC = () => {
   }, [
     videoId,
     translatedCount,
+    // 隐藏的行不进字幕（后端过滤），所以隐藏集合一变就必须重新拉一次 ——
+    // 只依赖 translatedCount 的话，点了"隐藏"画面上的字幕不会消失。
+    hiddenSignature,
     subtitleStyle.track,
     subtitleStyle.max_chars_per_line,
     subtitleStyle.max_lines,
@@ -743,6 +753,7 @@ const App: React.FC = () => {
               translatedText: seg.translated_text || '',
               audioUrl: seg.audio_url || undefined,
               muted: (seg as { muted?: boolean }).muted ?? false,
+              hidden: (seg as { hidden?: boolean }).hidden ?? false,
               status: (seg.translated_text ? 'ready' : 'pending') as any,
             }));
 
@@ -1638,6 +1649,7 @@ const App: React.FC = () => {
                 translatedText: seg.translated_text || '',
                 audioUrl: seg.audio_url || undefined,
               muted: (seg as { muted?: boolean }).muted ?? false,
+              hidden: (seg as { hidden?: boolean }).hidden ?? false,
                 status: (seg.translated_text ? 'ready' : 'pending') as any,
               }));
               if (data.speakers && data.speakers.length > 0) {
@@ -1760,6 +1772,7 @@ const App: React.FC = () => {
               translatedText: seg.translated_text || '',
               audioUrl: seg.audio_url || undefined,
               muted: (seg as { muted?: boolean }).muted ?? false,
+              hidden: (seg as { hidden?: boolean }).hidden ?? false,
               status: (seg.translated_text ? 'ready' : 'pending') as any,
             }));
             if (statusData.speakers && statusData.speakers.length > 0) {
@@ -2285,6 +2298,23 @@ const App: React.FC = () => {
    * app showing settings that no run has adopted.
    */
   /** 静音 / 取消静音一行：服务端持久化 + 本地同步（静音即无配音音频）。 */
+  /**
+   * 隐藏/取消隐藏一行的字幕。
+   *
+   * 乐观更新（先改界面再发请求，失败回滚），与静音一致 —— 这是个高频的
+   * "扫一遍随手点"的操作，等一个来回再变色会很难用。
+   */
+  const handleToggleHide = useCallback(async (segmentId: string, hidden: boolean) => {
+    if (!videoId) return;
+    setSegments(prev => prev.map(s => (s.id === segmentId ? { ...s, hidden } : s)));
+    try {
+      await setSegmentHidden(videoId, segmentId, hidden);
+    } catch (e) {
+      console.error('Failed to toggle hidden:', e);
+      setSegments(prev => prev.map(s => (s.id === segmentId ? { ...s, hidden: !hidden } : s)));
+    }
+  }, [videoId]);
+
   const handleToggleMute = useCallback(async (segmentId: string, muted: boolean) => {
     if (!videoId) return;
     setSegments(prev => prev.map(s => (
@@ -2830,6 +2860,7 @@ const App: React.FC = () => {
                     onSynthesize={handleSynthesizeSegment}
                     onRefit={handleRefitSegment}
                     onToggleMute={handleToggleMute}
+                    onToggleHide={handleToggleHide}
                     onRetranslate={handleRetranslateLine}
                     currentTime={currentTime}
                     onSeek={handleSeek}

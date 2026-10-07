@@ -95,6 +95,29 @@ export async function setSegmentMuted(
 }
 
 
+/**
+ * 隐藏/取消隐藏一行的字幕。
+ *
+ * 隐藏 = 这一行不产生字幕（实时叠加、SRT、内嵌轨道都不出现它），但配音照常。
+ * 与静音互补：静音是不出声，隐藏是不出字。
+ */
+export async function setSegmentHidden(
+  videoId: string,
+  segmentId: string,
+  hidden: boolean,
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/videos/${videoId}/segments/${segmentId}/hide`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ hidden }),
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(err.detail || 'Failed to update hidden state');
+  }
+}
+
+
 export async function translateScript(
   videoId: string,
   segments: { id: string; text: string; speaker_id: string; start_time: number; end_time?: number }[],

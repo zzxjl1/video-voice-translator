@@ -25,11 +25,12 @@ from app.models import (
     get_state,
     get_video_dir,
     save_state,
-    set_segment_muted,
+    set_segment_flag,
 )
 from app.schemas import (
     ExportRequest,
     MuteRequest,
+    HideRequest,
     ExportResponse,
     SegmentOut,
     SpeakerOut,
@@ -203,6 +204,7 @@ async def get_video_status(video_id: str):
                 text=seg.text,
                 translated_text=seg.translated_text,
                 muted=seg.muted,
+                hidden=seg.hidden,
                 # 静音行不给 audio_url：界面上播一条已经静音的音轨会让人
                 # 以为静音没生效。
                 audio_url=(
@@ -993,9 +995,33 @@ async def mute_segment(video_id: str, segment_id: str, req: MuteRequest):
         raise HTTPException(status_code=404, detail="Segment not found")
 
     seg.muted = bool(req.muted)
-    set_segment_muted(video_id, segment_id, seg.muted)
+    set_segment_flag(video_id, segment_id, "muted", seg.muted)
     logger.info(f"[{video_id}] Segment {segment_id} muted={seg.muted}")
     return {"id": seg.id, "muted": seg.muted}
+
+
+@router.post("/{video_id}/segments/{segment_id}/hide")
+async def hide_segment(video_id: str, segment_id: str, req: HideRequest):
+    """
+    Hide or unhide ONE line's subtitle.
+
+    "Hidden" means: this line produces NO cue — not in the live overlay, not in
+    the SRT download, not in the embedded tracks (all three go through
+    `subtitle_service.build_cues`). Its dubbed AUDIO is untouched, so the line
+    is still spoken; muting is the flag that removes the voice.
+    """
+    state = get_state(video_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    seg = next((s for s in state.segments if s.id == segment_id), None)
+    if not seg:
+        raise HTTPException(status_code=404, detail="Segment not found")
+
+    seg.hidden = bool(req.hidden)
+    set_segment_flag(video_id, segment_id, "hidden", seg.hidden)
+    logger.info(f"[{video_id}] Segment {segment_id} hidden={seg.hidden}")
+    return {"id": seg.id, "hidden": seg.hidden}
 
 
 @router.post("/{video_id}/speaker-voice")

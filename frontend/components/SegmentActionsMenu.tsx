@@ -7,6 +7,11 @@ export interface SegmentAction {
   onSelect: () => void;
   /** Shown greyed with the reason, rather than hidden. */
   disabledReason?: string;
+  /**
+   * 一句话说明这一项到底做什么，作为 hover 提示（不占行高）。
+   * 「静音」和「隐藏」很容易混：一个管声音、一个管画面上的字。
+   */
+  hint?: string;
   /** 二级菜单：有 children 就显示右箭头，点进去是第二屏。 */
   children?: SegmentAction[];
   /** 需要一行文字输入（自定义要求）：点进去是输入屏。 */
@@ -76,7 +81,7 @@ const ActionRow: React.FC<{ action: SegmentAction; onRun: (a: SegmentAction) => 
   <button
     type="button"
     disabled={Boolean(action.disabledReason)}
-    title={action.disabledReason}
+    title={action.disabledReason ?? action.hint}
     onClick={() => onRun(action)}
     className="w-full flex items-center justify-between gap-2 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50 transition-colors disabled:text-gray-300 disabled:hover:bg-transparent disabled:cursor-not-allowed"
   >

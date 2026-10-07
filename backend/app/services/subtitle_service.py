@@ -463,9 +463,13 @@ def build_cues(
       * is extended to cover the ACTUAL dubbed audio when it is longer,
       * is clamped just before the next cue so two never overlap on screen.
     """
+    # 隐藏的行不进字幕：预览叠加、SRT 下载、导出内嵌三条路都走这里，所以在这
+    # 一处过滤就够。它的配音在时间轴上照常 —— 隐藏只管画面上的字。
     ordered = sorted(
-        (s for s in segments if (getattr(s, "translated_text", "") or "").strip()
-         or (getattr(s, "text", "") or "").strip()),
+        (s for s in segments
+         if not getattr(s, "hidden", False)
+         and ((getattr(s, "translated_text", "") or "").strip()
+              or (getattr(s, "text", "") or "").strip())),
         key=lambda s: getattr(s, "start_time", 0.0) or 0.0,
     )
 

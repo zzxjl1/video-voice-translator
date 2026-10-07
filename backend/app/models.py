@@ -55,6 +55,10 @@ class Segment:
     # 该行静音：不合成配音，导出时这一段保持无声（原声轨在整条时间轴上已
     # 被配音轨取代，所以"静音"就是这一格没有任何配音音频）。
     muted: bool = False
+    # 隐藏 = 这一行不出字幕：预览叠加、SRT 下载、导出内嵌字幕一律跳过它，
+    # 但它的配音照常在时间轴上。和 muted 互补 —— muted 管声音，hidden 管画面
+    # 上的字。
+    hidden: bool = False
 
     def to_dict(self):
         return asdict(self)
@@ -174,26 +178,33 @@ def save_state(state: VideoState):
 SEGMENT_FLAGS_FILENAME = "segment_flags.json"
 
 
-def set_segment_muted(video_id: str, segment_id: str, muted: bool) -> None:
+def set_segment_flag(video_id: str, segment_id: str, flag: str, value: bool) -> None:
     """
-    Persist the muted flag for one segment.
+    Persist ONE boolean flag for one segment ("muted" | "hidden").
 
-    Kept OUT of info.json on purpose: `save_state` writes metadata only and
-    drops segments entirely, so a segment-level flag needs its own file —
-    the same shape `voice_clone_map.json` uses for its own per-speaker state.
+    The whole dict is read and written back on purpose: the file holds a list
+    per flag, and writing only the key being changed would silently drop the
+    other one (mute a line, hide another, and the first list disappears).
     """
-    path = os.path.join(get_video_dir(video_id), SEGMENT_FLAGS_FILENAME)
-    muted_ids: list[str] = []
+    video_dir = get_video_dir(video_id)
+    path = os.path.join(video_dir, SEGMENT_FLAGS_FILENAME)
+
+    data: dict = {}
     try:
         with open(path, "r", encoding="utf-8") as f:
-            muted_ids = list(json.load(f).get("muted", []))
+            loaded = json.load(f)
+            if isinstance(loaded, dict):
+                data = loaded
     except (OSError, json.JSONDecodeError):
-        muted_ids = []
-    muted_ids = [i for i in muted_ids if i != segment_id]
-    if muted:
-        muted_ids.append(segment_id)
+        data = {}
+
+    ids = [i for i in (data.get(flag) or []) if i != segment_id]
+    if value:
+        ids.append(segment_id)
+    data[flag] = ids
+
     with open(path, "w", encoding="utf-8") as f:
-        json.dump({"muted": muted_ids}, f, ensure_ascii=False, indent=1)
+        json.dump(data, f, ensure_ascii=False, indent=1)
 
 
 def load_state(video_id: str) -> Optional[VideoState]:
@@ -254,15 +265,18 @@ def load_state(video_id: str) -> Optional[VideoState]:
                     if os.path.exists(disk_path):
                         s.audio_path = disk_path
 
-        # 4.5 Segment flags (muted) — its own small file, because
+        # 4.5 Segment flags (muted / hidden) — its own small file, because
         # `save_state` deliberately writes no segments at all.
         flags_path = os.path.join(video_dir, SEGMENT_FLAGS_FILENAME)
         if segments and os.path.exists(flags_path):
             try:
                 with open(flags_path, "r", encoding="utf-8") as f:
-                    muted_ids = set(json.load(f).get("muted", []))
+                    flags = json.load(f)
+                    muted_ids = set(flags.get("muted") or [])
+                    hidden_ids = set(flags.get("hidden") or [])
                 for s in segments:
                     s.muted = s.id in muted_ids
+                    s.hidden = s.id in hidden_ids
             except Exception:
                 pass
 

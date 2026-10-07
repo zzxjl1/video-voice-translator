@@ -26,6 +26,7 @@ class SegmentOut(BaseModel):
     translated_text: str = ""
     audio_url: Optional[str] = None
     muted: bool = False
+    hidden: bool = False
 
 
 class TranscribeResponse(BaseModel):
@@ -50,6 +51,12 @@ class TranslationSegmentIn(BaseModel):
 class MuteRequest(BaseModel):
     """静音 / 取消静音某一行。"""
     muted: bool = True
+
+
+class HideRequest(BaseModel):
+    """隐藏/取消隐藏一行（隐藏 = 不出字幕；配音照常）。"""
+    hidden: bool
+
 
 
 class TranslateRequest(BaseModel):

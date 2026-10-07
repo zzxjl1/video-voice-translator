@@ -34,6 +34,8 @@ interface TranscriptionPanelProps {
     onPickVoice?: (speakerId: string, voiceId: string) => void;
     /** 静音 / 取消静音某一行（服务端持久化）。 */
     onToggleMute?: (segmentId: string, muted: boolean) => void;
+    /** 隐藏 / 取消隐藏某一行的字幕（服务端持久化）。配音不受影响。 */
+    onToggleHide?: (segmentId: string, hidden: boolean) => void;
     /**
      * 只重译这一行。「长一点 / 短一点」调整该行的长度预算，自定义要求则注入
      * 一句话的要求 —— 两者都只影响这一行。
@@ -139,11 +141,12 @@ const SegmentCard: React.FC<{
     pinnedVoice?: string;
     onPickVoice?: (speakerId: string, voiceId: string) => void;
     onToggleMute?: (segmentId: string, muted: boolean) => void;
+    onToggleHide?: (segmentId: string, hidden: boolean) => void;
     onRetranslate?: (
         segmentId: string,
         opts: { lengthHint?: 'longer' | 'shorter'; customPrompt?: string },
     ) => void;
-}> = memo(({ segment, speaker, isActive, onSegmentUpdate, onSynthesize, onRefit, onSeek, hasClonedVoice, onPreviewVoice, isPreviewingVoice, voices, pinnedVoice, onPickVoice, onToggleMute, onRetranslate }) => {
+}> = memo(({ segment, speaker, isActive, onSegmentUpdate, onSynthesize, onRefit, onSeek, hasClonedVoice, onPreviewVoice, isPreviewingVoice, voices, pinnedVoice, onPickVoice, onToggleMute, onToggleHide, onRetranslate }) => {
     const speakerColor = speaker ? getSpeakerColor(speaker.id) : '#9ca3af';
 
     // Speed stats come from the same helper the player uses, so what is shown
@@ -170,6 +173,11 @@ const SegmentCard: React.FC<{
                     <span className="text-[11px] font-bold uppercase tracking-[0.1em] text-gray-500">
                         {speaker?.name || '...'}
                     </span>
+                    {segment.hidden && (
+                        <span className="px-1.5 py-px rounded bg-amber-50 text-[10px] font-bold text-amber-600">
+                            已隐藏
+                        </span>
+                    )}
                     {segment.muted && (
                         <span className="px-1.5 py-px rounded bg-gray-100 text-[10px] font-bold text-gray-500">
                             已静音
@@ -299,6 +307,16 @@ const SegmentCard: React.FC<{
                                 label: segment.muted ? '取消静音' : '静音',
                                 onSelect: () => onToggleMute?.(segment.id, !segment.muted),
                                 disabledReason: !onToggleMute ? '不可用' : undefined,
+                                // 静音管声音（这一格留白），隐藏管画面上的字
+                                // （这一行不出字幕）。两件事互不影响，可以只选
+                                // 其中一个，也可以两个都要。
+                                hint: segment.muted ? '这一行不配音' : '这一行不出现字幕',
+                            },
+                            {
+                                label: segment.hidden ? '取消隐藏' : '隐藏',
+                                onSelect: () => onToggleHide?.(segment.id, !segment.hidden),
+                                disabledReason: !onToggleHide ? '不可用' : undefined,
+                                hint: segment.hidden ? '重新显示字幕' : '不显示字幕（配音照常）',
                             },
                             ...(hasClonedVoice && onPreviewVoice
                                 ? [
@@ -399,7 +417,7 @@ const SegmentCard: React.FC<{
 export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = memo(({
     segments, speakers, isTranscribing, currentTime, onSegmentUpdate, onSynthesize, onRefit, onSeek,
     clonedVoices, onPreviewVoice, previewingSpeaker,
-    voices, pinnedVoices, onPickVoice, onToggleMute, onRetranslate
+    voices, pinnedVoices, onPickVoice, onToggleMute, onToggleHide, onRetranslate
 }) => {
     const speakerMap = new Map(speakers.map(s => [s.id, s]));
     const listRef = React.useRef<HTMLDivElement>(null);
@@ -470,6 +488,7 @@ export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = memo(({
                                 pinnedVoice={pinnedVoices?.[segment.speakerId]}
                                 onPickVoice={onPickVoice}
                         onToggleMute={onToggleMute}
+                        onToggleHide={onToggleHide}
                         onRetranslate={onRetranslate}
                             />
                         ))}
