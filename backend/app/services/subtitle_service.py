@@ -270,15 +270,31 @@ class Cue:
     end: float
     text: str
     secondary: str = ""      # the other track, for bilingual
+    # Pre-wrapped display lines, set by `_split_oversized` when a cue's text
+    # needs more than `max_lines`. When present they ARE the display lines —
+    # re-wrapping a re-joined chunk could shift breaks and drift from the
+    # split that the timing was computed for.
+    forced_lines: Optional[list[str]] = None
 
     def lines(self, style: SubtitleStyle) -> list[str]:
-        """The wrapped display lines for this cue."""
+        """
+        The wrapped display lines for this cue — ALL of them, never a cut.
+
+        There is deliberately no `max_lines` clamp here. Cues that need more
+        lines than the style allows are split in TIME by `_split_oversized`
+        before they reach a renderer, so every cue that arrives here already
+        fits; anything that somehow does not is rendered in full rather than
+        truncated, because a subtitle that silently drops half a sentence is
+        worse than one extra line.
+        """
+        if self.forced_lines is not None:
+            return list(self.forced_lines)
         parts: list[str] = []
         if self.text:
             parts.extend(_wrap(self.text, style.max_chars_per_line))
         if style.track == "bilingual" and self.secondary:
             parts.extend(_wrap(self.secondary, style.max_chars_per_line))
-        return _limit_lines(parts, style.max_lines)
+        return parts
 
 
 def _display_width(text: str) -> float:
@@ -344,20 +360,11 @@ def _wrap(text: str, max_chars: int) -> list[str]:
     return lines
 
 
-def _limit_lines(lines: list[str], max_lines: int) -> list[str]:
-    """
-    Keep at most `max_lines`, always marking elision.
-
-    The marker is unconditional: when the kept line is a single character there
-    is nothing to trim, but the text after it was still dropped, and silently
-    losing the rest of a sentence reads as a rendering bug rather than as a
-    deliberate "this line is too long to show in full".
-    """
-    if len(lines) <= max_lines:
-        return lines
-    kept = lines[:max_lines]
-    kept[-1] = kept[-1] + "…"
-    return kept
+# `_limit_lines` used to live here: it kept the first `max_lines` lines and
+# appended "…", silently dropping the rest of the sentence. It was removed on
+# purpose — ALL text is shown, always. Oversized cues are split in time by
+# `_split_oversized` so the line cap still shapes the layout, but no code path
+# can make words disappear. Do not reintroduce a cut here.
 
 
 # --------------------------------------------------------------------------
@@ -484,9 +491,47 @@ def build_cues(
             if next_start > start:
                 end = min(end, max(start + 0.2, next_start - 0.04))
 
-        cues.append(Cue(start=start, end=max(end, start + 0.2), text=primary, secondary=secondary))
+        cues.extend(_split_oversized(
+            Cue(start=start, end=max(end, start + 0.2), text=primary, secondary=secondary),
+            style,
+        ))
 
     return cues
+
+
+def _split_oversized(cue: Cue, style: SubtitleStyle) -> list[Cue]:
+    """
+    A cue whose text needs more than `max_lines` lines is split into
+    consecutive cues that each fit — the text is never dropped.
+
+    The old behaviour kept the first `max_lines` lines and appended "…",
+    silently discarding the rest of the sentence. Subtitles exist to carry the
+    words; a line cap is a layout preference, not a licence to lose them.
+    Chunks now play back-to-back, sharing the original duration in proportion
+    to how much text each carries, so a long line simply stays on screen a
+    little longer instead of vanishing.
+    """
+    parts: list[str] = []
+    if cue.text:
+        parts.extend(_wrap(cue.text, style.max_chars_per_line))
+    if cue.secondary:
+        parts.extend(_wrap(cue.secondary, style.max_chars_per_line))
+    if len(parts) <= style.max_lines:
+        return [cue]
+
+    chunks = [parts[i:i + style.max_lines] for i in range(0, len(parts), style.max_lines)]
+    weights = [sum(_display_width(l) for l in chunk) or 1.0 for chunk in chunks]
+    total = sum(weights)
+    duration = max(0.2, cue.end - cue.start)
+
+    out: list[Cue] = []
+    t = cue.start
+    for chunk in chunks:
+        weight = sum(_display_width(l) for l in chunk) or 1.0
+        out.append(Cue(start=t, end=t + duration * weight / total,
+                       text="", secondary="", forced_lines=chunk))
+        t += duration * weight / total
+    return out
 
 
 def _select_text(seg, track: str) -> tuple[str, str]:

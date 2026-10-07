@@ -332,10 +332,11 @@ function sampleLines(style: SubtitleStyle): string[] {
         : [SAMPLE_TRANSLATED];
 
   const max = Math.max(1, style.max_lines);
-  if (parts.length <= max) return parts;
-  // Same elision marker as the server, for the same reason: dropping the rest
-  // silently reads as a rendering bug rather than as a deliberate cut.
-  return [...parts.slice(0, max - 1), `${parts[max - 1]}…`];
+  // No elision marker any more: the server never cuts text — a cue that needs
+  // more lines than `max_lines` is split in TIME instead — so the miniature
+  // shows the lines of ONE instant (the first `max`) and must not imply that
+  // the rest is dropped.
+  return parts.slice(0, max);
 }
 
 /**

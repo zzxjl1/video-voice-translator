@@ -1856,13 +1856,19 @@ const App: React.FC = () => {
     subtitleStyle,
   ]);
 
-  const handleReprocess = useCallback(async () => {
-    if (!videoId || segments.length === 0) return;
+  /**
+   * Re-translate everything, re-synthesize everything. Returns whether the
+   * user ACCEPTED the confirmation — the settings dialog uses that to decide
+   * between closing and rolling its edits back, so "cancel" cannot leave the
+   * app showing settings that no run has adopted.
+   */
+  const handleReprocess = useCallback(async (): Promise<boolean> => {
+    if (!videoId || segments.length === 0) return true;
 
     const confirmReprocess = window.confirm(
       'This will re-translate the entire script and re-generate all audio. Continue?'
     );
-    if (!confirmReprocess) return;
+    if (!confirmReprocess) return false;
 
     setIsBatchProcessing(true);
     setIsLogOpen(true);
@@ -1921,9 +1927,11 @@ const App: React.FC = () => {
       );
       await new Promise(resolve => setTimeout(resolve, 1500));
       setIsLogOpen(false);
+      return true;
     } catch (error) {
       console.error("Reprocess failed:", error);
       setRawLog(prev => prev + `\n\nERROR: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      return true;
     } finally {
       setBatchProgress('');
       setIsBatchProcessing(false);
@@ -1993,6 +2001,15 @@ const App: React.FC = () => {
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
+        onSave={() => {
+          // 分离后端 / 克隆开关都改变管线的做法，改了就必须重跑一遍，
+          // 否则屏幕上还是旧设置产出的配音。handleReprocess 自己带确认，
+          // 用户点保存后还会看到一次代价说明（重翻 + 重合成）。
+          //
+          // 必须把它的结果【返回】给弹窗：false 代表用户在确认里点了取消，
+          // 弹窗据此回滚设置并留在原地，而不是关掉留下一个改了但没重跑的状态。
+          return handleReprocess();
+        }}
         enableVoiceClone={enableVoiceClone}
         onVoiceCloneChange={handleVoiceCloneChange}
         separationMode={separationMode}
