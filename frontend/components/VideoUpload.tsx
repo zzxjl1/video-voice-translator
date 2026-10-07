@@ -55,8 +55,8 @@ interface VideoUploadProps {
   recentProjects: RecentProject[];
   /** Open a previous project — the app recovers it from the URL. */
   onOpenProject: (videoId: string) => void;
-  /** 从最近列表移除一条（只动本浏览器的列表，不删服务器数据）。 */
-  onForgetProject?: (videoId: string, filename: string) => void;
+  /** 删除一个工程（服务器数据一起删）。调用方负责确认，这里只发事件。 */
+  onDeleteProject?: (videoId: string, filename: string) => void;
 }
 
 const InfoTooltip: React.FC<{ text: string }> = ({ text }) => {
@@ -119,7 +119,7 @@ const FEATURES: { label: string; sub: string; icon: React.ReactNode }[] = [
   },
 ];
 
-const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName, onStart, isLoading, targetLanguage, onLanguageChange, targetAccent, onAccentChange, enableVoiceClone, onVoiceCloneChange, mmEnhance, onMmEnhanceChange, cloneSmartPick, onCloneSmartPickChange, customPrompt, onCustomPromptChange, separationMode, onSeparationModeChange, separationBackends, bgmSeparationLocked, recentProjects, onOpenProject, onForgetProject }) => {
+const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName, onStart, isLoading, targetLanguage, onLanguageChange, targetAccent, onAccentChange, enableVoiceClone, onVoiceCloneChange, mmEnhance, onMmEnhanceChange, cloneSmartPick, onCloneSmartPickChange, customPrompt, onCustomPromptChange, separationMode, onSeparationModeChange, separationBackends, bgmSeparationLocked, recentProjects, onOpenProject, onDeleteProject }) => {
   /**
    * Whether the second column exists yet.
    *
@@ -660,22 +660,24 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
                           {formatRelativeTime(project.updatedAt)}
                         </span>
                       </button>
-                      {onForgetProject && (
-                        /* 悬停才出现：它是列表的次要动作，常驻会跟"打开"抢注意力；
-                           focus 时也显示，键盘/Tab 用户不会看不到它。 */
+                      {onDeleteProject && (
+                        /* 悬停才出现：它是列表的次要（且不可逆）动作，常驻会跟"打开"
+                           抢注意力；focus 时也显示，键盘/Tab 用户不会看不到它。
+                           用垃圾桶而不是叉号：这里删的是服务器上的工程，不是"关掉
+                           这一条"。 */
                         <button
                           onClick={() =>
-                            onForgetProject(
+                            onDeleteProject(
                               project.videoId,
                               project.filename || ''
                             )
                           }
-                          title="从最近列表移除（不删除服务器数据）"
-                          aria-label="从最近列表移除"
+                          title="删除工程（服务器上的文件一起删除，不可恢复）"
+                          aria-label="删除工程"
                           className="shrink-0 rounded p-1.5 text-gray-300 opacity-0 transition-all hover:bg-red-50 hover:text-red-500 focus:opacity-100 group-hover:opacity-100 cursor-pointer"
                         >
                           <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
                           </svg>
                         </button>
                       )}

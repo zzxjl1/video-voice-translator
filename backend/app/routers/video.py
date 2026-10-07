@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 
 from app import config
 from app.deps import enforce_separator_token
-from app.services import token_service
+from app.services import token_service, voice_clone_service
 from app.models import (
     Speaker,
     VideoState,
@@ -302,6 +302,44 @@ async def reset_video(video_id: str):
 
     logger.info(f"[{video_id}] Reset complete. All intermediate data removed.")
     return {"video_id": video_id, "status": "reset"}
+
+
+@router.delete("/{video_id}")
+async def delete_video(video_id: str):
+    """
+    永久删除一个工程：原始视频、音频、译文、配音、导出，全部删除，不保留。
+
+    与 `/reset` 的区别：reset 保留原始视频以便重跑；这个是把工程整个去掉。
+    所以"从最近列表移除"这种前端本地操作不算删除 —— 服务器上的文件必须一起走。
+
+    运行中拒绝删除（409）：管线正在往这个目录里写，边写边删只会得到半套文件。
+    前端会先取消运行再调用，这里做最后一道。
+    """
+    # 用"有没有 info.json"判断工程是否存在，而不是目录是否存在：
+    # `get_video_dir` 会按需 mkdir，于是"已删除的工程"会被它重新建成一个空
+    # 目录，删除一个不存在的工程就会静默成功（200）而不是 404。
+    if get_state(video_id) is None:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    video_dir = get_video_dir(video_id)
+    if video_id in _RUNNING_PIPELINES:
+        raise HTTPException(
+            status_code=409,
+            detail="这个工程正在处理中，请先取消运行再删除。",
+        )
+
+    try:
+        shutil.rmtree(video_dir)
+    except OSError as e:
+        logger.error(f"[{video_id}] Failed to delete project dir: {e}")
+        raise HTTPException(status_code=500, detail=f"删除失败：{e}")
+
+    # 内存里同样不能留痕迹
+    tts_service.forget_voice_map(video_id)
+    voice_clone_service.forget_cloned_voices(video_id)
+    logger.info(f"[{video_id}] Project deleted (all files removed)")
+
+    return {"deleted": True, "video_id": video_id}
 
 
 @router.post("/{video_id}/transcribe", response_model=TranscribeResponse)

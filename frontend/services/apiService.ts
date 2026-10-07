@@ -555,6 +555,24 @@ export async function resetVideo(videoId: string): Promise<void> {
 
 
 /**
+ * 永久删除一个工程（服务器上的原始视频、音频、译文、导出全部删除）。
+ *
+ * 不可恢复，所以调用方必须先确认。它和"从最近列表移除"是两件事：那个只动
+ * localStorage。
+ */
+export async function deleteProject(
+  videoId: string,
+): Promise<{ deleted: boolean; video_id: string }> {
+  const response = await fetch(`${API_BASE}/videos/${videoId}`, { method: 'DELETE' });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(err.detail || 'Delete failed');
+  }
+  return response.json();
+}
+
+
+/**
  * Get voice clone status for all speakers.
  */
 export interface VoiceOption {

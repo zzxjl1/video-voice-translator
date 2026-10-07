@@ -767,6 +767,16 @@ async def clone_voice_for_speaker(
     return voice_id, False
 
 
+def forget_cloned_voices(video_id: str) -> None:
+    """丢弃这个工程的内存音色映射（删除工程时调用）。
+
+    磁盘上的 voice_clones.json 随目录一起被删，但内存里的 dict 不会 —— 留着
+    它，重新上传同一段视频时会直接命中"已克隆"，让一个已经被删掉的工程在内存
+    里留下痕迹。
+    """
+    _cloned_voice_map.pop(video_id, None)
+
+
 def get_cloned_voice(video_id: str, speaker_id: str) -> Optional[str]:
     """
     Cached cloned voice_id for a speaker, or None.

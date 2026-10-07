@@ -19,6 +19,7 @@ import {
   getVideoStatus,
   resetVideo,
   cancelProcessing,
+  deleteProject,
   setSegmentHidden,
   getVoiceCloneStatus,
   getLanguageVoices,
@@ -1924,23 +1925,52 @@ const App: React.FC = () => {
    * further down would throw before it ever ran.
    */
   /**
-   * 从"最近工程"里移除一条。
+   * 删除一个工程 —— **服务器上的文件一起删**，不可恢复。
    *
-   * 只动本浏览器的列表（localStorage）：服务器上的工程数据、音频、导出一律
-   * 不删 —— 这个清单本身就是"本浏览器记得哪些工程"，不是工程的所有权凭证。
-   * 所以确认框里把这点写明，免得用户以为删掉的是工程。
+   * 不是"从列表里移除"：原始视频、音频、译文、配音、导出都会消失。所以：
+   *   1. 确认框把不可恢复写清楚；
+   *   2. 如果这个工程正在跑，先取消运行再删 —— 边写边删只会留下半套文件
+   *      （服务器也会以 409 拒绝，这里是先手处理）。
+   * 删成功后本地列表也移除该项（列表是 localStorage 里的索引）。
    */
-  const handleForgetProject = useCallback((projectId: string, filename: string) => {
-    const ok = window.confirm(
-      `从最近列表移除「${filename || projectId.slice(0, 8)}」？\n\n` +
-        '只是不再出现在这个浏览器的列表里，服务器上的工程数据（音频、译文、导出）不会被删除。\n' +
-        '想看回这个工程，仍然可以通过它的链接打开。'
-    );
-    if (!ok) return;
-    forgetRecentProject(projectId);
-    setRecentProjects(prev => prev.filter(p => p.videoId !== projectId));
-    console.log('[recent] 已从列表移除:', projectId);
-  }, []);
+  const handleDeleteProject = useCallback(
+    async (projectId: string, filename: string) => {
+      const label = filename || projectId.slice(0, 8);
+      const ok = window.confirm(
+        `永久删除「${label}」？\n\n` +
+          '服务器上的原始视频、音频、译文、配音和导出文件都会被删除，**无法恢复**。'
+      );
+      if (!ok) return;
+
+      try {
+        // 正在跑就先取消（协作式：等当前请求跑完），否则删除会被服务器拒绝。
+        const status = await getVideoStatus(projectId);
+        if (status.run?.active) {
+          const stopFirst = window.confirm(
+            '这个工程正在处理中。\n\n先取消运行，然后删除？'
+          );
+          if (!stopFirst) return;
+          if (!(await stopRunningPipeline(projectId))) {
+            window.alert('这个工程还没停下来，本次没有删除。');
+            return;
+          }
+        }
+      } catch (err) {
+        // 状态问不到：交给服务器的 409/404 兜底，不在这里拦。
+        console.warn('[delete] 状态检查失败，直接尝试删除:', err);
+      }
+
+      try {
+        await deleteProject(projectId);
+        forgetRecentProject(projectId);
+        setRecentProjects(prev => prev.filter(p => p.videoId !== projectId));
+        console.log('[delete] 工程已删除:', projectId);
+      } catch (err) {
+        window.alert(`删除失败：${err instanceof Error ? err.message : err}`);
+      }
+    },
+    [stopRunningPipeline]
+  );
 
   const handleStartProcessing = useCallback(() => {
     if (pendingVideoFile) void handleVideoSelect(pendingVideoFile);
@@ -2749,7 +2779,7 @@ const App: React.FC = () => {
           customPrompt={customPrompt}
           onCustomPromptChange={setCustomPrompt}
           recentProjects={recentProjects}
-          onForgetProject={handleForgetProject}
+          onDeleteProject={handleDeleteProject}
           onOpenProject={id => window.location.assign(`/${id}`)}
         />
       ) : (
