@@ -2,7 +2,9 @@
 Video processing API routes.
 All endpoints are prefixed with /api/videos.
 """
+import asyncio
 import hashlib
+import json
 import logging
 import os
 import shutil
@@ -222,6 +224,10 @@ async def get_video_status(video_id: str):
         has_export=has_export,
         export_url=f"/api/videos/{video_id}/export/download" if has_export else None,
         export_available=export_service.is_available(),
+        # 工作流状态：这个工程此刻有没有在跑、跑到哪一步、能不能停。
+        # 页面重载 / 换标签页后靠它判断"是接管还是新起一单"。
+        run=_current_run_snapshot(video_id),
+        cancelled_step=state.cancelled_step,
         # Which container the finished file is in, so the UI can label the
         # download correctly (and re-initialise its export panel).
         export_container=export_found[1] if export_found else None,
@@ -666,54 +672,117 @@ async def serve_separation_source(video_id: str):
 # ---------------------------------------------------------------------------
 # One live pipeline per video.
 #
-# Every POST /process used to start its OWN pipeline task. Two clicks on 开始处理
-# (or a retry after something looked stuck) therefore ran two full pipelines over
-# the same project at once: interleaved phase logs, the script translated twice,
-# and both runs synthesizing the same segments — the TTS provider saw double
-# traffic and one segment failed with a rate/limit error that never happened on
-# a single run.
+# Every POST /process used to start its OWN pipeline task, so two triggers (a
+# second click, a dev-mode double-mount of the recovery effect) ran two full
+# pipelines over the same project at once: interleaved logs, the script
+# translated twice, both runs synthesizing the same lines — the TTS provider saw
+# double traffic and a segment failed on a rate limit that never happened on a
+# single run.
 #
-# Now the FIRST request starts the run, and any later request for the same video
-# SUBSCRIBES to it: it replays the events emitted so far, then follows live. A
-# retry is harmless — it just re-attaches to the work already in flight.
+# So: while a run is live, a second request for the same video is REFUSED with
+# 409 and a message saying what is running. It deliberately does NOT attach to
+# the running pipeline. Attaching looked friendlier, but it means one pipeline
+# fanning out to several streams — a second consumer of a job whose settings
+# (language, accent, enhancement switches) belong to whoever started it. A
+# client that cannot start what it asked for should be told so, not quietly
+# given somebody else's run.
 #
-# Requests that differ in their parameters are not the same job, and silently
-# attaching them to the wrong run would apply the wrong settings; those get 409
-# rather than a surprising result.
+# The registry is only a live-run registry: the entry is removed the moment the
+# run ends, and a cancelled project's state lives in its own files (status,
+# cancelled_step) like everything else.
 # ---------------------------------------------------------------------------
-_EOF = object()  # stream sentinel; never serialized to the client
+# 运行状态的时间戳用带时区的北京时间，和 usage 台账一致（这样前端显示"已跑
+# 1m20s"不会因为服务器时区不同而偏移）。
+from datetime import datetime, timedelta, timezone as _tz
+_RUN_TZ = _tz(timedelta(hours=8))
 
 
 class _PipelineRun:
-    def __init__(self, signature: str) -> None:
-        self.signature = signature
-        self.subscribers: set = set()
-        self.history: list[dict] = []
-        self.finished = False
+    """
+    One live pipeline, plus the state needed to watch or stop it.
+
+    Fields are derived from the events the pipeline already emits, so there is
+    no second progress bookkeeping to keep in sync. `queue` is the ONE stream
+    that started this run; when that client disconnects the queue is dropped and
+    the run continues on its own (nothing to write to any more).
+    """
+
+    def __init__(self) -> None:
+        self.queue: asyncio.Queue | None = None
+        # ── 步骤状态 ──
+        self.step: str | None = None          # separation / asr / mm_enhance / …
+        self.step_status: str | None = None   # started / listening / done / failed
+        self.done_count: int | None = None    # 批次进度（TTS 分段数）
+        self.total_count: int | None = None
+        self.cancelled = False
+        self.error: str | None = None
+        self.started_at = datetime.now(_RUN_TZ)
+        self.cancel_event = asyncio.Event()
 
     async def emit(self, event: dict) -> None:
-        # History is what makes a late subscriber's log complete rather than
-        # starting mid-sentence.
-        self.history.append(event)
-        for q in list(self.subscribers):
-            q.put_nowait(event)
+        phase = event.get("phase")
+        if phase:
+            self.step = phase
+            self.step_status = event.get("status")
+        if event.get("progress") is not None:
+            self.done_count = event.get("progress")
+            self.total_count = event.get("total")
+        if event.get("cancelled"):
+            self.cancelled = True
+        if event.get("error") and not phase:
+            self.error = str(event["error"])
+        if self.queue is not None:
+            self.queue.put_nowait(event)
 
-    def subscribe(self):
-        import asyncio
-        q: asyncio.Queue = asyncio.Queue()
-        for event in self.history:
-            q.put_nowait(event)
-        if self.finished:
-            q.put_nowait(_EOF)
-        else:
-            self.subscribers.add(q)
-        return q
+    def request_cancel(self) -> None:
+        """请求停止。真正的停止发生在下一个步骤边界（见 run_pipeline）。"""
+        self.cancel_event.set()
 
-    def unsubscribe(self, q) -> None:
-        self.subscribers.discard(q)
+    def snapshot(self) -> dict:
+        return {
+            "active": True,
+            "step": self.step,
+            "step_status": self.step_status,
+            "progress": self.done_count,
+            "total": self.total_count,
+            "cancelling": self.cancel_event.is_set(),
+            "cancelled": self.cancelled,
+            "error": self.error,
+            "started_at": self.started_at.isoformat(),
+            "elapsed_s": round((datetime.now(_RUN_TZ) - self.started_at).total_seconds(), 1),
+        }
 
 
 _RUNNING_PIPELINES: dict[str, _PipelineRun] = {}
+
+
+def _current_run_snapshot(video_id: str) -> dict:
+    run = _RUNNING_PIPELINES.get(video_id)
+    return run.snapshot() if run is not None else {"active": False}
+
+
+@router.post("/{video_id}/cancel")
+async def cancel_processing(video_id: str):
+    """
+    Ask the live pipeline for this video to stop.
+
+    Cooperative: the current provider request (ASR / omni / one TTS line) is
+    allowed to finish, then the pipeline stops at that step boundary and the
+    project is left CANCELLED — not "paused", nothing continues on its own.
+    Everything already produced stays on disk, so a later run resumes from the
+    last finished phase instead of redoing it.
+    """
+    run = _RUNNING_PIPELINES.get(video_id)
+    if run is None:
+        return {"cancelling": False, "reason": "no pipeline is running for this video"}
+
+    run.request_cancel()
+    logger.info(f"[{video_id}] Cancellation requested (at step {run.step})")
+    return {
+        "cancelling": True,
+        "step": run.step,
+        "note": "the current provider request is allowed to finish",
+    }
 
 
 @router.post("/{video_id}/process")
@@ -722,11 +791,9 @@ async def process_video(video_id: str, req: ProcessRequest):
     Run the full processing pipeline (separation → ASR → translation → TTS)
     with SSE progress streaming. Frontend only needs to call this once after upload.
 
-    Calling it again while a run is live attaches to that run (see the registry
-    note above) instead of starting a second one.
+    If a run for this video is already live, the request is refused with 409
+    (see the registry note above) — it never joins that run.
     """
-    import asyncio
-    import json as _json
     from fastapi.responses import StreamingResponse
 
     logger.info(f"Full pipeline requested for video_id: {video_id}, lang: {req.target_language}")
@@ -734,69 +801,60 @@ async def process_video(video_id: str, req: ProcessRequest):
     if not state:
         raise HTTPException(status_code=404, detail="Video not found")
 
-    signature = _json.dumps(
-        {
-            "target_language": req.target_language,
-            "accent": req.accent,
-            "separation_mode": req.separation_mode,
-            "enable_voice_clone": req.enable_voice_clone,
-            "mm_enhance": req.mm_enhance,
-            "clone_smart_pick": req.clone_smart_pick,
-            "custom_prompt": (req.custom_prompt or "").strip()[:500],
-        },
-        sort_keys=True,
-        ensure_ascii=False,
-    )
+    live = _RUNNING_PIPELINES.get(video_id)
+    if live is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"这个工程正在处理中（当前：{live.step or '启动中'}），"
+                "请先停止，或等它结束再发起。"
+            ),
+        )
 
-    run = _RUNNING_PIPELINES.get(video_id)
-    if run is not None and not run.finished:
-        if run.signature != signature:
-            raise HTTPException(
-                status_code=409,
-                detail="这个工程正在用另一组参数处理中，请等它跑完再改设置重试。",
+    run = _PipelineRun()
+    _RUNNING_PIPELINES[video_id] = run
+
+    async def drive() -> None:
+        try:
+            await pipeline_service.run_pipeline(
+                video_id=video_id,
+                target_language=req.target_language,
+                server_url_base=config.SERVER_URL_BASE,
+                emit=run.emit,
+                separation_mode=req.separation_mode,
+                enable_voice_clone=req.enable_voice_clone,
+                accent=req.accent,
+                custom_prompt=(req.custom_prompt or "").strip()[:500],
+                mm_enhance=req.mm_enhance,
+                clone_smart_pick=req.clone_smart_pick,
+                # 协作式取消：管线在每个步骤边界（以及每个 TTS/克隆请求之前）
+                # 询问一次，允许当前正在进行的那个请求跑完。
+                should_cancel=lambda: run.cancel_event.is_set(),
             )
-        logger.info(f"[{video_id}] Attaching to the pipeline already running")
+        except Exception as e:
+            logger.error(f"[{video_id}] Pipeline error: {e}", exc_info=True)
+            await run.emit({"error": str(e)})
+        finally:
+            _RUNNING_PIPELINES.pop(video_id, None)
+            if run.queue is not None:
+                run.queue.put_nowait(None)
 
-    if run is None or run.finished:
-        run = _PipelineRun(signature)
-        _RUNNING_PIPELINES[video_id] = run
-
-        async def drive() -> None:
-            try:
-                await pipeline_service.run_pipeline(
-                    video_id=video_id,
-                    target_language=req.target_language,
-                    server_url_base=config.SERVER_URL_BASE,
-                    emit=run.emit,
-                    separation_mode=req.separation_mode,
-                    enable_voice_clone=req.enable_voice_clone,
-                    accent=req.accent,
-                    custom_prompt=(req.custom_prompt or "").strip()[:500],
-                    mm_enhance=req.mm_enhance,
-                    clone_smart_pick=req.clone_smart_pick,
-                )
-            except Exception as e:
-                logger.error(f"[{video_id}] Pipeline error: {e}", exc_info=True)
-                await run.emit({"error": str(e)})
-            finally:
-                # Deregister BEFORE the sentinel: a request landing in between
-                # gets a fresh run rather than a stream that is already over.
-                run.finished = True
-                _RUNNING_PIPELINES.pop(video_id, None)
-                await run.emit(_EOF)
-
-        asyncio.create_task(drive())
+    # 队列必须先于任务创建：drive 一开跑就会 emit，队列还没建的话那几个事件
+    # 就被静默丢掉了（客户端会以为管线卡在开头）。
+    run.queue = asyncio.Queue()
+    asyncio.create_task(drive())
 
     async def event_stream():
-        queue = run.subscribe()
         try:
             while True:
-                msg = await queue.get()
-                if msg is _EOF:
+                msg = await run.queue.get()
+                if msg is None:
                     break
-                yield f"data: {_json.dumps(msg)}\n\n"
+                yield f"data: {json.dumps(msg)}\n\n"
         finally:
-            run.unsubscribe(queue)
+            # 客户端断开：管线照跑（磁盘上照样逐阶段落盘），但不再往这个队列塞
+            # 东西 —— 否则没人消费的队列会一直涨。
+            run.queue = None
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 

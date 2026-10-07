@@ -77,6 +77,7 @@ async def run_pipeline(
     custom_prompt: str = "",
     mm_enhance: bool = False,
     clone_smart_pick: bool = False,
+    should_cancel: Optional[Callable[[], bool]] = None,
 ):
     """
     Execute the full processing pipeline for a video.
@@ -91,6 +92,16 @@ async def run_pipeline(
             to config.SEPARATION_MODE. Validated against the backends that are
             actually usable; an unusable choice degrades to "off" and reports
             the reason.
+        should_cancel: optional predicate, polled at every step boundary.
+            Cancellation is COOPERATIVE and checked between requests, never
+            inside one: a running ASR/TTS/omni call is allowed to finish (the
+            provider already billed it, and killing it mid-flight can leave
+            half-written files). What this buys is that the pipeline never
+            STARTS another step after the user says stop — the granularity is
+            "one provider request", which is the smallest unit that can be
+            stopped safely anyway. On cancellation the project is left in
+            CANCELLED with everything completed so far on disk, so a later run
+            resumes from the last finished phase.
         enable_voice_clone: Clone each speaker's voice before synthesis.
         accent: Chinese dialect for the dubbed audio (e.g. "广东话"). None or ""
             means Mandarin, which needs no instruction at all.
@@ -105,6 +116,27 @@ async def run_pipeline(
     if not state:
         await emit({"error": "Video not found"})
         return
+
+    def _cancelled() -> bool:
+        return bool(should_cancel is not None and should_cancel())
+
+    async def _stop_if_cancelled(step: str) -> bool:
+        """
+        步进检查点：用户要求停，就停在这一步之前。
+
+        取消前把状态写成 CANCELLED 并落盘 —— 各阶段产物（asr_result /
+        translation_result / tts_results …）本来就是逐阶段写的，所以"取消"天然
+        可续：下一次运行按磁盘内容算出 resume_phase，从这里接着走。
+        """
+        if not _cancelled():
+            return False
+        logger.info(f"[{video_id}] Cancelled by request, stopping before: {step}")
+        state.status = VideoStatus.CANCELLED
+        state.cancelled_step = step
+        save_state(state)
+        await emit({"phase": step, "status": "cancelled"})
+        await emit({"cancelled": True, "step": step, "done": True})
+        return True
 
     # Resolved once, here. `config.tts_instruction` both checks the accent
     # against the documented dialect list and drops it for a non-Chinese
@@ -195,11 +227,17 @@ async def run_pipeline(
         state.error_message = None
         save_state(state)
 
+    # 新的一次运行开始了：上一次的"取消在哪一步"到此为止。
+    state.cancelled_step = None
+
     resume_phase = _detect_resume_phase(video_dir, state)
     logger.info(f"[{video_id}] Pipeline starting. Resume phase: {resume_phase}")
     await emit({"resume_phase": resume_phase})
 
     try:
+        if await _stop_if_cancelled("separation"):
+            return
+
         # =====================================================
         # Phase 0: Vocal Separation
         #
@@ -271,6 +309,9 @@ async def run_pipeline(
                 })
         else:
             await emit({"phase": "separation", "status": "skipped", "mode": "off"})
+
+        if await _stop_if_cancelled("asr"):
+            return
 
         # =====================================================
         # Phase 1: ASR Transcription
@@ -353,6 +394,9 @@ async def run_pipeline(
                 "speakers": speakers_data,
             })
 
+        if await _stop_if_cancelled("mm_enhance"):
+            return
+
         # =====================================================
         # Phase 1.5: Multimodal enhancement (omni reviews the ASR result)
         # =====================================================
@@ -422,6 +466,9 @@ async def run_pipeline(
                     "error": str(e)[:120],
                 })
 
+        if await _stop_if_cancelled("translation"):
+            return
+
         # =====================================================
         # Phase 2: Translation
         # =====================================================
@@ -460,6 +507,25 @@ async def run_pipeline(
 
             state.status = VideoStatus.TRANSLATED
             save_state(state)
+            # 译文自己落盘一份：`_detect_resume_phase` 就是靠这个文件判断"翻译
+            # 做完了"，而此前它只由 llm_service.translate_script 顺手写 —— 于是
+            # "能不能续跑"取决于另一个模块的副作用。内容一致，重复写是幂等的。
+            try:
+                with open(
+                    os.path.join(video_dir, "translation_result.json"), "w", encoding="utf-8"
+                ) as f:
+                    json.dump(
+                        [
+                            {"id": seg.id, "translatedText": seg.translated_text}
+                            for seg in state.segments
+                            if seg.translated_text
+                        ],
+                        f,
+                        ensure_ascii=False,
+                        indent=1,
+                    )
+            except OSError as e:
+                logger.warning(f"[{video_id}] Failed to save translation result: {e}")
 
             translations_data = [
                 {"id": r["id"], "translated_text": r["translatedText"]}
@@ -482,6 +548,9 @@ async def run_pipeline(
                 "translations": translations_data,
             })
 
+        if await _stop_if_cancelled("voice_clone"):
+            return
+
         # =====================================================
         # Phase 2.5: Voice Cloning (if enabled)
         # =====================================================
@@ -490,6 +559,10 @@ async def run_pipeline(
             await emit({"phase": "voice_clone", "status": "started", "total": len(unique_speakers)})
 
             for i, spk_id in enumerate(unique_speakers):
+                # 每位说话人的克隆是一次独立的 enrollment 请求：这是能中断的
+                # 最小粒度，多说话人时不必等整批跑完。
+                if await _stop_if_cancelled("voice_clone"):
+                    return
                 try:
                     logger.info(f"[{video_id}] Cloning voice for speaker {spk_id}")
                     await emit({
@@ -529,6 +602,9 @@ async def run_pipeline(
                     })
 
             await emit({"phase": "voice_clone", "status": "complete"})
+
+        if await _stop_if_cancelled("tts"):
+            return
 
         # =====================================================
         # Phase 3: TTS Synthesis (concurrent — network bound, not CPU bound)
@@ -575,6 +651,11 @@ async def run_pipeline(
 
         async def synthesize_segment(seg: Segment) -> None:
             async with semaphore:
+                # 每次 TTS 请求之前的检查点。已经在跑的请求会跑完（provider 已
+                # 经计费，中断还可能留下半个文件），但停下之后不再发新的 ——
+                # "每次请求"就是最细的安全粒度。
+                if _cancelled():
+                    return
                 voice = None
                 if enable_voice_clone:
                     voice = voice_clone_service.get_cloned_voice(video_id, seg.speaker_id)
@@ -643,6 +724,15 @@ async def run_pipeline(
         save_state(state)
 
         await emit({"phase": "tts", "status": "done"})
+
+        if _cancelled():
+            # 批次里剩下的请求已经跳过了；把状态收成 CANCELLED 再结束。
+            state.status = VideoStatus.CANCELLED
+            state.cancelled_step = "tts"
+            save_state(state)
+            await emit({"phase": "tts", "status": "cancelled"})
+            await emit({"cancelled": True, "step": "tts", "done": True})
+            return
 
         # No export phase: the pipeline stops at synthesis. Muxing happens only
         # when the user asks for it (POST /videos/{id}/export), so nothing here

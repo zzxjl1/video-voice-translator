@@ -20,6 +20,11 @@ class VideoStatus(str, Enum):
     SYNTHESIZING = "synthesizing"
     COMPLETED = "completed"
     ERROR = "error"
+    # 用户主动取消（不是失败，也不是"暂停"—— 这活儿不会再自己继续）。
+    # 语义是"可续跑"：磁盘上的阶段产物都还在，下次运行从最后一个完成的阶段
+    # 接着走。和 ERROR 分开，是为了让界面能区分"它坏了"和"我取消的"，也让
+    # 前端不要自动重跑一个用户刚取消的工程。
+    CANCELLED = "cancelled"
 
 
 @dataclass
@@ -97,6 +102,10 @@ class VideoState:
     # a session recovery the client only knows its own default, and a refit or
     # single-line regen would quietly switch a Cantonese dub back to Mandarin.
     accent: Optional[str] = None
+    # 用户取消时停在哪个阶段（separation/asr/mm_enhance/translation/
+     # voice_clone/tts）。持久化是为了重开页面还能说清"上次取消在哪一步、能不能
+     # 跑" —— 内存里的运行状态随进程消失，这个不会。跑起来时清空。
+    cancelled_step: Optional[str] = None
     # Free-form instructions the requester injected into the translation step.
     # Persisted so a reprocess (which re-translates from scratch) and a session
     # recovery both replay the SAME translation behaviour the dub was made

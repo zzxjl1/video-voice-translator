@@ -162,6 +162,48 @@ export async function synthesizeSpeech(
 }
 
 /**
+ * Live workflow state of a project, as reported by GET /status.
+ *
+ * The server owns this: which step the pipeline is in, how far through a
+ * batch, and whether a stop has been requested. The client only renders it —
+ * that is what makes a reload able to SHOW a run it did not start (and say
+ * "already processing", instead of guessing from its own local state).
+ */
+export interface RunState {
+  active: boolean;
+  step: string | null;
+  step_status: string | null;
+  progress: number | null;
+  total: number | null;
+  /** 取消已请求，等当前 provider 请求跑完。 */
+  cancelling: boolean;
+  cancelled: boolean;
+  error: string | null;
+  started_at?: string;
+  elapsed_s: number;
+}
+
+
+/**
+ * Ask the server to cancel the live pipeline for this video.
+ *
+ * Cooperative and step-bounded: the in-flight provider request finishes, then
+ * the pipeline stops and the project is left CANCELLED — resumable from the
+ * last completed phase.
+ */
+export async function cancelProcessing(
+  videoId: string,
+): Promise<{ cancelling: boolean; step?: string | null; reason?: string }> {
+  const response = await fetch(`${API_BASE}/videos/${videoId}/cancel`, { method: 'POST' });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(err.detail || 'Cancel failed');
+  }
+  return response.json();
+}
+
+
+/**
  * Get the current processing status of a video.
  */
 export async function getVideoStatus(videoId: string) {
@@ -358,6 +400,21 @@ export async function uploadStems(
  * Run the full server-side pipeline (separation → ASR → translation → TTS)
  * via SSE. Calls onEvent for each SSE message received.
  */
+/**
+ * 每次发起管线都打一行，够看清楚就行。
+ *
+ * 这里刻意不做"并发探测"（计数在飞请求、发现 >1 就警告）—— 那是给一个已经
+ * 修掉的 bug 配的哨兵：重复发起是 StrictMode 把恢复 effect 跑了两遍，前端已
+ * 用 ref 守卫堵住，后端也有"同工程重复请求=订阅"的守卫。多一层会误报的探测
+ * 只是额外的复杂度，出问题时把这几行按时间顺序看一遍就明白了。
+ *
+ * 谁发起的、发出了几次：看 `[pipeline] POST` 的行数与相邻 `[startPipeline]
+ * 来源=` 标签。
+ */
+function __stamp(): string {
+  return new Date().toLocaleTimeString('zh-CN', { hour12: false });
+}
+
 export async function processVideo(
   videoId: string,
   targetLanguage: string,
@@ -377,6 +434,18 @@ export async function processVideo(
     // （POST /videos/{id}/export），不属于处理流程。
   },
 ): Promise<void> {
+  const t0 = Date.now();
+  console.log(
+    `[pipeline ${__stamp()}] POST /process  video=${videoId.slice(0, 8)} lang=${targetLanguage}`,
+    {
+      separation_mode: options?.separationMode ?? 'client',
+      enable_voice_clone: options?.enableVoiceClone ?? false,
+      mm_enhance: options?.mmEnhance ?? false,
+      clone_smart_pick: options?.cloneSmartPick ?? false,
+      custom_prompt: (options?.customPrompt ?? '') || '(空)',
+    }
+  );
+
   const response = await fetch(`${API_BASE}/videos/${videoId}/process`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -399,6 +468,8 @@ export async function processVideo(
     throw new Error(err.detail || 'Processing failed');
   }
 
+  console.log(`[pipeline ${__stamp()}] 已连接，开始接收事件流（服务器可能先回放历史事件）`);
+
   const reader = response.body?.getReader();
   if (!reader) {
     throw new Error('ReadableStream not supported');
@@ -406,29 +477,41 @@ export async function processVideo(
 
   const decoder = new TextDecoder();
   let buffer = '';
+  let received = 0;
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
 
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
 
-    for (const line of lines) {
-      if (!line.startsWith('data: ')) continue;
-      try {
-        const data = JSON.parse(line.slice(6));
-        onEvent(data);
-        if (data.error) {
-          throw new Error(data.error);
-        }
-      } catch (e) {
-        if (e instanceof Error && e.message !== 'Unexpected end of JSON input') {
-          throw e;
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        try {
+          const data = JSON.parse(line.slice(6));
+          received += 1;
+          onEvent(data);
+          if (data.error) {
+            throw new Error(data.error);
+          }
+        } catch (e) {
+          if (e instanceof Error && e.message !== 'Unexpected end of JSON input') {
+            throw e;
+          }
         }
       }
     }
+  } catch (err) {
+    console.warn(`[pipeline ${__stamp()}] 事件流出错:`, err);
+    throw err;
+  } finally {
+    console.log(
+      `[pipeline ${__stamp()}] 事件流结束，用时 ${((Date.now() - t0) / 1000).toFixed(1)}s，` +
+        `收到 ${received} 条事件`
+    );
   }
 }
 

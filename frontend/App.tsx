@@ -16,6 +16,7 @@ import {
   processVideo,
   getVideoStatus,
   resetVideo,
+  cancelProcessing,
   getVoiceCloneStatus,
   getLanguageVoices,
   getVoices,
@@ -34,6 +35,7 @@ import {
   srtFilename,
   DEFAULT_SUBTITLE_STYLE,
   type SeparatorInfo,
+  type RunState,
   type SeparationMode,
   type SeparationBackends,
   type SubtitleCapabilities,
@@ -160,6 +162,19 @@ function restoreSeparationMode(
  * the options rather than in a table that can fall out of step.
  */
 
+/**
+ * 后端阶段名 → 界面说法。用户看到的应该是"在做什么"，不是内部阶段 id。
+ * 与 pipeline_service 的 phase 名一一对应。
+ */
+const RUN_STEP_LABEL: Record<string, string> = {
+  separation: '人声分离',
+  asr: '语音识别',
+  mm_enhance: '多模态增强（omni 正在听）',
+  translation: '翻译',
+  voice_clone: '声音复刻',
+  tts: '语音合成',
+};
+
 const App: React.FC = () => {
   const [videoFile, setVideoFile] = useState<File | null>(null);
   /**
@@ -179,6 +194,19 @@ const App: React.FC = () => {
   const [segments, setSegments] = useState<TranscriptionSegment[]>([]);
   const [speakers, setSpeakers] = useState<Speaker[]>([]);
   const [isTranscribing, setIsTranscribing] = useState<boolean>(false);
+  /**
+   * 服务器上的工作流状态（哪一步、跑了多久、能不能停）。来源是 /status 的
+   * `run` 字段 —— 不自己维护一份进度：这份状态必须能跨页面刷新、跨标签页
+   * 存在，前端内存里的状态做不到。
+   */
+  const [runState, setRunState] = useState<RunState | null>(null);
+  /** 已发出取消请求，等服务器确认（当前 provider 请求跑完才停）。 */
+  const [isCancelling, setIsCancelling] = useState(false);
+  /** 上次被用户停在哪一步（持久化在工程里），用于"继续处理"。 */
+  const [cancelledStep, setPausedStep] = useState<string | null>(null);
+  const [resumeAfterCancel, setPausedResume] = useState<
+    { vid: string; mode: SeparationMode; stems: boolean } | null
+  >(null);
   const [isAudioLoading, setIsAudioLoading] = useState<boolean>(false);
 
   // Batch processing state
@@ -615,8 +643,28 @@ const App: React.FC = () => {
     return () => observer.disconnect();
   }, [videoUrl, videoFile, duration, measureVideoRect]);
 
+  /**
+   * 只自动开工一次。
+   *
+   * 开发模式下 React.StrictMode 会把 effect 执行两遍（mount → cleanup →
+   * 再 mount，实例和 ref 都保留），而这段恢复逻辑里"接着跑"是会真的发请求的
+   * 副作用 —— 于是打开工程一次，服务器上就并排跑起两条管线，日志交错、翻译
+   * 两遍、TTS 抢同一批分段。这是在真实日志里复现过的，不是理论风险。
+   * （后端也有并发守卫兜底，但前端不该主动制造重复。）
+   */
+  const recoveryDoneRef = useRef(false);
+
   // Session Recovery
   useEffect(() => {
+    if (recoveryDoneRef.current) {
+      // 这一行就是 StrictMode 的证据：开发模式下 effect 会执行两遍，第二遍
+      // 到这里被挡下。没有它，第二遍会再发一次 /process（并发）。
+      console.log('[recovery] effect 第二遍执行 → 已跳过（不会重复发起管线）');
+      return;
+    }
+    recoveryDoneRef.current = true;
+    console.log('[recovery] effect 执行（自动恢复/接着跑只会发生这一次）');
+
     const pathParts = window.location.pathname.split('/').filter(Boolean);
     const idFromUrl = pathParts[0];
 
@@ -693,8 +741,55 @@ const App: React.FC = () => {
             setSegments(recoveredSegments);
           }
 
-          // If error or incomplete — show log and auto-retry
-          if (isError || isIncomplete || isUploaded) {
+          setPausedStep(data.cancelled_step ?? null);
+          setRunState(data.run ?? null);
+
+          if (data.run?.active) {
+            /*
+             * 这个工程已经有一条在跑（另一个标签页开的，或本页刷新前那条还
+             * 活着）。这里【不发起任何请求】——服务器对重复请求是 409 拒绝，
+             * 而不是把它接到别人的运行上：一条管线的设置属于发起它的那个人，
+             * 后来者拿到的应该是"现在不能开始"，不是一个不是自己配的任务。
+             * 状态条会显示它在哪一步，并给出「取消运行」。
+             */
+            console.log(
+              '[recovery] 服务器报告该工程已在处理中 → 不发起，仅显示状态:',
+              {
+                step: data.run.step,
+                step_status: data.run.step_status,
+                elapsed_s: data.run.elapsed_s,
+              }
+            );
+            setIsTranscribing(false);
+            setRawLog(
+              `Session recovered for: ${idFromUrl}\n` +
+              `这个工程正在处理中（当前步骤：${RUN_STEP_LABEL[data.run.step] ?? data.run.step}）。\n` +
+              '本页不参与该次运行；需要的话可以点「取消运行」，或在它结束后再发起。\n'
+            );
+          } else if (data.status === 'cancelled') {
+            /*
+             * 用户上一次按了「取消运行」。不要自动重跑 —— 那等于把"我取消的"
+             * 变成"它自己又跑起来了"。把断点摆出来，让用户决定什么时候继续。
+             * 已完成的阶段产物都在磁盘上，继续就是从断点开始。
+             */
+            console.log('[recovery] 工程处于 cancelled（用户上次取消）→ 不自动重跑', {
+              cancelled_step: data.cancelled_step,
+            });
+            setIsTranscribing(false);
+            setRawLog(
+              `Session recovered for: ${idFromUrl}\n` +
+              `上次已取消（停在：${RUN_STEP_LABEL[data.cancelled_step] ?? data.cancelled_step ?? '处理中'}）。\n` +
+              `已完成的产物都已保存，点「继续处理」从断点接着跑。\n`
+            );
+            setPausedResume({
+              vid: idFromUrl,
+              mode: restoredMode,
+              stems: Boolean(data.has_background),
+            });
+          } else if (isError || isIncomplete || isUploaded) {
+            console.log('[recovery] 未完成/失败 → 自动接着跑', {
+              status: data.status,
+            });
             const reason = isError
               ? `Previous processing failed: ${data.error || 'Unknown error'}`
               : isUploaded
@@ -712,7 +807,8 @@ const App: React.FC = () => {
               idFromUrl,
               undefined,
               restoredMode,
-              Boolean(data.has_background)
+              Boolean(data.has_background),
+              'session-recovery:auto-retry'
             ).finally(() => {
               setIsTranscribing(false);
             });
@@ -882,6 +978,17 @@ const App: React.FC = () => {
       let ttsTotal = 0;
 
       await processVideo(vid, targetLanguage, (event) => {
+        // 每条事件都标一个序号：如果控制台里出现两段几乎同时开始的序号
+        // （各自的 phase 交替出现），那就是两条流在跑同一条工程。
+        // 紧凑单行：每次都打（并发时的"交替出现"正是靠这个看出来的），但不用
+        // 展开对象，免得刷屏。
+        console.log(
+          '[pipeline] 事件',
+          [event.phase ?? '-', event.status ?? '-', event.progress != null ? `${event.progress}/${event.total ?? '?'}` : '']
+            .filter(Boolean).join(' '),
+          event.cancelled ? '← CANCELLED' : event.done ? '← DONE' : event.error ? `← ERROR ${event.error}` : ''
+        );
+
         // Resume info
         if (event.resume_phase) {
           const phase = event.resume_phase;
@@ -1107,11 +1214,36 @@ const App: React.FC = () => {
           }
         }
 
+        // 某个阶段被取消（协作式取消，停在该阶段边界）
+        if (event.status === 'cancelled') {
+          console.log('[pipeline] 收到 cancelled 事件:', event);
+          setRawLog(
+            prev => prev + `\n${RUN_STEP_LABEL[event.phase] ?? event.phase}：已取消。\n`
+          );
+        }
+
         // Final done
         if (event.done) {
           // 管线到合成为止，导出是用户的单独动作 —— 这里不再有关联的导出状态
           // 要收尾（isExporting 只由 handleExport 自己管）。
-          setRawLog(prev => prev + '\n=== All Processing Complete ===\nClosing in 2 seconds...');
+          if (event.cancelled) {
+            /*
+             * 用户叫停的收尾。要说清三件事：停在哪、东西还在、怎么继续 ——
+             * "停了"本身不足以让人放心关掉页面。
+             */
+            setRawLog(
+              prev =>
+                prev +
+                `\n=== 已取消（停在：${RUN_STEP_LABEL[event.step] ?? event.step ?? '处理中'}）===\n` +
+                '已完成的产物都已保存在这个工程里，随时可以继续。\n'
+            );
+            setIsCancelling(false);
+            setPausedStep(event.step ?? null);
+          } else {
+            setRawLog(prev => prev + '\n=== All Processing Complete ===\nClosing in 2 seconds...');
+          }
+          setIsTranscribing(false);
+          setRunState(prev => (prev ? { ...prev, active: false } : prev));
         }
 
         // Error
@@ -1269,6 +1401,109 @@ const App: React.FC = () => {
    * `file` is optional because those routes have no File in memory; separation
    * then pulls the audio from the server instead.
    */
+  /**
+   * 请求取消某个工程的运行，并等它**真的**停下来。
+   *
+   * 取消是协作式的：服务器会让当前那个 provider 请求跑完（一次 omni 可能
+   * 两分钟），所以这里必须轮询 `/status` 直到 `run.active === false`，不能
+   * 点完就往下走 —— 否则新运行会撞上还没退出的旧运行。
+   *
+   * 返回是否真的停下了。超时（5 分钟）返回 false，调用方就不要发起。
+   */
+  const stopRunningPipeline = useCallback(async (vid: string): Promise<boolean> => {
+    console.log('[pipeline] 用户选择取消旧的运行 → 先取消再开始');
+    setRawLog(prev => prev + '\n正在取消上一次运行（等当前请求结束）…\n');
+    try {
+      const res = await cancelProcessing(vid);
+      if (!res.cancelling) {
+        setRawLog(prev => prev + '上一次运行已经结束了，直接开始新的。\n');
+        return true;
+      }
+    } catch (err) {
+      setRawLog(
+        prev => prev + `取消请求失败：${err instanceof Error ? err.message : err}\n`
+      );
+      return false;
+    }
+
+    const deadline = Date.now() + 5 * 60 * 1000;
+    let waited = 0;
+    while (Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      waited += 1;
+      let stillRunning = true;
+      try {
+        stillRunning = (await getVideoStatus(vid)).run?.active ?? false;
+      } catch {
+        // 状态取不到就继续等，不把"网络抖动"当成"已取消"。
+        continue;
+      }
+      if (!stillRunning) {
+        console.log(`[pipeline] 上一次运行已取消（等了 ${waited}s）`);
+        setRawLog(prev => prev + `上一次运行已取消（等了 ${waited}s），开始新的运行。\n`);
+        return true;
+      }
+      if (waited % 5 === 0) {
+        setRawLog(
+          prev => prev + `  …仍在取消中（已等 ${waited}s，等待当前请求结束）\n`
+        );
+      }
+    }
+    console.warn('[pipeline] 等待取消超时（5 分钟）→ 本次不发起');
+    setRawLog(
+      prev => prev + '等待超时：上一次运行还没被取消掉，本次不发起新的。\n'
+    );
+    return false;
+  }, []);
+
+  /**
+   * 同一个工程同一时刻只允许一个写者。
+   *
+   * 开工前问服务器：有没有一条运行在跑？有的话给用户一次明确选择 ——
+   * "停掉旧的重新开始，还是算了"。选"算了"就什么都不发（不是被拒绝后报错，
+   * 而是根本不进去）；选取消就请求取消并**等它真的停下**再返回 true。
+   *
+   * `interactive=false` 用于后台路径（自动恢复、前进后退）：页面加载时蹦确认
+   * 框是骚扰，它们直接跳过这一步。
+   *
+   * 服务器还有一道 409 兜底（给非前端客户端和竞态用），但那不该是用户看到的
+   * 东西 —— 用户看到的应该是这个选择框。
+   */
+  const ensureProjectFree = useCallback(
+    async (vid: string, what: string, interactive = true): Promise<boolean> => {
+      let live: RunState | null = null;
+      try {
+        live = (await getVideoStatus(vid)).run ?? null;
+      } catch {
+        return true; // 问不到就不在这里拦，交给服务器
+      }
+      if (!live?.active) return true;
+
+      const stepLabel = RUN_STEP_LABEL[live.step ?? ''] ?? live.step ?? '启动中';
+      const elapsed = Math.round(live.elapsed_s ?? 0);
+      console.log('[pipeline] 该工程已有运行:', { step: live.step, elapsed_s: elapsed, what });
+
+      if (!interactive) {
+        console.log('[pipeline] 后台路径 → 跳过，不干扰正在进行的运行');
+        setRawLog(prev => prev + `\n这个工程正在处理中（${stepLabel}），本步不执行。\n`);
+        return false;
+      }
+
+      const stopAndStart = window.confirm(
+        `这个工程正在处理中（当前：${stepLabel}，已跑 ${elapsed}s）。\n\n` +
+          `• 确定 = 取消它，然后${what}\n` +
+          '• 取消 = 什么都不做（旧的继续跑）'
+      );
+      if (!stopAndStart) {
+        console.log('[pipeline] 用户选择不取消 → 不继续');
+        setRawLog(prev => prev + `\n已取消：这个工程仍在处理中（${stepLabel}）。\n`);
+        return false;
+      }
+      return await stopRunningPipeline(vid);
+    },
+    [stopRunningPipeline]
+  );
+
   const startPipeline = useCallback(
     async (
       vid: string,
@@ -1279,7 +1514,21 @@ const App: React.FC = () => {
        * Comes from the status endpoint's `has_background` flag.
        */
       stemsAlreadyPresent = false,
+      /**
+       * 调用来源，只用于诊断日志。想知道"这次管线是谁发起的、有没有被重复
+       * 发起"，看控制台里这一行 + apiService 里的 `[pipeline #n]` 就够了。
+       */
+      source = 'unknown',
     ): Promise<void> => {
+      console.log(
+        `[startPipeline] 来源=${source} video=${vid.slice(0, 8)} ` +
+          `mode=${modeOverride ?? separationMode} stemsPresent=${stemsAlreadyPresent}`
+      );
+
+      // 用户主动发起的路径才弹"停旧开新"的选择框；恢复类路径直接跳过。
+      const userInitiated = source.startsWith('upload:') || source.startsWith('user:');
+      if (!(await ensureProjectFree(vid, '开始新的运行', userInitiated))) return;
+
       // An explicit mode wins: the caller may have just read the saved choice
       // off the server and the corresponding state update is not rendered yet.
       const mode = modeOverride ?? separationMode;
@@ -1298,7 +1547,7 @@ const App: React.FC = () => {
       // flag here for the client to get wrong.
       await runPipeline(vid, file, { separationMode: mode });
     },
-    [separationMode, runClientSeparation, runPipeline]
+    [separationMode, runClientSeparation, runPipeline, ensureProjectFree]
   );
 
   // Handle browser back/forward navigation
@@ -1380,7 +1629,23 @@ const App: React.FC = () => {
               setSegments(recoveredSegments);
             }
 
-            if (isError || isUploaded || (!isCompleted && !isError && data.status !== 'uploaded')) {
+            setPausedStep(data.cancelled_step ?? null);
+            setRunState(data.run ?? null);
+
+            if (data.status === 'cancelled') {
+              // 同上（会话恢复那条路）：用户叫停的工程不自动重跑，只摆出断点。
+              setIsTranscribing(false);
+              setRawLog(
+                `Session recovered for: ${idFromUrl}\n` +
+                `上次已取消（停在：${RUN_STEP_LABEL[data.cancelled_step] ?? data.cancelled_step ?? '处理中'}）。\n` +
+                '已完成的产物都已保存，点「继续处理」从断点接着跑。\n'
+              );
+              setPausedResume({
+                vid: idFromUrl,
+                mode: restoredMode,
+                stems: Boolean(data.has_background),
+              });
+            } else if (isError || isUploaded || (!isCompleted && !isError && data.status !== 'uploaded')) {
               const reason = isError
                 ? `Previous processing failed: ${data.error || 'Unknown error'}`
                 : isUploaded
@@ -1392,7 +1657,8 @@ const App: React.FC = () => {
                 idFromUrl,
                 undefined,
                 restoredMode,
-                Boolean(data.has_background)
+                Boolean(data.has_background),
+                'popstate:auto-retry'
               ).finally(() => setIsTranscribing(false));
             } else {
               setIsTranscribing(false);
@@ -1515,7 +1781,8 @@ const App: React.FC = () => {
             uploadResult.video_id,
             file,
             undefined,
-            Boolean(statusData.has_background)
+            Boolean(statusData.has_background),
+            'upload:resume-existing'
           );
         } else {
           // Reset and re-process
@@ -1526,11 +1793,11 @@ const App: React.FC = () => {
           setSpeakers([]);
           await resetVideo(uploadResult.video_id);
           setRawLog(prev => prev + 'Reset complete. Starting fresh...\n');
-          await startPipeline(uploadResult.video_id, file);
+          await startPipeline(uploadResult.video_id, file, undefined, false, 'upload:after-reset');
         }
       } else {
         // New video — run the full pipeline
-        await startPipeline(uploadResult.video_id, file);
+        await startPipeline(uploadResult.video_id, file, undefined, false, 'upload:new-video');
       }
 
     } catch (err) {
@@ -1553,6 +1820,103 @@ const App: React.FC = () => {
   const handleStartProcessing = useCallback(() => {
     if (pendingVideoFile) void handleVideoSelect(pendingVideoFile);
   }, [pendingVideoFile, handleVideoSelect]);
+
+  /**
+   * 取消当前处理。
+   *
+   * 协作式：服务器会让当前正在进行的那个请求（一次 ASR / 一次 omni / 一行
+   * TTS）跑完，然后在步骤边界停下 —— 粒度就是"一次请求"，因为这已经是能安全
+   * 中断的最小单位（provider 已经计费，硬中断还可能留下半个文件）。停下来的
+   * 工程状态是 CANCELLED（已取消），已完成的阶段产物都留着，之后从断点继续。
+   */
+  const handleCancelProcessing = useCallback(async () => {
+    if (!videoId || isCancelling) return;
+    setIsCancelling(true);
+    console.log('[cancel] 请求取消 video=' + videoId.slice(0, 8));
+    setRawLog(prev => prev + '\n已请求取消：当前请求跑完就会停在这一步…\n');
+    try {
+      const res = await cancelProcessing(videoId);
+      console.log('[cancel] 服务器回应:', res);
+      if (!res.cancelling) {
+        setRawLog(prev => prev + `没有正在处理的管线（${res.reason ?? '已结束'}）。\n`);
+      }
+    } catch (err) {
+      setRawLog(prev => prev + `取消失败：${err instanceof Error ? err.message : err}\n`);
+    } finally {
+      // 不在这里复位 isCancelling：真正的复位信号是 runState.cancelling 变回
+      // false（事件流会送来 cancelled）。给一个兜底超时，避免按钮永远卡住。
+      window.setTimeout(() => setIsCancelling(false), 3000);
+    }
+  }, [videoId, isCancelling]);
+
+  /** 从断点继续（已取消的工程不会自动重跑，等用户按这里）。 */
+  const handleResumeCancelled = useCallback(() => {
+    if (!resumeAfterCancel) return;
+    setRawLog(prev => prev + '\n从断点继续处理…\n');
+    setIsLogOpen(true);
+    setIsTranscribing(true);
+    setPausedResume(null);
+    startPipeline(
+      resumeAfterCancel.vid,
+      undefined,
+      resumeAfterCancel.mode,
+      resumeAfterCancel.stems,
+      'user:resume-cancelled'
+    ).finally(() => setIsTranscribing(false));
+  }, [resumeAfterCancel, startPipeline]);
+
+  /**
+   * 工作流状态轮询。
+   *
+   * 只在"可能有事发生"的时候轮询：本页在跑，或服务器报告有活跃运行（比如
+   * 另一个标签页开的）。空闲工程不产生任何轮询流量；工程切换时先取一次，
+   * 这样打开一个"别人正在跑"的工程立刻就能看到状态条。
+   */
+  useEffect(() => {
+    if (!videoId) {
+      setRunState(null);
+      return;
+    }
+    let stopped = false;
+    /** 上一次打过的运行状态指纹，避免轮询刷屏。 */
+    const lastRunStamp = { current: '' };
+
+    const fetchRun = async () => {
+      try {
+        const data = await getVideoStatus(videoId);
+        if (stopped) return;
+        setRunState(data.run ?? null);
+        setPausedStep(data.cancelled_step ?? null);
+        // 只在变化时打，避免轮询刷屏。
+        const stamp = `${data.run?.active}|${data.run?.step}`;
+        if (stamp !== lastRunStamp.current) {
+          lastRunStamp.current = stamp;
+          const r = data.run;
+          // 单行输出：和 `[pipeline …]` 那些行同一个形式，复制粘贴不会只剩一个
+          // 行号（对象形式的日志被折叠后就是这样丢内容的）。
+          console.log(
+            `[run ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}] ` +
+              `active=${r?.active ?? false} step=${r?.step ?? '-'} ` +
+              `status=${r?.step_status ?? '-'} ` +
+              `progress=${r?.progress ?? '-'}/${r?.total ?? '-'} ` +
+              `cancelling=${r?.cancelling ?? false} elapsed=${r?.elapsed_s ?? '-'}s ` +
+              `cancelled_step=${data.cancelled_step ?? '-'}`
+          );
+        }
+      } catch {
+        /* 状态取不到不该影响界面 */
+      }
+    };
+
+    void fetchRun();
+    if (!isTranscribing && !runState?.active) return;
+
+    const id = window.setInterval(fetchRun, 2500);
+    return () => {
+      stopped = true;
+      window.clearInterval(id);
+    };
+  }, [videoId, isTranscribing, runState?.active]);
 
   const handleTranslateSegmentImpl = useCallback(async (id: string, textToTranslate?: string) => {
     // Find the latest segment data from state
@@ -1945,6 +2309,10 @@ const App: React.FC = () => {
   const handleReprocess = useCallback(async (): Promise<boolean> => {
     if (!videoId || segments.length === 0) return true;
 
+    // 重做会重写同一批音频文件，所以它和"跑管线"是同一种占用：先解决冲突，
+    // 再让用户确认这件事本身（顺序反了的话，用户会先确认一个做不了的操作）。
+    if (!(await ensureProjectFree(videoId, '重新翻译并重做全部音频'))) return false;
+
     const confirmReprocess = window.confirm(
       'This will re-translate the entire script and re-generate all audio. Continue?'
     );
@@ -2016,7 +2384,7 @@ const App: React.FC = () => {
       setBatchProgress('');
       setIsBatchProcessing(false);
     }
-  }, [segments, videoId, targetLanguage, customPrompt, handleSynthesizeSegment]);
+  }, [segments, videoId, targetLanguage, customPrompt, handleSynthesizeSegment, ensureProjectFree]);
 
   /**
    * The cue to show right now, straight from the server's list.
@@ -2173,6 +2541,53 @@ const App: React.FC = () => {
           />
 
           <main className="flex-grow flex flex-col container mx-auto p-4 lg:p-6 pt-12 lg:pt-14 min-h-0">
+            {/*
+              工作流状态条。它是"这个工程此刻在做什么"的唯一权威显示 —— 数据
+              来自 /status.run（服务器），不是本地推测，所以刷新页面、换标签页
+              看到的都一样。有活跃运行时给「取消运行」，被取消停在断点时给「继续」。
+            */}
+            {(runState?.active || resumeAfterCancel) && (
+              <div className="mb-4 bg-white border border-gray-200/80 rounded-xl px-4 py-2 flex items-center justify-between gap-4 shadow-sm">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div
+                    className={`w-2 h-2 rounded-full shrink-0 ${
+                      runState?.active ? 'bg-claude-accent animate-pulse' : 'bg-amber-400'
+                    }`}
+                  />
+                  <span className="text-xs font-bold text-gray-700 truncate">
+                    {runState?.active
+                      ? `正在处理：${RUN_STEP_LABEL[runState.step ?? ''] ?? runState.step ?? ''}${
+                          runState.total
+                            ? `（${runState.progress ?? 0}/${runState.total}）`
+                            : ''
+                        }`
+                      : `已取消（停在：${RUN_STEP_LABEL[cancelledStep ?? ''] ?? cancelledStep ?? '处理中'}）`}
+                  </span>
+                  {runState?.active && (
+                    <span className="text-[11px] text-gray-400 tabular-nums shrink-0">
+                      {Math.round(runState.elapsed_s)}s
+                    </span>
+                  )}
+                </div>
+                {runState?.active ? (
+                  <button
+                    onClick={() => void handleCancelProcessing()}
+                    disabled={isCancelling || runState.cancelling}
+                    className="shrink-0 rounded-lg border border-gray-300 px-3 py-1 text-xs font-bold text-gray-600 transition hover:border-red-300 hover:text-red-600 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                  >
+                    {isCancelling || runState.cancelling ? '正在取消…' : '取消运行'}
+                  </button>
+                ) : (
+                  <button
+                    onClick={handleResumeCancelled}
+                    className="shrink-0 rounded-lg bg-claude-accent px-3 py-1 text-xs font-bold text-white transition hover:bg-claude-accentHover cursor-pointer"
+                  >
+                    继续处理
+                  </button>
+                )}
+              </div>
+            )}
+
             {isBatchProcessing && batchProgress && (
               <div className="mb-4 bg-claude-accent/10 border border-claude-accent/20 rounded-xl px-4 py-2 flex items-center justify-between">
                 <div className="flex items-center gap-3">

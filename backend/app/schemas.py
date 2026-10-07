@@ -141,6 +141,12 @@ class VideoStatusResponse(BaseModel):
     # Per-backend availability + the reason an option is unusable:
     # {"client": {"available": bool, "reason": str|None}, "api": {...}, "off": {...}}
     separation_backends: dict = {}
+    # Live workflow state (active=false when nothing is running):
+    # {active, step, step_status, progress, total, cancelling, elapsed_s, started_at}
+    run: dict = {}
+    # 上一次被用户取消时停在哪个阶段（None = 没取消过）。持久化的，所以重开
+    # 页面也知道"上次取消在哪一步、能不能接着跑"。
+    cancelled_step: Optional[str] = None
     enable_bgm_separation: bool = False
     enable_voice_clone: bool = False
     # The dub's target language and Chinese accent as stored on THIS project, so
