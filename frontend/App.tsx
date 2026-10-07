@@ -213,6 +213,12 @@ const App: React.FC = () => {
    */
   const [targetAccent, setTargetAccent] = useState<string>('');
   const [enableVoiceClone, setEnableVoiceClone] = useState(false);
+  // 语气模仿 / 智能选材 —— 后者依赖克隆开关，随工程持久化并在恢复时还原
+  const [mmEnhance, setMmEnhance] = useState(false);
+  const [cloneSmartPick, setCloneSmartPick] = useState(false);
+  // 注入 DS 翻译的自定义要求。默认空 = 标准行为；随工程持久化（reprocess 与
+  // 恢复会话都要重放当初的要求），恢复时从 /status 的 custom_prompt 还原。
+  const [customPrompt, setCustomPrompt] = useState('');
 
   useEffect(() => {
     if (!videoId || segments.length === 0 || enableVoiceClone) {
@@ -636,6 +642,8 @@ const App: React.FC = () => {
           );
           setSeparationMode(restoredMode);
           if (data.enable_voice_clone !== undefined) setEnableVoiceClone(data.enable_voice_clone);
+          if (data.mm_enhance !== undefined) setMmEnhance(data.mm_enhance);
+          if (data.clone_smart_pick !== undefined) setCloneSmartPick(data.clone_smart_pick);
 
           /*
            * Resume the PROJECT's choices, not this browser's.
@@ -650,6 +658,9 @@ const App: React.FC = () => {
            */
           if (data.target_language) setTargetLanguage(data.target_language);
           if (data.accent !== undefined && data.accent !== null) setTargetAccent(data.accent);
+          // 注入的翻译要求同属工程配置：不还原的话 reprocess 会按默认行为
+          // 重翻，悄悄丢掉当初的要求。
+          if (data.custom_prompt) setCustomPrompt(data.custom_prompt);
           if (data.subtitle_style && Object.keys(data.subtitle_style).length > 0) {
             setSubtitleStyle(prev => ({ ...prev, ...data.subtitle_style }));
           }
@@ -1099,6 +1110,9 @@ const App: React.FC = () => {
         // initial value and the job would be sent as "off".
         separationMode: opts.separationMode ?? separationMode,
         enableVoiceClone,
+        mmEnhance,
+        cloneSmartPick,
+        customPrompt: customPrompt.trim().slice(0, 500),
         exportVideo: true,
         // Chinese dialect for the whole dub. The backend ignores it unless the
         // target really is Chinese.
@@ -1114,7 +1128,7 @@ const App: React.FC = () => {
     } finally {
       setIsTranscribing(false);
     }
-  }, [targetLanguage, targetAccent, enableVoiceClone, separationMode]);
+  }, [targetLanguage, targetAccent, enableVoiceClone, separationMode, mmEnhance, cloneSmartPick, customPrompt]);
 
   /**
    * Run vocal separation locally in the browser and hand the stems to the
@@ -1317,6 +1331,8 @@ const App: React.FC = () => {
             );
             setSeparationMode(restoredMode);
             if (data.enable_voice_clone !== undefined) setEnableVoiceClone(data.enable_voice_clone);
+          if (data.mm_enhance !== undefined) setMmEnhance(data.mm_enhance);
+          if (data.clone_smart_pick !== undefined) setCloneSmartPick(data.clone_smart_pick);
 
             if (data.segments && data.segments.length > 0) {
               const recoveredSegments: TranscriptionSegment[] = data.segments.map((seg: any) => ({
@@ -1860,7 +1876,9 @@ const App: React.FC = () => {
       }));
 
       setRawLog(prev => prev + `Sending ${segments.length} segments with full context...\n`);
-      const results = await translateScript(videoId, contextPayload, targetLanguage);
+      const results = await translateScript(
+        videoId, contextPayload, targetLanguage, customPrompt.trim().slice(0, 500)
+      );
 
       setSegments(prev => prev.map(seg => {
         const match = results.find(r => r.id === seg.id);
@@ -1884,12 +1902,18 @@ const App: React.FC = () => {
         await new Promise(r => setTimeout(r, 200));
       }
 
-      // Phase 3: Re-export the video with the new audio
-      setRawLog(prev => prev + '\n=== Exporting Video ===\n');
-      setBatchProgress('Exporting...');
-      await handleExport(true);
-
-      setRawLog(prev => prev + '\n=== All Processing Complete ===\nClosing in 1.5 seconds...');
+      // 导出不在这里做 —— 那是 Export 按钮的事。Reprocess 只负责把翻译和
+      // 音频重做到最新；出片交给用户主动触发，和首次处理完的行为一致。
+      // 注意此时服务端此前的导出文件（如有）已基于旧音频：提示一句，
+      // 免得用户拿着旧文件当成重做的成果。
+      setRawLog(
+        prev =>
+          prev +
+          '\n=== Reprocess Complete ===\n' +
+          'Translation and audio are up to date. Use Export to produce the video' +
+          ' — any previously exported file was built from the old audio.\n' +
+          'Closing in 1.5 seconds...'
+      );
       await new Promise(resolve => setTimeout(resolve, 1500));
       setIsLogOpen(false);
     } catch (error) {
@@ -1899,7 +1923,7 @@ const App: React.FC = () => {
       setBatchProgress('');
       setIsBatchProcessing(false);
     }
-  }, [segments, videoId, targetLanguage, handleSynthesizeSegment, handleExport]);
+  }, [segments, videoId, targetLanguage, customPrompt, handleSynthesizeSegment]);
 
   /**
    * The cue to show right now, straight from the server's list.
@@ -1996,6 +2020,12 @@ const App: React.FC = () => {
           onSeparationModeChange={handleSeparationModeChange}
           separationBackends={effectiveBackends}
           bgmSeparationLocked={enableVoiceClone}
+          mmEnhance={mmEnhance}
+          onMmEnhanceChange={setMmEnhance}
+          cloneSmartPick={cloneSmartPick}
+          onCloneSmartPickChange={setCloneSmartPick}
+          customPrompt={customPrompt}
+          onCustomPromptChange={setCustomPrompt}
           recentProjects={recentProjects}
           onOpenProject={id => window.location.assign(`/${id}`)}
         />

@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import random
+import re
 import subprocess
 import threading
 
@@ -411,6 +412,51 @@ async def _write_fitted_audio(
     return (final or actual), corrected
 
 
+_TAG_RE = re.compile(r"\[[^\[\]]{1,32}\]")
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _sanitize_for_tts(text: str, segment_id: str) -> str:
+    """
+    送合成前的最后一道防线：只放行白名单标签。
+
+    上游（omni 标注）不再做任何净化 —— 它产出什么就送什么，这样标签问题在
+    enhanced_transcript.json 里可观察。但 TTS 是边界：白名单之外的标记会被
+    当正文读出来（比如它自造的 [mad]），这条防线只拦这个。上限沿用原有
+    约定（控制类每句 1、富语言每句 2）——多出来的同类标签对合成本来就没
+    有增量意义。
+
+    剥除会打日志（带被剥内容），让"防线拦了什么"可追查而不是静默丢失。
+    """
+    if "[" not in text:
+        return text
+
+    kept_control = kept_rich = 0
+    stripped: list[str] = []
+
+    def _keep(m: re.Match) -> str:
+        nonlocal kept_control, kept_rich
+        tag = m.group(0)
+        if tag in config.EMOTION_CONTROL_TAGS and kept_control < config.EMOTION_MAX_CONTROL_PER_LINE:
+            kept_control += 1
+            return tag
+        if tag in config.EMOTION_RICH_TAGS and kept_rich < config.EMOTION_MAX_RICH_PER_LINE:
+            kept_rich += 1
+            return tag
+        stripped.append(tag)
+        return ""
+
+    out = _TAG_RE.sub(_keep, text)
+    if not stripped:
+        return text
+    cleaned = _WHITESPACE_RE.sub(" ", out).strip()
+    logger.warning(
+        f"[TTS] {segment_id}: stripped non-whitelisted tag(s) "
+        f"{' '.join(stripped)[:200]} — synthesis text now: {cleaned[:80]}"
+    )
+    return cleaned
+
+
 async def synthesize_speech(
     video_id: str,
     segment_id: str,
@@ -448,6 +494,8 @@ async def synthesize_speech(
     Returns:
         Path to the saved audio file
     """
+    # 入口净化，先于一切：合成与时长拟合都必须用同一份净化后的文本。
+    text = _sanitize_for_tts(text, segment_id)
     voice = voice or config.TTS_DEFAULT_VOICE
 
     logger.info(

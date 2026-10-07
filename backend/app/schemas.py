@@ -49,6 +49,9 @@ class TranslationSegmentIn(BaseModel):
 class TranslateRequest(BaseModel):
     target_language: str = "English"
     segments: list[TranslationSegmentIn]
+    # Optional requester instructions injected into the translation prompts.
+    # Clamped server-side; empty means default behaviour.
+    custom_prompt: str = ""
 
 
 class TranslationResultItem(BaseModel):
@@ -137,6 +140,12 @@ class VideoStatusResponse(BaseModel):
     # chosen yet and the client keeps its initial values.
     target_language: str = ""
     accent: Optional[str] = None
+    # Requester instructions injected into translation; persisted on the
+    # project so reprocess and recovery replay the same behaviour.
+    custom_prompt: str = ""
+    # 这两个开关随工程持久化，恢复会话时前端要原样拿回。
+    mm_enhance: bool = False
+    clone_smart_pick: bool = False
 
 
 # ----- Pipeline -----
@@ -153,9 +162,17 @@ class ProcessRequest(BaseModel):
     # from the client, and `separation_mode` is the single source of truth.
     enable_bgm_separation: bool = False
     enable_voice_clone: bool = False
+    # 语气模仿：TTS 前由 omni 听原声给译文注入情感/拟声标签（见 config）。
+    mm_enhance: bool = False
+    # 智能选材：克隆参考素材由 omni 通过 tool call 挑选，失败回退规则。
+    # 仅当 enable_voice_clone 为真时有意义。
+    clone_smart_pick: bool = False
     # Chinese dialect for the dubbed audio, e.g. "广东话". Absent means Mandarin.
     # Only meaningful with target_language="Chinese"; ignored otherwise.
     accent: Optional[str] = None
+    # Optional requester instructions injected into the DS translation prompts
+    # ("保持专有名词原文"…). Clamped server-side; empty means default behaviour.
+    custom_prompt: str = ""
     # Mux the dubbed audio into a downloadable MP4 when finished.
     export_video: bool = True
 

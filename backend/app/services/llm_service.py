@@ -438,6 +438,8 @@ def _build_chunk_prompt(
     context: list[dict],
     glossary: dict[str, str],
     target_language: str,
+    with_tags: bool = False,
+    custom_prompt: str = "",
 ) -> str:
     rate = config.speech_rate_value(target_language)
     unit = (
@@ -479,6 +481,42 @@ def _build_chunk_prompt(
             json.dumps(context, ensure_ascii=False, indent=2),
         ]
 
+    if with_tags:
+        # 多模态增强开启：DS 拿到两份文本（审听版 + ASR 原文），由它综合。
+        # 不给这段指令，LLM 最典型的行为是把 [excited] 当正文翻译、把
+        # asr_original 当第二段要翻的话，或干脆丢掉标签 —— 标注就白做了。
+        parts += [
+            "",
+            "## Reviewed lines and delivery tags (IMPORTANT)",
+            "Some entries below carry TWO text fields:",
+            '- "text": a REVIEWED version — a model that listened to the audio '
+            "corrected speech-recognition errors and annotated the delivery "
+            "with [tags] such as [excited], [whispers] or [laughing], recorded "
+            "from how the line was actually spoken.",
+            '- "asr_original": the raw speech-recognition transcript of the '
+            "same line, kept as the arbiter.",
+            "Translate the REVIEWED text. Use \"asr_original\" only to resolve "
+            "something that looks like an over-correction (a word the reviewer "
+            "changed that the transcript clearly had right).",
+            "- PRESERVE every [tag] exactly as written, at the corresponding "
+            "position of your translation. Do not translate, rename, drop, or "
+            "invent tags.",
+            "- A tag at the start of a line stays at the start of the "
+            "translated line; an inline tag stays next to the words it marks.",
+        ]
+
+    if custom_prompt:
+        # 用户注入的特别要求，放在规则末尾、数据之前：结尾位置既做出
+        # "最高优先级、可覆盖上面默认规则"的声明，又吃到近因效应。空串
+        # 完全不注入 —— 默认行为一个字节都不变。
+        parts += [
+            "",
+            "## Project-specific requirements (HIGHEST PRIORITY)",
+            "The requester added these instructions for THIS video. Where they "
+            "conflict with the rules above, THESE WIN:",
+            custom_prompt,
+        ]
+
     parts += [
         "",
         "## Segments to translate",
@@ -503,6 +541,8 @@ async def _translate_chunk(
     llm_dir: str,
     chunk_index: int,
     video_id: str | None = None,
+    with_tags: bool = False,
+    custom_prompt: str = "",
 ) -> tuple[dict[str, str], set[str]]:
     """
     Translate one chunk. Returns (id -> translation, failed ids).
@@ -510,7 +550,7 @@ async def _translate_chunk(
     Retries the whole chunk on parse/transport errors; any segment still
     missing after the retries is reported as failed instead of aborting.
     """
-    prompt = _build_chunk_prompt(chunk, context, glossary, target_language)
+    prompt = _build_chunk_prompt(chunk, context, glossary, target_language, with_tags, custom_prompt)
     _dump(os.path.join(llm_dir, f"prompt_chunk{chunk_index:03d}.txt"), prompt, "prompt")
 
     chunk_ids = {item["id"] for item in chunk}
@@ -537,7 +577,8 @@ async def _translate_chunk(
                     f"Chunk {chunk_index} attempt {attempt} unparseable: {e}"
                 )
                 prompt = (
-                    _build_chunk_prompt(chunk, context, glossary, target_language)
+                    _build_chunk_prompt(
+                        chunk, context, glossary, target_language, with_tags, custom_prompt)
                     + "\n\nIMPORTANT: your previous reply could not be parsed ("
                     + str(e)[:200]
                     + "). Reply with ONE JSON array of objects — "
@@ -577,7 +618,8 @@ async def _translate_chunk(
             )
             # Give the model another go, this time demanding the missing ids.
             prompt = (
-                _build_chunk_prompt(chunk, context, glossary, target_language)
+                _build_chunk_prompt(
+                    chunk, context, glossary, target_language, with_tags, custom_prompt)
                 + "\n\nIMPORTANT: your previous answer was missing these ids, "
                 "you MUST include all of them: "
                 + ", ".join(sorted(missing))
@@ -608,6 +650,8 @@ async def translate_script(
     segments: list[dict],
     target_language: str = "English",
     emit=None,
+    text_overrides: dict[str, str] | None = None,
+    custom_prompt: str = "",
 ) -> list[dict]:
     """
     Translate an entire script in chunks, with glossary consistency and a
@@ -651,8 +695,16 @@ async def translate_script(
         item: dict[str, Any] = {
             "id": seg["id"],
             "speaker": seg.get("speaker_id") or "unknown",
-            "text": seg.get("text") or "",
+            # 多模态增强（纠错+标签）开启时，DS 拿到两份文本：审听版（纠错+
+            # 标签，作为翻译基底）与 ASR 原文（仲裁依据，防审听版改错）。
+            # 两版一致时只给一份，不白花 token；ASR 原文始终留在 state，不
+            # 被覆盖。
+            "text": (text_overrides or {}).get(seg["id"]) or seg.get("text") or "",
         }
+        asr_text = seg.get("text") or ""
+        if text_overrides and text_overrides.get(seg["id"]) and \
+                text_overrides[seg["id"]] != asr_text:
+            item["asr_original"] = asr_text
         # Subtract the per-line fixed cost first: a 1s slot does not really fit
         # `rate` characters, because part of that second goes on the lead-in and
         # trailing pause.
@@ -715,7 +767,9 @@ async def translate_script(
             llm_dir=llm_dir,
             chunk_index=index,
             video_id=video_id,
-        )
+            with_tags=bool(text_overrides),
+            custom_prompt=custom_prompt,
+            )
         translations.update(chunk_result)
         failed_ids |= chunk_failed
         logger.info(
@@ -760,6 +814,8 @@ async def translate_script(
                 llm_dir=llm_dir,
                 chunk_index=900 + index,  # distinct prefix in the saved diagnostics
                 video_id=video_id,
+                with_tags=bool(text_overrides),
+                custom_prompt=custom_prompt,
             )
             recovered += len(result)
             translations.update(result)

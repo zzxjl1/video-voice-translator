@@ -73,6 +73,9 @@ async def run_pipeline(
     enable_voice_clone: bool = False,
     export_video: bool = True,
     accent: Optional[str] = None,
+    custom_prompt: str = "",
+    mm_enhance: bool = False,
+    clone_smart_pick: bool = False,
 ):
     """
     Execute the full processing pipeline for a video.
@@ -170,6 +173,13 @@ async def run_pipeline(
     # so without storing it a recovered session could not reproduce the dialect
     # this dub was requested in — a refit would fall back to its own default.
     state.accent = accent
+    # 同理：这两个开关决定 TTS 前处理与克隆选材的行为，恢复会话后重配音的
+    # 行必须与当初一致。
+    state.mm_enhance = mm_enhance
+    state.clone_smart_pick = clone_smart_pick
+    # 自定义翻译要求同理持久化：reprocess 从头重翻，恢复会话也一样，都必须
+    # 重放当初注入的要求。空串表示未注入（覆盖旧值，允许"清空后重跑"）。
+    state.custom_prompt = custom_prompt or ""
     save_state(state)
 
     video_dir = get_video_dir(video_id)
@@ -338,6 +348,75 @@ async def run_pipeline(
             })
 
         # =====================================================
+        # Phase 1.5: Multimodal enhancement (omni reviews the ASR result)
+        # =====================================================
+        text_overrides: dict[str, str] = {}
+        if state.mm_enhance and resume_phase in ("separation", "asr", "translation"):
+            await emit({
+                "phase": "mm_enhance",
+                "status": "started",
+                "count": len(state.segments),
+            })
+            try:
+                from app.services import omni_service
+                # 落盘缓存：恢复/重试时不再重复调用 omni（听全片不便宜）。
+                enh_path = os.path.join(get_video_dir(video_id), "enhanced_transcript.json")
+                cached: dict | None = None
+                try:
+                    with open(enh_path, encoding="utf-8") as f:
+                        cached = json.load(f)
+                except (OSError, json.JSONDecodeError):
+                    cached = None
+
+                if cached and isinstance(cached.get("lines"), dict):
+                    text_overrides = {
+                        str(k): str(v) for k, v in cached["lines"].items()
+                    }
+                    logger.info(
+                        f"[{video_id}] Multimodal enhancement reused from disk "
+                        f"({len(text_overrides)} line(s))"
+                    )
+                else:
+                    await emit({"phase": "mm_enhance", "status": "listening"})
+                    audio_url = f"{server_url_base}/api/videos/{video_id}/audio"
+                    enhanced = await omni_service.enhance_transcript(
+                        video_id=video_id,
+                        items=[{"id": seg.id, "text": seg.text} for seg in state.segments],
+                        audio_url=audio_url,
+                    )
+                    text_overrides = {
+                        seg.id: enhanced[seg.id]
+                        for seg in state.segments
+                        if seg.id in enhanced and enhanced[seg.id] != seg.text
+                    }
+                    try:
+                        os.makedirs(os.path.dirname(enh_path), exist_ok=True)
+                        with open(enh_path, "w", encoding="utf-8") as f:
+                            json.dump({"lines": text_overrides}, f, ensure_ascii=False, indent=1)
+                    except OSError as e:
+                        logger.warning(f"[{video_id}] Failed to save enhanced transcript: {e}")
+                    logger.info(
+                        f"[{video_id}] Multimodal enhancement adjusted "
+                        f"{len(text_overrides)}/{len(state.segments)} line(s)"
+                    )
+                await emit({
+                    "phase": "mm_enhance",
+                    "status": "done",
+                    "adjusted": len(text_overrides),
+                })
+            except Exception as e:
+                logger.warning(
+                    f"[{video_id}] Multimodal enhancement failed "
+                    f"(continuing with the raw ASR text): {e}"
+                )
+                text_overrides = {}
+                await emit({
+                    "phase": "mm_enhance",
+                    "status": "failed",
+                    "error": str(e)[:120],
+                })
+
+        # =====================================================
         # Phase 2: Translation
         # =====================================================
         if resume_phase in ("separation", "asr", "translation"):
@@ -347,11 +426,13 @@ async def run_pipeline(
             save_state(state)
 
             # `end_time` is required so the translator can size each line to
-            # the time slot it has to fill.
+            # the time slot it has to fill. When multimodal enhancement produced
+            # a corrected+annotated version of a line, THAT text is what gets
+            # translated — the raw ASR text stays untouched in state/编辑器.
             context = [
                 {
                     "id": seg.id,
-                    "text": seg.text,
+                    "text": text_overrides.get(seg.id, seg.text),
                     "speaker_id": seg.speaker_id,
                     "start_time": seg.start_time,
                     "end_time": seg.end_time,
@@ -360,7 +441,9 @@ async def run_pipeline(
             ]
 
             results = await llm_service.translate_script(
-                video_id, context, target_language, emit=emit
+                video_id, context, target_language, emit=emit,
+                text_overrides=text_overrides or None,
+                custom_prompt=custom_prompt,
             )
 
             # Update state with translations

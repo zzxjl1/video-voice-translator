@@ -29,17 +29,15 @@ import json
 import logging
 import os
 import threading
-from datetime import datetime, time as dt_time
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from app.models import get_video_dir
 
 logger = logging.getLogger(__name__)
 
-# Ledger timestamps are recorded in Beijing time WITH offset, so the peak /
-# off-peak determination below is correct no matter which timezone the server
-# runs in, and a human reading the file can compare it against DeepSeek's own
-# billing page.
+# Ledger timestamps are recorded in Beijing time WITH offset, so a human
+# reading the file can compare it against the billing pages directly.
 _BEIJING = ZoneInfo("Asia/Shanghai")
 
 _LEDGER_FILENAME = "usage.json"
@@ -55,48 +53,38 @@ _PRICE_TABLE: dict[tuple[str, str], dict] = {
     ("asr", "qwen-audio-3.1-asr-flash-filetrans"): {
         "input_per_mtoken": 0.8, "output_per_mtoken": 2.7,
     },
+    # qwen3.8-omni-flash — 多模态增强识别与克隆选材 (help.aliyun.com
+    # model-pricing, fetched 2026-10-07, 北京). Input is ONE price regardless
+    # of modality: audio tokens bill the same as text tokens — unlike the
+    # -realtime variant, which bills audio input separately.
+    ("omni", "qwen3.8-omni-flash"): {
+        "input_per_mtoken": 0.8, "output_per_mtoken": 2.7,
+    },
     # Enrollment (voice cloning) bills per NEW voice; the account also has a
     # 1000-voice free quota that this ledger cannot observe, so the computed
     # figure is the gross price, not necessarily what is actually invoiced.
     ("clone", "qwen-voice-enrollment"): {"per_unit": 0.01},
     # deepseek-flash — DeepSeek OFFICIAL API (api-docs.deepseek.com, fetched
-    # 2026-10-07, CNY per Mtok). Billing splits three ways: cached vs uncached
-    # input, and peak vs off-peak (off-peak = half price; Beijing time Mon-Fri
-    # 9:00-12:00 and 14:00-18:00 outside CN legal holidays). The usage object
-    # carries the cache split (prompt_cache_hit_tokens), so the computation is
-    # exact except for the holiday calendar, which is treated as peak — the
-    # conservative reading.
+    # 2026-10-07, CNY per Mtok). Billing splits input into cached vs uncached,
+    # and prices each tier differently at peak vs off-peak windows. The
+    # peak/off-peak split was DROPPED on purpose: tracking Beijing work-hour
+    # windows (let alone the holiday calendar) added complexity to a ledger
+    # that only needs an honest estimate. These are the PEAK prices, so the
+    # figure errs high — off-peak calls (evenings/weekends, half price) will
+    # read as overestimates, never as surprises.
     ("llm", "deepseek-flash"): {
-        "cache_hit_per_mtoken": {"peak": 0.04, "off_peak": 0.02},
-        "cache_miss_per_mtoken": {"peak": 2.0, "off_peak": 1.0},
-        "output_per_mtoken": {"peak": 8.0, "off_peak": 4.0},
-        "peak_windows_beijing": ((9, 0), (12, 0), (14, 0), (18, 0)),
+        "cache_hit_per_mtoken": 0.04,
+        "cache_miss_per_mtoken": 2.0,
+        "output_per_mtoken": 8.0,
     },
-}
-
-# Peak windows for rules that have them, as Beijing-time (start, end) pairs.
-_PEAK_WINDOWS_BEIJING = {
-    ("llm", "deepseek-flash"): ((dt_time(9, 0), dt_time(12, 0)), (dt_time(14, 0), dt_time(18, 0))),
 }
 
 _PRICE_NOTES: dict[tuple[str, str], str] = {
     ("tts", "qwen-audio-3.1-tts-flash"): "免费额度 100 万 token（北京）",
     ("asr", "qwen-audio-3.1-asr-flash-filetrans"): "免费额度 100 万 token（北京）",
     ("clone", "qwen-voice-enrollment"): "免费额度 1000 个音色/账号（北京）；删除音色不返还",
-    ("llm", "deepseek-flash"): "峰谷计价：峰=北京工作日9-12/14-18，其余半价；节假日按峰时保守计",
+    ("llm", "deepseek-flash"): "统一按峰时价保守计（实际峰谷/节假日折扣可能减半）",
 }
-
-
-def _is_peak(at: datetime, key: tuple[str, str]) -> bool:
-    """Peak = Beijing-time Mon-Fri (holidays not visible here) inside the windows."""
-    windows = _PEAK_WINDOWS_BEIJING.get(key)
-    if not windows:
-        return True
-    local = at.astimezone(_BEIJING)
-    if local.weekday() >= 5:
-        return False
-    clock = local.time()
-    return any(start <= clock < end for start, end in windows)
 
 
 def _compute_cost(step: str, model: str, entry: dict) -> float | None:
@@ -106,19 +94,15 @@ def _compute_cost(step: str, model: str, entry: dict) -> float | None:
     if "per_unit" in rule:
         return rule["per_unit"]
     if "cache_miss_per_mtoken" in rule:
-        # DeepSeek-style three-way split, priced at the tier of THIS call's
-        # timestamp. Cache-hit tokens come from the API's own usage split.
-        peak = _is_peak(datetime.fromisoformat(entry["at"]), (step, model))
-        tier = "peak" if peak else "off_peak"
+        # DeepSeek-style three-way split. Cache-hit tokens come from the API's
+        # own usage split; the miss side is derived here.
         hit = entry.get("cache_hit_tokens", 0)
         miss = max(0, entry.get("input_tokens", 0) - hit)
-        cost = (
-            hit * rule["cache_hit_per_mtoken"][tier]
-            + miss * rule["cache_miss_per_mtoken"][tier]
-            + entry.get("output_tokens", 0) * rule["output_per_mtoken"][tier]
+        return (
+            hit * rule["cache_hit_per_mtoken"]
+            + miss * rule["cache_miss_per_mtoken"]
+            + entry.get("output_tokens", 0) * rule["output_per_mtoken"]
         ) / 1_000_000
-        entry["price_tier"] = tier
-        return cost
     cost = 0.0
     cost += entry.get("input_tokens", 0) * rule.get("input_per_mtoken", 0.0) / 1_000_000
     cost += entry.get("output_tokens", 0) * rule.get("output_per_mtoken", 0.0) / 1_000_000

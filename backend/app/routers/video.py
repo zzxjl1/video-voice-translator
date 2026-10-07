@@ -235,6 +235,9 @@ async def get_video_status(video_id: str):
         enable_voice_clone=state.enable_voice_clone,
         target_language=state.target_language,
         accent=state.accent,
+        custom_prompt=state.custom_prompt,
+        mm_enhance=state.mm_enhance,
+        clone_smart_pick=state.clone_smart_pick,
     )
 
 
@@ -402,7 +405,16 @@ async def translate_video(video_id: str, req: TranslateRequest):
             for seg in req.segments
         ]
 
-        results = await llm_service.translate_script(video_id, context, req.target_language)
+        # Clamp here, once: the prompt injector downstream trusts this to be
+        # short and non-hostile-in-length. 500 chars is generous for a style
+        # instruction and small next to the chunk prompt itself.
+        custom_prompt = (req.custom_prompt or "").strip()[:500]
+        if custom_prompt:
+            state.custom_prompt = custom_prompt
+            save_state(state)
+        results = await llm_service.translate_script(
+            video_id, context, req.target_language, custom_prompt=custom_prompt
+        )
 
         # Update state with translations
         translations = []
@@ -673,6 +685,9 @@ async def process_video(video_id: str, req: ProcessRequest):
                     enable_voice_clone=req.enable_voice_clone,
                     export_video=req.export_video,
                     accent=req.accent,
+                    custom_prompt=(req.custom_prompt or "").strip()[:500],
+                    mm_enhance=req.mm_enhance,
+                    clone_smart_pick=req.clone_smart_pick,
                 )
             except Exception as e:
                 logger.error(f"[{video_id}] Pipeline error: {e}", exc_info=True)

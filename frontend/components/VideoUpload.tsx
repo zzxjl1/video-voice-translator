@@ -39,6 +39,15 @@ interface VideoUploadProps {
   onAccentChange: (accent: string) => void;
   enableVoiceClone: boolean;
   onVoiceCloneChange: (v: boolean) => void;
+  /** 语气模仿：omni 听原声给译文注入情感/拟声标签。 */
+  mmEnhance: boolean;
+  onMmEnhanceChange: (v: boolean) => void;
+  /** 智能选材：omni 通过 tool call 挑克隆参考段（依赖克隆开关）。 */
+  cloneSmartPick: boolean;
+  onCloneSmartPickChange: (v: boolean) => void;
+  /** 注入 DS 翻译的自定义要求。默认空 = 标准行为。 */
+  customPrompt: string;
+  onCustomPromptChange: (v: string) => void;
   separationMode: SeparationMode;
   onSeparationModeChange: (mode: SeparationMode) => void;
   separationBackends: SeparationBackends;
@@ -109,7 +118,7 @@ const FEATURES: { label: string; sub: string; icon: React.ReactNode }[] = [
   },
 ];
 
-const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName, onStart, isLoading, targetLanguage, onLanguageChange, targetAccent, onAccentChange, enableVoiceClone, onVoiceCloneChange, separationMode, onSeparationModeChange, separationBackends, bgmSeparationLocked, recentProjects, onOpenProject }) => {
+const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName, onStart, isLoading, targetLanguage, onLanguageChange, targetAccent, onAccentChange, enableVoiceClone, onVoiceCloneChange, mmEnhance, onMmEnhanceChange, cloneSmartPick, onCloneSmartPickChange, customPrompt, onCustomPromptChange, separationMode, onSeparationModeChange, separationBackends, bgmSeparationLocked, recentProjects, onOpenProject }) => {
   /**
    * Whether the second column exists yet.
    *
@@ -127,6 +136,12 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
    * other four are reachable but do not push the common ones down.
    */
   const [showMoreLanguages, setShowMoreLanguages] = useState(false);
+  /**
+   * 高级项（自定义翻译要求）默认折叠。低频选项不能常驻占高度，也不能和
+   * 上面几个开关争夺注意力 —— 一行小入口即可；有内容时用「已设置」角标
+   * 露出状态，避免折叠成隐形状态（恢复回来的工程可能带着要求）。
+   */
+  const [showAdvanced, setShowAdvanced] = useState(false);
   /** Which language's accent menu is open, if any. */
   const [accentMenuFor, setAccentMenuFor] = useState<string | null>(null);
   const visibleLanguages = showMoreLanguages
@@ -710,7 +725,7 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
                 locked={bgmSeparationLocked}
               />
             </div>
-            <div className="flex items-center justify-between py-2 px-3 bg-gray-50 rounded-xl">
+            <div className="flex items-center justify-between py-1.5 px-3 bg-gray-50 rounded-xl">
               <div className="flex items-center">
                 <span className="text-sm font-medium text-gray-700">Voice Cloning</span>
                 <InfoTooltip text="Clone the original speaker's voice for synthesis. The translated audio will sound like the original speaker. Requires more processing time." />
@@ -722,6 +737,37 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
                 <span className={`absolute top-[2px] left-[2px] w-[18px] h-[18px] bg-white rounded-full shadow transition-transform duration-200 ${enableVoiceClone ? 'translate-x-[18px]' : ''}`} />
               </button>
             </div>
+
+            {/* 多模态增强识别：omni 听原声 —— 纠正 ASR 错漏 + 标注语气标签，
+                翻译基于纠错后的文本。与克隆正交。 */}
+            <div className="flex items-center justify-between py-1.5 px-3 bg-gray-50 rounded-xl">
+              <div className="flex items-center">
+                <span className="text-sm font-medium text-gray-700">多模态增强识别</span>
+                <InfoTooltip text="AI 听一遍原视频：纠正语音识别的错字漏字，并标注每句的语气（兴奋、耳语、大笑…），翻译基于纠错后的文本进行。由 qwen-omni 完成，会增加一些处理时间。" />
+              </div>
+              <button
+                onClick={() => onMmEnhanceChange(!mmEnhance)}
+                className={`relative w-10 h-[22px] rounded-full transition-colors duration-200 ${mmEnhance ? 'bg-claude-accent' : 'bg-gray-300'}`}
+              >
+                <span className={`absolute top-[2px] left-[2px] w-[18px] h-[18px] bg-white rounded-full shadow transition-transform duration-200 ${mmEnhance ? 'translate-x-[18px]' : ''}`} />
+              </button>
+            </div>
+
+            {/* 智能选材：依赖克隆开关 —— 不克隆就没有「选材」这件事。 */}
+            {enableVoiceClone && (
+              <div className="flex items-center justify-between py-1.5 px-3 bg-gray-50 rounded-xl">
+                <div className="flex items-center">
+                  <span className="text-sm font-medium text-gray-700">智能选材</span>
+                  <InfoTooltip text="AI 试听候选片段，挑出无重叠、情绪中性的部分做克隆参考素材；每轮选择都会校验，不过关自动重选，失败则退回规则选材。" />
+                </div>
+                <button
+                  onClick={() => onCloneSmartPickChange(!cloneSmartPick)}
+                  className={`relative w-10 h-[22px] rounded-full transition-colors duration-200 ${cloneSmartPick ? 'bg-claude-accent' : 'bg-gray-300'}`}
+                >
+                  <span className={`absolute top-[2px] left-[2px] w-[18px] h-[18px] bg-white rounded-full shadow transition-transform duration-200 ${cloneSmartPick ? 'translate-x-[18px]' : ''}`} />
+                </button>
+              </div>
+            )}
 
             {/* What the switch above actually decides.
                 Off: the built-in voices this language draws from, so the result
@@ -770,6 +816,49 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
                 </p>
               </div>
             ) : null}
+
+            {/* 高级：自定义翻译要求。低频高级项的形态是折叠的一行 ——
+                它改的是 DS 翻译的默认行为，绝大多数人不需要碰；展开后
+                注入的是自然语言要求，所以不用开关、不用枚举，一个文本框
+                就是全部。空串在后端完全不注入，默认行为零改动。
+                无边框、py-1.5：这一行是页面上最低优先级的可点物，视觉上
+                必须比开关行轻，且 768 首屏的高度经不起一个带边框的盒子。 */}
+            <div>
+              <button
+                onClick={() => setShowAdvanced(v => !v)}
+                className="flex w-full items-center gap-1.5 px-3 py-1.5 text-left cursor-pointer"
+              >
+                <svg
+                  className={`h-3 w-3 text-gray-400 transition-transform duration-200 ${showAdvanced ? 'rotate-90' : ''}`}
+                  fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />
+                </svg>
+                <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">
+                  高级 · 自定义翻译要求
+                </span>
+                {customPrompt.trim() && (
+                  <span className="px-1.5 py-px rounded-full bg-claude-accent/10 text-[10px] font-bold text-claude-accent">
+                    已设置
+                  </span>
+                )}
+              </button>
+              {showAdvanced && (
+                <div className="px-3 pb-3">
+                  <textarea
+                    value={customPrompt}
+                    onChange={e => onCustomPromptChange(e.target.value.slice(0, 500))}
+                    rows={3}
+                    placeholder={'例：专有名词保留英文原文；语气正式，面向企业客户；数字一律写成阿拉伯数字…'}
+                    className="w-full resize-none rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-xs leading-relaxed text-gray-700 placeholder:text-gray-300 focus:outline-none focus:border-claude-accent/50"
+                  />
+                  <div className="mt-1 flex items-baseline justify-between text-[10px] text-gray-400">
+                    <span>注入翻译模型，可覆盖默认行为；留空 = 标准翻译。</span>
+                    <span className="shrink-0 tabular-nums">{customPrompt.length}/500</span>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
           </div>
 

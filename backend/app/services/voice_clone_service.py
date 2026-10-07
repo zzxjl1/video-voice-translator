@@ -31,6 +31,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from typing import Optional
 
@@ -38,7 +39,7 @@ import dashscope
 from dashscope.audio.tts_v2 import VoiceEnrollmentService, SpeechSynthesizer
 
 from app import config
-from app.models import Segment, get_video_dir
+from app.models import Segment, get_state, get_video_dir
 
 logger = logging.getLogger(__name__)
 
@@ -173,26 +174,97 @@ def _cached_voice_for_model(video_dir: str, speaker_id: str) -> Optional[str]:
     return voice_id
 
 
-# Sample constraints
-SAMPLE_MAX_DURATION = 30.0   # stop appending after this
-SAMPLE_MIN_DURATION = 10.0    # pad silence if below
-GAP_DURATION = 1.0           # silence gap between segments
+# Sample constraints, aligned with the official 声音复刻 docs for
+# Qwen-Audio-TTS (help.aliyun.com 声音复刻):
+#   - 时长推荐 10~20 秒，硬上限 60 秒 → cap at the recommended 20, not 30:
+#     more than the recommended window buys nothing and drifts toward the
+#     hard limit.
+#   - 其余部分仅允许短暂停顿 ≤ 2 秒 → the 1s gaps between segments are
+#     within that; do not widen them.
+#   - 必须包含至少 5 秒连续清晰的朗读内容 → drives the LONGEST-FIRST
+#     selection in `_select_segments_for_speaker` below.
+#   - 格式 WAV/MP3/M4A、≤10MB、采样率 ≥16kHz → met by construction: the
+#     ffmpeg output stage resamples EVERYTHING to 24kHz mono pcm_s16le
+#     (`-ar 24000 -ac 1`), so even an 8kHz source produces a compliant
+#     sample. Verified against real enrollments: 24000 Hz / 1ch / ~0.6MB.
+#     Channels per docs: mono or stereo accepted (stereo uses only the
+#     first channel) — mono is strictly safer.
+SAMPLE_MAX_DURATION = 20.0   # stop appending after this (docs: 推荐 10~20s)
+SAMPLE_MIN_DURATION = 10.0   # pad/loop if below (docs: 推荐 ≥10s)
+GAP_DURATION = 1.0           # silence gap between segments (docs: 停顿 ≤2s)
+
+
+def _filter_candidates(
+    all_segments: list[Segment],
+    speaker_id: str,
+) -> list[Segment]:
+    """
+    克隆参考候选段的【重叠检测】——这是唯一保留的硬规则。
+
+    diarization 的段里常混着别人插话：候选段只要与任何【其他说话人】的时间
+    范围重叠（0.05s 容差，紧邻句不误伤）就淘汰，否则剪进参考素材的音色会被
+    第二个人污染。
+
+    情绪/语速之类的文本启发式过滤已按决定移除：参考素材只负责音色，情绪
+    交给 TTS 标签，而这类死规则的实际效果是误伤正常句子。
+    """
+    others = [
+        (s.start_time, s.end_time)
+        for s in all_segments
+        if s.speaker_id != speaker_id
+    ]
+    eps = 0.05
+    kept, dropped = [], []
+    for s in sorted(
+        (s for s in all_segments if s.speaker_id == speaker_id),
+        key=lambda s: s.start_time,
+    ):
+        if any(o_start < s.end_time - eps and o_end > s.start_time + eps
+               for o_start, o_end in others):
+            dropped.append(f"{s.id} (overlaps another speaker's span)")
+            continue
+        kept.append(s)
+
+    if dropped:
+        logger.info(
+            f"[SegSelect] {speaker_id}: dropped {len(dropped)} candidate(s) "
+            f"due to speech overlap: {'; '.join(dropped)[:300]}"
+        )
+    return kept
 
 
 def _select_segments_for_speaker(
     segments: list[Segment],
     speaker_id: str,
+    candidates: list[Segment] | None = None,
 ) -> list[Segment]:
     """
-    Select segments for a speaker: take all valid segments in time order,
-    stop when accumulated duration (voice + gaps) would exceed max.
+    Select segments for a speaker: LONGEST first, stop when accumulated
+    duration (voice + gaps) would exceed max.
+
+    Longest-first rather than chronological, deliberately: the docs require
+    ≥5s of CONTINUOUS clear speech in the sample, and enrollment does not
+    care about timeline order. Chronological greedy could fill the (now
+    20s) cap with short utterances and leave the one long segment out —
+    a sample with no continuous stretch. Longest-first guarantees the best
+    available continuous content is always in.
+
+    `candidates` (when given) is a PRE-FILTERED list from `_filter_candidates`
+    (or the omni picker) — the greedy loop then only enforces duration, gaps,
+    and mutual overlap.
     """
-    all_speaker_segs = [s for s in segments if s.speaker_id == speaker_id]
-    speaker_segs = [
-        s for s in all_speaker_segs if (s.end_time - s.start_time) >= 0.3
-    ]
-    speaker_segs.sort(key=lambda s: s.start_time)
-    skipped = len(all_speaker_segs) - len(speaker_segs)
+    if candidates is not None:
+        all_speaker_segs = candidates
+        speaker_segs = [s for s in candidates if (s.end_time - s.start_time) >= 0.3]
+        skipped = len(all_speaker_segs) - len(speaker_segs)
+    else:
+        all_speaker_segs = [s for s in segments if s.speaker_id == speaker_id]
+        # 0.3s floor is not in the docs, but a shorter fragment ("嗯", a cough)
+        # cannot be 连续清晰朗读 — it adds exactly the noise the docs exclude.
+        speaker_segs = [
+            s for s in all_speaker_segs if (s.end_time - s.start_time) >= 0.3
+        ]
+        skipped = len(all_speaker_segs) - len(speaker_segs)
 
     if not speaker_segs:
         logger.warning(
@@ -215,12 +287,19 @@ def _select_segments_for_speaker(
             f"dur={dur:.2f}s  text=\"{(s.text or '')[:60]}\""
         )
 
-    # Greedily pick segments in time order until max duration
+    # Greedily pick LONGEST segments first until max duration
+    speaker_segs.sort(key=lambda s: s.end_time - s.start_time, reverse=True)
     selected: list[Segment] = []
     accumulated = 0.0  # voice + gaps total
 
     for s in speaker_segs:
         dur = s.end_time - s.start_time
+        # 同一说话人自己的段也可能互相重叠（diarization 伪影）——最长优先
+        # 打乱了时间顺序，重叠检查必须对着【所有】已选段，而不是上一段。
+        if any(s.start_time < t.end_time - 0.05 and s.end_time > t.start_time + 0.05
+               for t in selected):
+            logger.info(f"[SegSelect]   skip {s.id}: overlaps an already selected span")
+            continue
         gap = GAP_DURATION if selected else 0.0  # no gap before first segment
         needed = gap + dur
 
@@ -247,6 +326,17 @@ def _select_segments_for_speaker(
         f"{voice_dur + n_gaps * GAP_DURATION:.1f}s total"
     )
 
+    # The one docs requirement selection alone cannot always satisfy: if even
+    # the longest segment is short of 5s, the sample has no continuous stretch.
+    # Nothing to select differently — surface it instead of failing silently.
+    longest = max((s.end_time - s.start_time) for s in selected)
+    if longest < 5.0:
+        logger.warning(
+            f"[SegSelect] {speaker_id}: longest segment {longest:.2f}s < 5s — "
+            f"the sample has no ≥5s continuous stretch (docs requirement); "
+            f"cloning may degrade"
+        )
+
     return selected
 
 
@@ -256,8 +346,9 @@ def _ffmpeg_build_sample(
     output_path: str,
 ) -> float:
     """
-    Extract segments from vocals, concatenate with 2s silence gaps between them.
-    If total < SAMPLE_MIN_DURATION, loop (repeat) segments until minimum is met.
+    Extract segments from vocals, concatenate with 1s silence gaps between them
+    (docs: 单次停顿 ≤2s). If total < SAMPLE_MIN_DURATION, loop (repeat)
+    segments until minimum is met.
     Returns total output duration.
     """
     import subprocess
@@ -451,7 +542,48 @@ async def clone_voice_for_speaker(
 
     # Select segments (greedy, time-ordered, max 20s with 2s gaps)
     logger.info(f"[Clone] Step 1a: Selecting segments for {speaker_id}...")
-    selected = _select_segments_for_speaker(segments, speaker_id)
+    selected: list[Segment] | None = None
+    # 智能选材需要两个开关同时打开：全局能力开关 + 本工程的用户开关
+    _state = get_state(video_id)
+    smart_enabled = bool(
+        config.CLONE_OMNI_PICKER and _state is not None and _state.clone_smart_pick
+    )
+    if smart_enabled:
+        # 智能选材：omni 听音频挑参考段。任何失败都回退规则 —— 这是增强，
+        # 不是依赖。
+        try:
+            from app.services import omni_service
+            candidates = [
+                {"id": s.id, "start": s.start_time, "end": s.end_time,
+                 "duration": s.end_time - s.start_time, "text": s.text or ""}
+                for s in segments
+                if s.speaker_id == speaker_id and (s.end_time - s.start_time) >= 0.3
+            ]
+            audio_url = f"{server_url_base}/api/videos/{video_id}/audio"
+            picks = await omni_service.pick_samples(
+                video_id, speaker_id, candidates, audio_url
+            )
+            if picks:
+                picked_set = set(picks)
+                selected = sorted(
+                    (s for s in segments
+                     if s.speaker_id == speaker_id and s.id in picked_set),
+                    key=lambda s: s.start_time,
+                )
+                logger.info(f"[Clone] Step 1a: omni picked {len(selected)} segment(s)")
+            else:
+                logger.warning(
+                    f"[Clone] Step 1a: omni picker returned nothing — "
+                    f"falling back to rule-based selection"
+                )
+        except Exception as e:
+            logger.warning(
+                f"[Clone] Step 1a: omni picker failed ({e}) — "
+                f"falling back to rule-based selection"
+            )
+    if selected is None:
+        candidates = _filter_candidates(segments, speaker_id)
+        selected = _select_segments_for_speaker(segments, speaker_id, candidates=candidates)
     if not selected:
         raise RuntimeError(f"No suitable segments found for speaker {speaker_id}")
 

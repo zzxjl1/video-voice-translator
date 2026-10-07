@@ -78,6 +78,7 @@ export async function translateScript(
   videoId: string,
   segments: { id: string; text: string; speaker_id: string; start_time: number; end_time?: number }[],
   targetLanguage: string = 'English',
+  customPrompt: string = '',
 ): Promise<TranslateResult[]> {
   const response = await fetch(`${API_BASE}/videos/${videoId}/translate`, {
     method: 'POST',
@@ -85,6 +86,7 @@ export async function translateScript(
     body: JSON.stringify({
       target_language: targetLanguage,
       segments,
+      custom_prompt: customPrompt,
     }),
   });
 
@@ -342,6 +344,12 @@ export async function processVideo(
     exportVideo?: boolean;
     /** Chinese dialect for the dub, e.g. "广东话". Empty means Mandarin. */
     accent?: string;
+    /** 语气模仿：TTS 前由 omni 听原声给译文注入情感/拟声标签。 */
+    mmEnhance?: boolean;
+    /** 智能选材：克隆参考素材由 omni 通过 tool call 挑选。 */
+    cloneSmartPick?: boolean;
+    /** 注入 DS 翻译的自定义要求。空串 = 默认行为。 */
+    customPrompt?: string;
   },
 ): Promise<void> {
   const response = await fetch(`${API_BASE}/videos/${videoId}/process`, {
@@ -355,6 +363,9 @@ export async function processVideo(
       // can actually run and degrades to "off" if the choice is unusable.
       separation_mode: options?.separationMode ?? 'client',
       enable_voice_clone: options?.enableVoiceClone ?? false,
+      mm_enhance: options?.mmEnhance ?? false,
+      clone_smart_pick: options?.cloneSmartPick ?? false,
+      custom_prompt: options?.customPrompt ?? '',
       export_video: options?.exportVideo ?? true,
     }),
   });

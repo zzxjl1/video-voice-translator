@@ -346,6 +346,35 @@ ASR_MAX_WAIT = _env_int("ASR_MAX_WAIT", 600)
 TTS_MODEL = _env("TTS_MODEL", "qwen-audio-3.1-tts-flash")
 TTS_TIMEOUT = _env_int("TTS_TIMEOUT", 60)
 
+# ---- 多模态增强识别：omni 听原声，审核纠错 ASR 结果并标注语气 ----
+# 开启后，ASR 转写与原音频一起送 omni 模型二次处理：
+#   1. 纠正识别错误（同音字、错词、漏标点）—— 以听到的为准；
+#   2. 给每句标注情感控制标签（[excited] 等）与拟声标签（[laughing] 等）。
+# 纠错+标注后的文本作为翻译输入（DeepSeek 的提示词会要求原样保留标签），
+# 译文进 TTS 时标签被渲染成语气。标注结果随工程落盘，恢复时直接复用。
+MULTIMODAL_ENHANCE = _env_bool("MULTIMODAL_ENHANCE", False)
+OMNI_MODEL = _env("OMNI_MODEL", "qwen3.8-omni-flash")
+OMNI_BASE_URL = _env("OMNI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+# 白名单 = TTS 文档列出的标签（2026-10）。omni 返回的标签凡不在表内一律丢弃。
+EMOTION_CONTROL_TAGS = [
+    "[sad]", "[amazed]", "[trembling]", "[angry]", "[excited]", "[sarcastic]",
+    "[curious]", "[bored]", "[tired]", "[shouting]", "[asmr]", "[panicked]",
+    "[empathetic]", "[whispers]", "[reluctantly]", "[crying]", "[serious]",
+]
+EMOTION_RICH_TAGS = [
+    "[gasp]", "[sighing]", "[clears throat]", "[giggles]", "[laughing]",
+    "[cough]", "[snorts]",
+]
+# 每句最多 1 个控制标签 + 2 个富语言标签，再多就成了音效串烧。
+EMOTION_MAX_CONTROL_PER_LINE = 1
+EMOTION_MAX_RICH_PER_LINE = 2
+
+# ---- 智能选材：omni 听音频挑克隆参考段 ----
+# 开启后（依赖声音复刻开关）由 omni 模型通过 tool call 从候选段里挑选参考素
+# 材，每轮选择都校验（id 归属 / 时长 / 重叠），最多 MAX_TURNS 轮，失败回退规则。
+CLONE_OMNI_PICKER = _env_bool("CLONE_OMNI_PICKER", False)
+CLONE_OMNI_MAX_TURNS = _env_int("CLONE_OMNI_MAX_TURNS", 5)
+
 # Number of concurrent synthesis calls. This is I/O bound (blocking SDK call
 # runs in a thread pool) so it does not increase CPU usage. Raise it only if
 # the provider does not rate-limit you.

@@ -94,6 +94,18 @@ class VideoState:
     # a session recovery the client only knows its own default, and a refit or
     # single-line regen would quietly switch a Cantonese dub back to Mandarin.
     accent: Optional[str] = None
+    # Free-form instructions the requester injected into the translation step.
+    # Persisted so a reprocess (which re-translates from scratch) and a session
+    # recovery both replay the SAME translation behaviour the dub was made
+    # with — an injected requirement is a property of the project, not of the
+    # tab it was typed in. Empty string = default translation behaviour.
+    custom_prompt: str = ""
+    # 语气模仿：TTS 前由 omni 听原声给译文注入情感/拟声标签。随工程持久化，
+    # 理由同 accent —— 恢复会话后重配音的行必须保持同样的处理方式。
+    mm_enhance: bool = False
+    # 智能选材：克隆参考素材由 omni 通过 tool call 挑选（失败回退规则）。
+    # 只在 enable_voice_clone 为真时有意义。
+    clone_smart_pick: bool = False
     created_at: str = field(default_factory=lambda: datetime.datetime.now().isoformat())
 
     def to_dict(self):
