@@ -65,6 +65,7 @@ import { detectBrowserLanguage } from './utils/languages';
 import {
   loadRecentProjects,
   touchRecentProject,
+  forgetRecentProject,
   type RecentProject,
 } from './utils/recentProjects';
 
@@ -1905,6 +1906,25 @@ const App: React.FC = () => {
    * dependency array is read during render, so referencing a `const` defined
    * further down would throw before it ever ran.
    */
+  /**
+   * 从"最近工程"里移除一条。
+   *
+   * 只动本浏览器的列表（localStorage）：服务器上的工程数据、音频、导出一律
+   * 不删 —— 这个清单本身就是"本浏览器记得哪些工程"，不是工程的所有权凭证。
+   * 所以确认框里把这点写明，免得用户以为删掉的是工程。
+   */
+  const handleForgetProject = useCallback((projectId: string, filename: string) => {
+    const ok = window.confirm(
+      `从最近列表移除「${filename || projectId.slice(0, 8)}」？\n\n` +
+        '只是不再出现在这个浏览器的列表里，服务器上的工程数据（音频、译文、导出）不会被删除。\n' +
+        '想看回这个工程，仍然可以通过它的链接打开。'
+    );
+    if (!ok) return;
+    forgetRecentProject(projectId);
+    setRecentProjects(prev => prev.filter(p => p.videoId !== projectId));
+    console.log('[recent] 已从列表移除:', projectId);
+  }, []);
+
   const handleStartProcessing = useCallback(() => {
     if (pendingVideoFile) void handleVideoSelect(pendingVideoFile);
   }, [pendingVideoFile, handleVideoSelect]);
@@ -2436,6 +2456,90 @@ const App: React.FC = () => {
     }
   }, [segments, videoId, targetLanguage, handleSynthesizeSegment]);
 
+  /**
+   * 设置弹窗里点保存。
+   *
+   * 规则和上传同一个视频那条路一致：**设置变了就把进度清空重跑**。
+   * 理由是分离方式/克隆开关/语言这些东西会改变部分步骤的结果 —— 换分离方式
+   * 必须重分离、换语言必须重翻重配，只重跑后半段（旧行为：重翻 + 重合成）
+   * 会留下与新设置不符的前半段产物。
+   *
+   * 返回 false = 用户取消 → 弹窗回滚设置并留在原地；true = 已保存（并已在
+   * 重跑，或本来就不需要重跑）。
+   */
+  const handleSettingsSave = useCallback(async (): Promise<boolean> => {
+    // 落地页没有工程：保存的只是页面上的默认值，没有要重做的东西。
+    if (!videoId) return true;
+
+    // 先解决"这个工程已经有运行在跑"的情况（停旧 / 放弃），再谈设置差异。
+    if (!(await ensureProjectFree(videoId, '按新设置重新处理'))) return false;
+
+    let status: any = null;
+    try {
+      status = await getVideoStatus(videoId);
+    } catch {
+      // 状态问不到：不擅自清空，只把设置存下来，交给用户自己点处理。
+      return true;
+    }
+
+    const differing = differFromProject(status, {
+      targetLanguage,
+      targetAccent,
+      separationMode,
+      enableVoiceClone,
+      mmEnhance,
+      cloneSmartPick,
+      customPrompt,
+    });
+    console.log('[settings] 保存设置:', { settingsDiffer: differing });
+
+    // 设置没变：保存即可，不重做任何东西。
+    if (differing.length === 0) return true;
+
+    const hasProgress = (status.segments?.length ?? 0) > 0;
+    const ok = window.confirm(
+      '设置已改变：\n  • ' + differing.join('\n  • ') + '\n\n' +
+        (hasProgress
+          ? '这些设置会改变部分步骤的结果，所以这次会【清空已完成的进度并从头重新处理一遍】'
+          : '这个工程还没开始处理，保存后会按新设置处理') +
+        '（清空的只是中间产物，原始视频会保留）。\n\n' +
+        '• 确定 = 保存设置并重新处理\n' +
+        '• 取消 = 不保存，回到设置面板'
+    );
+    if (!ok) return false;
+
+    setRawLog(
+      '设置已更新：' + differing.join('、') + '\n' +
+      '旧进度已清空（原始视频保留），按新设置重新处理…\n'
+    );
+    setIsLogOpen(true);
+    setIsTranscribing(true);
+    setSegments([]);
+    setSpeakers([]);
+    try {
+      await resetVideo(videoId);
+      await startPipeline(videoId, undefined, separationMode, false, 'settings:changed');
+    } catch (err) {
+      setRawLog(
+        prev => prev + `\n按新设置重新处理失败：${err instanceof Error ? err.message : err}\n`
+      );
+    } finally {
+      setIsTranscribing(false);
+    }
+    return true;
+  }, [
+    videoId,
+    targetLanguage,
+    targetAccent,
+    separationMode,
+    enableVoiceClone,
+    mmEnhance,
+    cloneSmartPick,
+    customPrompt,
+    ensureProjectFree,
+    startPipeline,
+  ]);
+
   const handleReprocess = useCallback(async (): Promise<boolean> => {
     if (!videoId || segments.length === 0) return true;
 
@@ -2579,15 +2683,9 @@ const App: React.FC = () => {
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
-        onSave={() => {
-          // 分离后端 / 克隆开关都改变管线的做法，改了就必须重跑一遍，
-          // 否则屏幕上还是旧设置产出的配音。handleReprocess 自己带确认，
-          // 用户点保存后还会看到一次代价说明（重翻 + 重合成）。
-          //
-          // 必须把它的结果【返回】给弹窗：false 代表用户在确认里点了取消，
-          // 弹窗据此回滚设置并留在原地，而不是关掉留下一个改了但没重跑的状态。
-          return handleReprocess();
-        }}
+        // 返回值必须给弹窗：false = 用户取消，弹窗据此回滚设置并留在原地，
+        // 而不是关掉、留下一个"改了但没重跑"的状态。
+        onSave={handleSettingsSave}
         enableVoiceClone={enableVoiceClone}
         onVoiceCloneChange={handleVoiceCloneChange}
         separationMode={separationMode}
@@ -2634,6 +2732,7 @@ const App: React.FC = () => {
           customPrompt={customPrompt}
           onCustomPromptChange={setCustomPrompt}
           recentProjects={recentProjects}
+          onForgetProject={handleForgetProject}
           onOpenProject={id => window.location.assign(`/${id}`)}
         />
       ) : (

@@ -55,6 +55,8 @@ interface VideoUploadProps {
   recentProjects: RecentProject[];
   /** Open a previous project — the app recovers it from the URL. */
   onOpenProject: (videoId: string) => void;
+  /** 从最近列表移除一条（只动本浏览器的列表，不删服务器数据）。 */
+  onForgetProject?: (videoId: string, filename: string) => void;
 }
 
 const InfoTooltip: React.FC<{ text: string }> = ({ text }) => {
@@ -117,7 +119,7 @@ const FEATURES: { label: string; sub: string; icon: React.ReactNode }[] = [
   },
 ];
 
-const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName, onStart, isLoading, targetLanguage, onLanguageChange, targetAccent, onAccentChange, enableVoiceClone, onVoiceCloneChange, mmEnhance, onMmEnhanceChange, cloneSmartPick, onCloneSmartPickChange, customPrompt, onCustomPromptChange, separationMode, onSeparationModeChange, separationBackends, bgmSeparationLocked, recentProjects, onOpenProject }) => {
+const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName, onStart, isLoading, targetLanguage, onLanguageChange, targetAccent, onAccentChange, enableVoiceClone, onVoiceCloneChange, mmEnhance, onMmEnhanceChange, cloneSmartPick, onCloneSmartPickChange, customPrompt, onCustomPromptChange, separationMode, onSeparationModeChange, separationBackends, bgmSeparationLocked, recentProjects, onOpenProject, onForgetProject }) => {
   /**
    * Whether the second column exists yet.
    *
@@ -638,21 +640,46 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
               <>
                 <div className="flex flex-1 flex-col justify-evenly gap-0.5">
                   {recentProjects.map(project => (
-                    <button
+                    /* 容器是 div 不是 button：行内还要放一个删除按钮，而按钮
+                       嵌在按钮里是非法 HTML（浏览器会把内层弹出去）。 */
+                    <div
                       key={project.videoId}
-                      onClick={() => onOpenProject(project.videoId)}
-                      className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left hover:bg-gray-50 transition-colors cursor-pointer"
+                      className="group flex items-center gap-1 rounded-lg pr-1 hover:bg-gray-50 transition-colors"
                     >
-                      <span
-                        className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusDotClass(project.status)}`}
-                      />
-                      <span className="flex-1 min-w-0 truncate text-xs text-gray-700">
-                        {project.filename || project.videoId.slice(0, 8)}
-                      </span>
-                      <span className="shrink-0 text-[10px] text-gray-400">
-                        {formatRelativeTime(project.updatedAt)}
-                      </span>
-                    </button>
+                      <button
+                        onClick={() => onOpenProject(project.videoId)}
+                        className="flex flex-1 min-w-0 items-center gap-2.5 rounded-lg px-2.5 py-2 text-left cursor-pointer"
+                      >
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusDotClass(project.status)}`}
+                        />
+                        <span className="flex-1 min-w-0 truncate text-xs text-gray-700">
+                          {project.filename || project.videoId.slice(0, 8)}
+                        </span>
+                        <span className="shrink-0 text-[10px] text-gray-400">
+                          {formatRelativeTime(project.updatedAt)}
+                        </span>
+                      </button>
+                      {onForgetProject && (
+                        /* 悬停才出现：它是列表的次要动作，常驻会跟"打开"抢注意力；
+                           focus 时也显示，键盘/Tab 用户不会看不到它。 */
+                        <button
+                          onClick={() =>
+                            onForgetProject(
+                              project.videoId,
+                              project.filename || ''
+                            )
+                          }
+                          title="从最近列表移除（不删除服务器数据）"
+                          aria-label="从最近列表移除"
+                          className="shrink-0 rounded p-1.5 text-gray-300 opacity-0 transition-all hover:bg-red-50 hover:text-red-500 focus:opacity-100 group-hover:opacity-100 cursor-pointer"
+                        >
+                          <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                          </svg>
+                        </button>
+                      )}
+                    </div>
                   ))}
                 </div>
                 <p className="mt-2 text-[10px] text-gray-400">
