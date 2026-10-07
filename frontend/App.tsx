@@ -974,15 +974,33 @@ const App: React.FC = () => {
       let ttsTotal = 0;
 
       await processVideo(vid, targetLanguage, (event) => {
-        // 每条事件都标一个序号：如果控制台里出现两段几乎同时开始的序号
-        // （各自的 phase 交替出现），那就是两条流在跑同一条工程。
-        // 紧凑单行：每次都打（并发时的"交替出现"正是靠这个看出来的），但不用
-        // 展开对象，免得刷屏。
+        /*
+         * 紧凑单行，每条都打：并发时的"交替出现"正是靠这个看出来的。
+         *
+         * 注意 `done` 这个字段是**双关**的：翻译进度事件里它是"已译条数"
+         * （数字），只有整条流的最后一条才是布尔 true。所以判断一律用
+         * `=== true` —— 用真值判断会把每个翻译进度事件都当成"全部完成"。
+         */
         console.log(
           '[pipeline] 事件',
-          [event.phase ?? '-', event.status ?? '-', event.progress != null ? `${event.progress}/${event.total ?? '?'}` : '']
-            .filter(Boolean).join(' '),
-          event.cancelled ? '← CANCELLED' : event.done ? '← DONE' : event.error ? `← ERROR ${event.error}` : ''
+          [
+            event.phase ?? '',
+            event.status ?? '',
+            event.progress != null ? `${event.progress}/${event.total ?? '?'}` : '',
+            // 没有 phase/status 的事件（resume_phase 等）把它的键显出来，
+            // 否则日志里只剩一个 '-'，什么也看不出。
+            !event.phase && !event.status
+              ? Object.keys(event).map(k => `${k}=${event[k]}`).join(' ')
+              : '',
+          ]
+            .filter(Boolean).join(' ') || '-',
+          event.cancelled
+            ? '← CANCELLED'
+            : event.done === true
+            ? '← DONE'
+            : event.error
+            ? `← ERROR ${event.error}`
+            : ''
         );
 
         // Resume info
@@ -1219,9 +1237,16 @@ const App: React.FC = () => {
         }
 
         // Final done
-        if (event.done) {
-          // 管线到合成为止，导出是用户的单独动作 —— 这里不再有关联的导出状态
-          // 要收尾（isExporting 只由 handleExport 自己管）。
+        if (event.done === true) {
+          /*
+           * `=== true`，不是真值判断：翻译进度事件里的 `done` 是"已译条数"
+           * （数字），真值判断会让每个进度事件都被当成"全部完成" —— 结果是
+           * 跑到一半就打印 All Processing Complete、把 isTranscribing 关掉、
+           * 并把状态条的 active 置为 false（状态条中途消失）。
+           *
+           * 管线到合成为止，导出是用户的单独动作 —— 这里不再有关联的导出状态
+           * 要收尾（isExporting 只由 handleExport 自己管）。
+           */
           if (event.cancelled) {
             /*
              * 用户叫停的收尾。要说清三件事：停在哪、东西还在、怎么继续 ——
