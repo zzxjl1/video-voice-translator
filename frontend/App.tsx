@@ -2696,19 +2696,19 @@ const App: React.FC = () => {
                     onClick={handleResumeCancelled}
                     className="w-full rounded-xl bg-claude-accent px-4 py-2.5 text-sm font-bold text-white transition hover:bg-claude-accentHover cursor-pointer"
                   >
-                    继续跑（从断点接着走）
+                    继续跑
                   </button>
                   <button
                     onClick={() => void handleRestartFromScratch()}
                     className="w-full rounded-xl border border-gray-300 px-4 py-2.5 text-sm font-bold text-gray-600 transition hover:border-red-300 hover:text-red-600 cursor-pointer"
                   >
-                    从头开始（清空已有进度重跑）
+                    从头开始
                   </button>
                   <button
                     onClick={handleDismissResumePrompt}
                     className="w-full rounded-xl px-4 py-2 text-xs text-gray-400 transition hover:text-gray-600 cursor-pointer"
                   >
-                    先看看
+                    返回主页
                   </button>
                 </div>
               </div>
