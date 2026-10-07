@@ -63,6 +63,7 @@ from typing import Optional
 import httpx
 
 from app import config
+from app.services.subtitle_service import probe_duration
 
 logger = logging.getLogger(__name__)
 
@@ -285,6 +286,19 @@ async def separate_audio(
             stem.raise_for_status()
             _write_as_wav(stem.content, dest)
             logger.info("[%s] 302.AI stem written: %s", video_id, dest)
+
+    # 记账：302.AI 是按次/按时长收费的第三方调用，全流程只有这里知道它成功了。
+    # 台账里【没有】它的价格规则，所以这条会以 cost_source="no_price" 落盘 ——
+    # 这是刻意的：先让调用可见、数量可核，价格要按你们实际的计费口径再补。
+    from app.services import usage_service
+    _seconds = probe_duration(audio_path)
+    usage_service.record(
+        video_id=video_id,
+        step="separation",
+        model="302ai-vocal-separation",
+        detail=task_id,
+        usage={"audio_seconds": round(_seconds, 2)} if _seconds else {},
+    )
 
     return {"vocals": vocals_path, "background": background_path}
 

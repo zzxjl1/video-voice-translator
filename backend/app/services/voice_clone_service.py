@@ -36,10 +36,12 @@ import time
 from typing import Callable, Optional
 
 import dashscope
-from dashscope.audio.tts_v2 import VoiceEnrollmentService, SpeechSynthesizer
+# SpeechSynthesizer 不再在这里用：合成统一走 tts_service._synth_audio()
+from dashscope.audio.tts_v2 import VoiceEnrollmentService
 
 from app import config
 from app.models import Segment, get_state, get_video_dir
+from app.services import usage_service
 
 logger = logging.getLogger(__name__)
 
@@ -704,6 +706,17 @@ async def clone_voice_for_speaker(
             logger.info(
                 f"[Clone] Step 3 done: enrollment submitted, voice_id={voice_id} (attempt {attempt}/{max_create_attempts})"
             )
+            # 新建音色是计费/配额动作（0.01 元/个 + 账号 1000 个免费额度，删除
+            # 不返还）。记账点只能是"创建成功"的这一行：上面两条缓存命中路径
+            # （ALREADY EXISTS）不花钱，重试失败的分支也没花。以前这里没有记账，
+            # 价格表里的 ("clone", "qwen-voice-enrollment") 规则从未被使用。
+            usage_service.record(
+                video_id=video_id,
+                step="clone",
+                model="qwen-voice-enrollment",
+                detail=f"{speaker_id} -> {target_model}",
+                usage={"voices": 1},
+            )
             break
         except Exception as e:
             msg = str(e)
@@ -837,11 +850,17 @@ async def preview_cloned_voice(
     loop = asyncio.get_event_loop()
 
     def _synthesize():
-        synthesizer = SpeechSynthesizer(
-            model=clone_target_model(),
-            voice=voice_id,
+        # 走 tts_service 的唯一构造点，而不是自己 new 一个 SpeechSynthesizer：
+        # 两份实现里必有一份会漏掉后来加的规则 —— 原来这份就既不记账，也不受
+        # instruction 能力探测的保护（旧版 SDK 下会以另一种方式炸）。
+        from app.services import tts_service
+        audio = tts_service._synth_audio(
+            clone_target_model(),
+            voice_id,
+            text,
+            video_id=video_id,
+            detail=f"preview({speaker_id})",
         )
-        audio = synthesizer.call(text)
         if not audio:
             raise RuntimeError("Preview TTS returned empty audio")
         with open(preview_path, "wb") as f:

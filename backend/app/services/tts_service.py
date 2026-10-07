@@ -269,6 +269,46 @@ def _probe_duration(path: str) -> float | None:
     return None
 
 
+def _synth_audio(
+    model: str,
+    voice: str,
+    text: str,
+    *,
+    speech_rate: float | None = None,
+    instruction: str | None = None,
+    video_id: str | None = None,
+    detail: str | None = None,
+) -> bytes:
+    """
+    【唯一】构造 SpeechSynthesizer 并调用它的地方：调用与记账绑在一起。
+
+    为什么抽出来：试听（voice_clone_service.preview_cloned_voice）曾经自己 new
+    一个 SpeechSynthesizer。同一件事有两份实现，就一定有一份会漏掉后来加的规则
+    —— 那份既没有记账，也不受 instruction 能力探测的保护。
+
+    `instruction` 只在当前 SDK 支持时才传（见文件顶部 _instruction_supported）。
+    """
+    kwargs: dict = {"model": model, "voice": voice}
+    if speech_rate is not None:
+        kwargs["speech_rate"] = speech_rate
+    if instruction and INSTRUCTION_SUPPORTED:
+        kwargs["instruction"] = instruction
+
+    synthesizer = SpeechSynthesizer(**kwargs)
+    audio = synthesizer.call(text)
+    response = synthesizer.get_response() or {}
+    # 记账放在这里而不是调用方：每个调用方都要自己记得记一次账，就一定会有
+    # 一个忘了（试听就是）。用量原样保留服务端返回的 usage。
+    usage_service.record(
+        video_id=video_id,
+        step="tts",
+        model=model,
+        detail=detail or voice,
+        usage=((response.get("payload") or {}).get("usage")) or {},
+    )
+    return audio
+
+
 def _synthesize_blocking(
     text: str,
     voice: str,
@@ -277,7 +317,7 @@ def _synthesize_blocking(
     video_id: str | None = None,
 ) -> bytes:
     """
-    One blocking synthesis call.
+    One blocking synthesis call (pipeline / manual re-synthesis path).
 
     `speech_rate` is only sent when the caller provided one: the API's default
     is 1.0 and an unset value keeps the previous behaviour exactly (important
@@ -287,26 +327,15 @@ def _synthesize_blocking(
     accent parameter. Also omitted when unset, for the same reason as
     `speech_rate`. It is already validated by `config.tts_instruction`; this
     layer only forwards it.
-
-    Usage is captured HERE, not in the retry wrapper: the synthesizer instance
-    holds the finished task's response, and only the audio bytes travel back.
     """
-    kwargs: dict = {"model": config.TTS_MODEL, "voice": voice}
-    if speech_rate is not None:
-        kwargs["speech_rate"] = speech_rate
-    if instruction:
-        kwargs["instruction"] = instruction
-    synthesizer = SpeechSynthesizer(**kwargs)
-    audio = synthesizer.call(text)
-    response = synthesizer.get_response() or {}
-    usage_service.record(
+    return _synth_audio(
+        config.TTS_MODEL,
+        voice,
+        text,
+        speech_rate=speech_rate,
+        instruction=instruction,
         video_id=video_id,
-        step="tts",
-        model=config.TTS_MODEL,
-        detail=voice,
-        usage=((response.get("payload") or {}).get("usage")) or {},
     )
-    return audio
 
 
 async def _synthesize_with_retries(

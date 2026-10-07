@@ -35,6 +35,9 @@ from typing import Optional
 import httpx
 
 from app import config
+from app.services import usage_service
+# 复用时长的探测（ffprobe）：subtitle_service 只依赖 config，不会成环。
+from app.services.subtitle_service import probe_duration
 from app.models import Segment
 
 logger = logging.getLogger(__name__)
@@ -111,10 +114,13 @@ async def submit_transcription_task(
         raise RuntimeError(f"ASR task submission failed: {response.text}")
 
 
-async def poll_transcription_result(task_id: str, max_wait: int = None) -> list[dict]:
+async def poll_transcription_result(
+    task_id: str, max_wait: int = None
+) -> tuple[list[dict], dict]:
     """
     Poll for transcription task completion.
-    Returns list of result dicts when done.
+    Returns (result dicts, usage) when done. `usage` is whatever the service
+    reports (empty dict when it reports nothing) — the ledger keeps it verbatim.
     """
     if max_wait is None:
         max_wait = config.ASR_MAX_WAIT
@@ -129,7 +135,7 @@ async def poll_transcription_result(task_id: str, max_wait: int = None) -> list[
                 output = response.json()["output"]
                 status = output["task_status"]
                 if status == "SUCCEEDED":
-                    return output.get("results", [])
+                    return output.get("results", []), dict(output.get("usage") or {})
                 elif status in ("RUNNING", "PENDING"):
                     await asyncio.sleep(config.ASR_POLL_INTERVAL)
                     continue
@@ -212,7 +218,8 @@ def _build_attempt_plan() -> list[tuple[str, bool]]:
 
 async def _run_transcription(
     file_serve_url: str, model: str, diarization: bool
-) -> list[dict]:
+) -> tuple[list[dict], dict]:
+    """提交 + 轮询。返回 (results, usage) —— usage 原样来自服务端（可能为空）。"""
     logger.info(
         f"--- [ASR] Submitting task (model={model}, diarization={diarization}) ---"
     )
@@ -220,9 +227,9 @@ async def _run_transcription(
     logger.info(f"--- [ASR] Task submitted. Task ID: {task_id} ---")
 
     logger.info(f"--- [ASR] Polling for transcription results (Task: {task_id}) ---")
-    results = await poll_transcription_result(task_id)
+    results, usage = await poll_transcription_result(task_id)
     logger.info("--- [ASR] Transcription completed. ---")
-    return results
+    return results, usage
 
 
 async def transcribe_video(video_id: str, video_path: str, audio_path: str, file_serve_url: str) -> list[Segment]:
@@ -251,9 +258,12 @@ async def transcribe_video(video_id: str, video_path: str, audio_path: str, file
     # Step 2+3: submit + poll, degrading on failure
     results: Optional[list[dict]] = None
     last_error: Optional[Exception] = None
+    api_usage: dict = {}
     for attempt, (model, diarization) in enumerate(plan, start=1):
         try:
-            results = await _run_transcription(file_serve_url, model, diarization)
+            results, api_usage = await _run_transcription(
+                file_serve_url, model, diarization
+            )
             if not diarization:
                 logger.warning(
                     "[ASR] Diarization is OFF for this run — every segment will be "
@@ -269,6 +279,25 @@ async def transcribe_video(video_id: str, video_path: str, audio_path: str, file
 
     if results is None:
         raise RuntimeError(f"ASR failed on all attempts: {last_error}")
+
+    # 记账：这是全流程里【唯一】知道"ASR 成功了、用的哪个模型、送了多少音频"的
+    # 位置。以前整条链路没有一处记账，台账里看不到 ASR 的费用 —— 价格表里那条
+    # ("asr", "qwen-audio-3.1-asr-flash-filetrans") 规则因此从未被使用过。
+    # 用量优先用服务端回传的（实测 2026-10-08：根层与 output.usage 都带
+    # {"duration": 26, "input_tokens": 495, "output_tokens": 119}，正好对上价格表
+    # 的 token 口径）。只有服务端没给时长时才用本地 ffprobe 兜底。
+    _usage: dict = dict(api_usage)
+    if not _usage.get("duration"):
+        _seconds = probe_duration(audio_path)
+        if _seconds:
+            _usage["audio_seconds"] = round(_seconds, 2)
+    usage_service.record(
+        video_id=video_id,
+        step="asr",
+        model=model,
+        detail=f"diarization={'on' if diarization else 'off'}",
+        usage=_usage,
+    )
 
     # Parse results into segments
     logger.info(f"--- [ASR] Step 4: Parsing ASR results into segments ---")

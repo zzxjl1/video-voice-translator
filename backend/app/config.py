@@ -669,6 +669,10 @@ SEPARATOR_MODEL_FILE = _env("SEPARATOR_MODEL_FILE", "UVR-MDX-NET-Inst_HQ_3.onnx"
 #
 # Both endpoints take a PUBLICLY REACHABLE audio URL — 302's servers download it
 # themselves — so this backend needs SERVER_URL_BASE to be public.
+# 美元兑人民币：只用于把以美元/点数计价的第三方服务折算进台账（人民币）。
+# 默认 6.74 取 2026-10-06 中间价 6.7351 的两位；汇率变动时改 .env 即可。
+USD_CNY_RATE = _env_float("USD_CNY_RATE", 6.74)
+
 SEPARATION_API_BASE = _env("SEPARATION_API_BASE", "https://api.302ai.com").rstrip("/")
 # POST -> {"task_id": "<uuid>-e2"}
 SEPARATION_API_PATH = _env("SEPARATION_API_PATH", "/302/vt/subtitle/extract")
