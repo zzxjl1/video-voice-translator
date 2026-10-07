@@ -365,7 +365,6 @@ export async function processVideo(
   options?: {
     separationMode?: SeparationMode;
     enableVoiceClone?: boolean;
-    exportVideo?: boolean;
     /** Chinese dialect for the dub, e.g. "广东话". Empty means Mandarin. */
     accent?: string;
     /** 语气模仿：TTS 前由 omni 听原声给译文注入情感/拟声标签。 */
@@ -374,6 +373,8 @@ export async function processVideo(
     cloneSmartPick?: boolean;
     /** 注入 DS 翻译的自定义要求。空串 = 默认行为。 */
     customPrompt?: string;
+    // 这里刻意没有 export 开关：出片是用户按 Export 触发的独立请求
+    // （POST /videos/{id}/export），不属于处理流程。
   },
 ): Promise<void> {
   const response = await fetch(`${API_BASE}/videos/${videoId}/process`, {
@@ -390,7 +391,6 @@ export async function processVideo(
       mm_enhance: options?.mmEnhance ?? false,
       clone_smart_pick: options?.cloneSmartPick ?? false,
       custom_prompt: options?.customPrompt ?? '',
-      export_video: options?.exportVideo ?? true,
     }),
   });
 

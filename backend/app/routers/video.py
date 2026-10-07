@@ -693,7 +693,6 @@ async def process_video(video_id: str, req: ProcessRequest):
                     emit=emit,
                     separation_mode=req.separation_mode,
                     enable_voice_clone=req.enable_voice_clone,
-                    export_video=req.export_video,
                     accent=req.accent,
                     custom_prompt=(req.custom_prompt or "").strip()[:500],
                     mm_enhance=req.mm_enhance,

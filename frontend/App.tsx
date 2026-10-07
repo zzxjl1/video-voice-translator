@@ -1038,34 +1038,6 @@ const App: React.FC = () => {
           }
         }
 
-        // Export events
-        if (event.phase === 'export') {
-          if (event.status === 'started') {
-            setIsExporting(true);
-            setExportError('');
-            setRawLog(prev => prev + '\n--- Exporting Video (video stream copied) ---\n');
-          } else if (event.status === 'mixing' && event.total) {
-            const pct = Math.round((event.current / event.total) * 100);
-            setRawLog(prev => {
-              const lines = prev.split('\n');
-              const lastIdx = lines.length - 1;
-              if (lines[lastIdx].startsWith('Export progress:')) {
-                lines[lastIdx] = `Export progress: ${pct}%`;
-              } else {
-                lines.push(`Export progress: ${pct}%`);
-              }
-              return lines.join('\n');
-            });
-          } else if (event.status === 'muxing') {
-            setRawLog(prev => prev + 'Muxing dubbed audio into the video...\n');
-          } else if (event.status === 'done') {
-            setRawLog(prev => prev + `Export complete${event.size_mb ? ` (${event.size_mb} MB)` : ''}.\n`);
-          } else if (event.status === 'failed') {
-            setExportError(event.error || 'Export failed');
-            setRawLog(prev => prev + `Export failed: ${event.error}\n`);
-          }
-        }
-
         // TTS events
         if (event.phase === 'tts') {
           if (event.status === 'started') {
@@ -1091,7 +1063,8 @@ const App: React.FC = () => {
 
         // Final done
         if (event.done) {
-          setIsExporting(false);
+          // 管线到合成为止，导出是用户的单独动作 —— 这里不再有关联的导出状态
+          // 要收尾（isExporting 只由 handleExport 自己管）。
           setRawLog(prev => prev + '\n=== All Processing Complete ===\nClosing in 2 seconds...');
         }
 
@@ -1120,7 +1093,6 @@ const App: React.FC = () => {
         mmEnhance,
         cloneSmartPick,
         customPrompt: customPrompt.trim().slice(0, 500),
-        exportVideo: true,
         // Chinese dialect for the whole dub. The backend ignores it unless the
         // target really is Chinese.
         accent: targetAccent,

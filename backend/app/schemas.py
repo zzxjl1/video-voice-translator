@@ -182,8 +182,9 @@ class ProcessRequest(BaseModel):
     # Optional requester instructions injected into the DS translation prompts
     # ("保持专有名词原文"…). Clamped server-side; empty means default behaviour.
     custom_prompt: str = ""
-    # Mux the dubbed audio into a downloadable MP4 when finished.
-    export_video: bool = True
+    # NOTE: there is deliberately no export flag here. Muxing the dub into a
+    # video is user-triggered (POST /videos/{id}/export), never a pipeline
+    # stage; a request field for it only invited silent auto-export.
 
 
 # ----- Export -----

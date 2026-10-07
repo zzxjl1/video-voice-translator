@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { VoiceOption } from '../services/apiService';
 
 export interface SegmentAction {
@@ -63,6 +64,14 @@ const BackRow: React.FC<{ label: string; onClick: () => void }> = ({ label, onCl
   </button>
 );
 
+/**
+ * 级联面板的尺寸。宽度只按内容给：二级项最长的是「自定义要求」五个字，
+ * text-xs 下约 60px，加左右内边距 24px 后 128px 已经很宽松 —— 再宽就是
+ * 一片空白的白块。高度按三项内容估算，只用于夹取位置。
+ */
+const FLYOUT_WIDTH = 128;
+const FLYOUT_HEIGHT = 92;
+
 const ActionRow: React.FC<{ action: SegmentAction; onRun: (a: SegmentAction) => void }> = ({ action, onRun }) => (
   <button
     type="button"
@@ -79,9 +88,13 @@ const ActionRow: React.FC<{ action: SegmentAction; onRun: (a: SegmentAction) => 
 /**
  * The "⋯" menu on a transcript row.
  *
- * Screens rather than one long list: the actions, the submenus behind them, and
- * — behind the voice row — the voices. A single menu holding all of it would be
- * 26 items tall for Chinese before any action was reachable.
+ * Submenus cascade on HOVER (a flyout next to the row, Windows-Start style),
+ * not by swapping the panel to a second screen: swapping costs a click to
+ * enter, a click to leave, and a "back" row, for two or three short items
+ * that are meant to be scanned and picked quickly.
+ *
+ * The voice list stays a click-in screen — it is 26 items for Chinese and
+ * would make a poor flyout.
  */
 const SegmentActionsMenu: React.FC<SegmentActionsMenuProps> = ({
   speakerName,
@@ -93,8 +106,20 @@ const SegmentActionsMenu: React.FC<SegmentActionsMenuProps> = ({
 }) => {
   const [open, setOpen] = useState(false);
   const [pickingVoice, setPickingVoice] = useState(false);
-  /** 当前打开的二级菜单（null = 顶层）。 */
-  const [submenu, setSubmenu] = useState<SegmentAction | null>(null);
+  /**
+   * 鼠标当前悬停的父项（有二级菜单的那一行），null = 没有级联展开。
+   *
+   * 二级菜单是 hover 飞出的（Windows 开始菜单那种），不是"点进去换一屏"：
+   * 换屏要两次点击、还多一个"返回"要处理，而这里的二级项（长一点/短一点/
+   * 自定义要求）本来就是要快速扫一眼顺手点的。hover 让它一步可达。
+   *
+   * 坐标是【视口坐标】：面板用 portal 挂到 body 上、fixed 定位，见下方
+   * 渲染处的解释。
+   */
+  const [flyout, setFlyout] = useState<{ label: string; left: number; top: number } | null>(null);
+  const closeTimer = useRef<number | null>(null);
+  /** 父项 DOM 节点：点击兜底展开时要用它量位置（hover 事件自带 currentTarget）。 */
+  const anchorRef = useRef<Record<string, HTMLDivElement | null>>({});
   /** 正在输入自定义要求的那一项（null = 没在输入）。 */
   const [prompting, setPrompting] = useState<SegmentAction | null>(null);
   const [draft, setDraft] = useState('');
@@ -102,10 +127,67 @@ const SegmentActionsMenu: React.FC<SegmentActionsMenuProps> = ({
   const close = () => {
     setOpen(false);
     setPickingVoice(false);
-    setSubmenu(null);
+    setFlyout(null);
     setPrompting(null);
     setDraft('');
+    if (closeTimer.current) {
+      window.clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
   };
+
+  /** 取消待执行的关闭（指针进入了级联面板/父项时）。 */
+  const cancelFlyoutClose = () => {
+    if (closeTimer.current) {
+      window.clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+  };
+
+  /**
+   * 展开某个父项的级联菜单。方向固定向【右】——标准级联方向。
+   *
+   * 位置按父项的视口矩形算：只在两种极端下夹回窗口内（宁可压住父项，也不
+   * 让菜单出屏）——窗口比 128px 还窄，或行贴着右边缘。正常情况下它就在
+   * 父项右侧 4px 处。
+   */
+  const openFlyout = (label: string, el?: HTMLElement | null) => {
+    cancelFlyoutClose();
+    const rect = el?.getBoundingClientRect();
+    if (!rect) return;
+    const left = Math.min(rect.right + 4, window.innerWidth - FLYOUT_WIDTH - 8);
+    let top = rect.top - 4;
+    // 高度按三项估算：底部放不下就上移，别让最后一项掉出屏幕。
+    const over = top + FLYOUT_HEIGHT + 8 - window.innerHeight;
+    if (over > 0) top -= over;
+    setFlyout({ label, left, top });
+  };
+
+  /**
+   * 延迟关闭。面板挂在 body 上（不是这一行的子节点），指针从父项移过去时
+   * 会先离开父项 —— 这 180ms 就是给这段路程的：指针一进面板，面板自己的
+   * onMouseEnter 会取消它。同时也兜住"手一抖"。
+   */
+  const scheduleFlyoutClose = () => {
+    if (closeTimer.current) window.clearTimeout(closeTimer.current);
+    closeTimer.current = window.setTimeout(() => setFlyout(null), 180);
+  };
+
+  // fixed 定位不跟随滚动：一旦页面（或内部滚动列表）动了，面板就会和父项
+  // 脱节 —— 直接收起，和系统菜单的行为一致。
+  useEffect(() => {
+    if (!flyout) return;
+    const dismiss = () => setFlyout(null);
+    window.addEventListener('scroll', dismiss, true);
+    window.addEventListener('resize', dismiss);
+    return () => {
+      window.removeEventListener('scroll', dismiss, true);
+      window.removeEventListener('resize', dismiss);
+    };
+  }, [flyout]);
+
+  /** 当前展开的那一项（按 label 找回来，面板内容由它决定）。 */
+  const flyoutAction = flyout ? actions.find(a => a.label === flyout.label) : null;
 
   const currentLabel = currentVoice
     ? voices.find(v => v.id === currentVoice)?.label ?? currentVoice
@@ -114,10 +196,12 @@ const SegmentActionsMenu: React.FC<SegmentActionsMenuProps> = ({
   const runAction = (action: SegmentAction) => {
     if (action.disabledReason) return;
     if (action.children) {
-      setSubmenu(action);
+      // 点击也展开（触屏没有 hover；桌面端是 hover 之外的兜底）。
+      openFlyout(action.label, anchorRef.current?.[action.label]);
       return;
     }
     if (action.prompt) {
+      setFlyout(null);
       setPrompting(action);
       setDraft('');
       return;
@@ -221,22 +305,22 @@ const SegmentActionsMenu: React.FC<SegmentActionsMenuProps> = ({
                   </button>
                 </div>
               </>
-            ) : submenu ? (
-              <>
-                <BackRow label="返回" onClick={() => setSubmenu(null)} />
-                <div className="px-3 pb-1 text-[10px] font-bold uppercase tracking-wider text-gray-400">
-                  {submenu.label}
-                </div>
-                <div className="border-t border-gray-100">
-                  {submenu.children?.map(child => (
-                    <ActionRow key={child.label} action={child} onRun={runAction} />
-                  ))}
-                </div>
-              </>
             ) : (
               <>
                 {actions.map(action => (
-                  <ActionRow key={action.label} action={action} onRun={runAction} />
+                  <div
+                    key={action.label}
+                    ref={el => {
+                      anchorRef.current[action.label] = el;
+                    }}
+                    className="relative"
+                    onMouseEnter={e =>
+                      action.children && openFlyout(action.label, e.currentTarget)
+                    }
+                    onMouseLeave={() => action.children && scheduleFlyoutClose()}
+                  >
+                    <ActionRow action={action} onRun={runAction} />
+                  </div>
                 ))}
 
                 {voices.length > 0 ? (
@@ -267,6 +351,32 @@ const SegmentActionsMenu: React.FC<SegmentActionsMenuProps> = ({
           </div>
         </>
       )}
+
+      {/*
+        级联面板 portal 到 body。
+        ─────────────────────────────────────────────────────────────
+        不能就地绝对定位（更不是 z-index 能救的）：这个菜单挂在转写列表里，
+        祖先有 `rounded-3xl overflow-hidden` 的面板容器和 `overflow-y-auto`
+        的滚动列表 —— 后者会把 x 轴也变成裁切轴（CSS 里一轴 visible、另一轴
+        非 visible 时，visible 那侧会计算成 auto）。被滚动容器裁掉的元素，
+        z-index 再高也出不来。
+        portal + fixed 让面板脱离那些裁剪与层叠上下文，同时用视口坐标贴住
+        父项；z-[100] 只是保证它压过菜单面板（z-40）和点击遮罩（z-30）。
+      */}
+      {flyoutAction &&
+        createPortal(
+          <div
+            style={{ left: flyout!.left, top: flyout!.top, width: FLYOUT_WIDTH }}
+            className="fixed z-[100] rounded-xl border border-gray-200 bg-white py-1 shadow-xl"
+            onMouseEnter={cancelFlyoutClose}
+            onMouseLeave={scheduleFlyoutClose}
+          >
+            {flyoutAction.children?.map(child => (
+              <ActionRow key={child.label} action={child} onRun={runAction} />
+            ))}
+          </div>,
+          document.body
+        )}
     </div>
   );
 };

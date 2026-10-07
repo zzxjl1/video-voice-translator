@@ -33,7 +33,6 @@ from app.models import (
 )
 from app.services import (
     asr_service,
-    export_service,
     llm_service,
     tts_service,
     voice_clone_service,
@@ -74,7 +73,6 @@ async def run_pipeline(
     emit: Callable,
     separation_mode: Optional[str] = None,
     enable_voice_clone: bool = False,
-    export_video: bool = True,
     accent: Optional[str] = None,
     custom_prompt: str = "",
     mm_enhance: bool = False,
@@ -94,9 +92,14 @@ async def run_pipeline(
             actually usable; an unusable choice degrades to "off" and reports
             the reason.
         enable_voice_clone: Clone each speaker's voice before synthesis.
-        export_video: Mux the dubbed audio back into a downloadable MP4.
         accent: Chinese dialect for the dubbed audio (e.g. "广东话"). None or ""
             means Mandarin, which needs no instruction at all.
+
+    The pipeline ENDS at synthesis. Muxing the dub back into a video is a
+    separate, user-triggered step (POST /videos/{id}/export): it used to run
+    automatically as a final phase here, which meant a re-process could not
+    finish without also producing — and, in the UI, pushing — a file the user
+    had not asked for yet. Export is a decision, not a stage.
     """
     state = get_state(video_id)
     if not state:
@@ -640,26 +643,11 @@ async def run_pipeline(
 
         await emit({"phase": "tts", "status": "done"})
 
-        # =====================================================
-        # Phase 4: Export (mux dubbed audio back into the video)
-        # =====================================================
-        export_url = None
-        if export_video and config.EXPORT_ENABLED:
-            try:
-                if not export_service.is_available():
-                    await emit({
-                        "phase": "export",
-                        "status": "failed",
-                        "error": "ffmpeg/ffprobe not available on the server",
-                    })
-                else:
-                    await export_service.export_video(video_id, emit=emit)
-                    export_url = f"/api/videos/{video_id}/export/download"
-            except Exception as e:
-                logger.error(f"[{video_id}] Export failed: {e}", exc_info=True)
-                await emit({"phase": "export", "status": "failed", "error": str(e)})
-
-        await emit({"done": True, "export_url": export_url})
+        # No export phase: the pipeline stops at synthesis. Muxing happens only
+        # when the user asks for it (POST /videos/{id}/export), so nothing here
+        # produces a video file behind their back — and a re-process is free to
+        # end without touching any existing export.
+        await emit({"done": True})
 
     except Exception as e:
         logger.error(f"[{video_id}] Pipeline error: {str(e)}", exc_info=True)
