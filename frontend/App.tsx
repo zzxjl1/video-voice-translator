@@ -203,11 +203,28 @@ const App: React.FC = () => {
   /** 已发出取消请求，等服务器确认（当前 provider 请求跑完才停）。 */
   const [isCancelling, setIsCancelling] = useState(false);
   /** 上次被用户停在哪一步（持久化在工程里），用于"继续处理"。 */
-  const [cancelledStep, setPausedStep] = useState<string | null>(null);
-  const [resumeAfterCancel, setPausedResume] = useState<
+  const [cancelledStep, setCancelledStep] = useState<string | null>(null);
+  const [resumeAfterCancel, setResumeAfterCancel] = useState<
     { vid: string; mode: SeparationMode; stems: boolean } | null
   >(null);
   const [isAudioLoading, setIsAudioLoading] = useState<boolean>(false);
+  /**
+   * 打开一个"上次没跑完"的工程时弹出的选择框。
+   *
+   * 为什么必须有这一步：未完成的工程打开后如果什么都不做，页面是空的（没有
+   * 转写、没有音频），用户会以为工程坏了、也进不去下一步；而如果像以前那样
+   * 静默自动续跑，用户又失去了"我上次取消了，别自己又跑起来"的控制权。所以
+   * 摆出一个明确的选择：继续跑 / 从头开始 / 先看看。
+   */
+  const [resumePrompt, setResumePrompt] = useState<
+    | {
+        vid: string;
+        note: string;
+        mode: SeparationMode;
+        stems: boolean;
+      }
+    | null
+  >(null);
 
   // Batch processing state
   const [isBatchProcessing, setIsBatchProcessing] = useState<boolean>(false);
@@ -741,7 +758,7 @@ const App: React.FC = () => {
             setSegments(recoveredSegments);
           }
 
-          setPausedStep(data.cancelled_step ?? null);
+          setCancelledStep(data.cancelled_step ?? null);
           setRunState(data.run ?? null);
 
           if (data.run?.active) {
@@ -766,52 +783,35 @@ const App: React.FC = () => {
               `这个工程正在处理中（当前步骤：${RUN_STEP_LABEL[data.run.step] ?? data.run.step}）。\n` +
               '本页不参与该次运行；需要的话可以点「取消运行」，或在它结束后再发起。\n'
             );
-          } else if (data.status === 'cancelled') {
+          } else if (!isCompleted) {
             /*
-             * 用户上一次按了「取消运行」。不要自动重跑 —— 那等于把"我取消的"
-             * 变成"它自己又跑起来了"。把断点摆出来，让用户决定什么时候继续。
-             * 已完成的阶段产物都在磁盘上，继续就是从断点开始。
+             * 上次没跑完（取消 / 失败 / 中断 / 还没开始）。
+             *
+             * 不静默续跑：用户可能是主动取消的，"自己又跑起来了"是越权；也不
+             * 什么都不做：那样页面是空的，用户进不去下一步。摆出选择框，让他
+             * 自己决定。
              */
-            console.log('[recovery] 工程处于 cancelled（用户上次取消）→ 不自动重跑', {
+            const note = isError
+              ? `上次处理失败：${data.error || '未知错误'}`
+              : isUploaded
+              ? '这个工程还没开始处理'
+              : data.status === 'cancelled'
+              ? `上次已取消（停在：${RUN_STEP_LABEL[data.cancelled_step] ?? data.cancelled_step ?? '处理中'}）`
+              : `上次中断在：${data.status}`;
+            console.log('[recovery] 未完成 → 弹出"继续跑/从头开始"选择', {
+              status: data.status,
               cancelled_step: data.cancelled_step,
             });
             setIsTranscribing(false);
-            setRawLog(
-              `Session recovered for: ${idFromUrl}\n` +
-              `上次已取消（停在：${RUN_STEP_LABEL[data.cancelled_step] ?? data.cancelled_step ?? '处理中'}）。\n` +
-              `已完成的产物都已保存，点「继续处理」从断点接着跑。\n`
-            );
-            setPausedResume({
+            setRawLog(`Session recovered for: ${idFromUrl}\n${note}。\n`);
+            const offer = {
               vid: idFromUrl,
+              note,
               mode: restoredMode,
               stems: Boolean(data.has_background),
-            });
-          } else if (isError || isIncomplete || isUploaded) {
-            console.log('[recovery] 未完成/失败 → 自动接着跑', {
-              status: data.status,
-            });
-            const reason = isError
-              ? `Previous processing failed: ${data.error || 'Unknown error'}`
-              : isUploaded
-              ? 'Processing has not started yet'
-              : `Processing was interrupted at: ${data.status}`;
-
-            setRawLog(`Session recovered for: ${idFromUrl}\n${reason}\n\nAuto-retrying pipeline...\n`);
-            setIsLogOpen(true);
-
-            // Auto-retry pipeline. Goes through `startPipeline` so browser
-            // separation still happens on this route (there is no File in
-            // memory here, so it pulls the audio from the server), and passes
-            // the restored backend explicitly.
-            startPipeline(
-              idFromUrl,
-              undefined,
-              restoredMode,
-              Boolean(data.has_background),
-              'session-recovery:auto-retry'
-            ).finally(() => {
-              setIsTranscribing(false);
-            });
+            };
+            setResumeAfterCancel(offer);
+            setResumePrompt(offer);
           } else {
             // Completed — just show editor, generate waveform from server audio
             setIsTranscribing(false);
@@ -1238,7 +1238,7 @@ const App: React.FC = () => {
                 '已完成的产物都已保存在这个工程里，随时可以继续。\n'
             );
             setIsCancelling(false);
-            setPausedStep(event.step ?? null);
+            setCancelledStep(event.step ?? null);
           } else {
             setRawLog(prev => prev + '\n=== All Processing Complete ===\nClosing in 2 seconds...');
           }
@@ -1629,37 +1629,28 @@ const App: React.FC = () => {
               setSegments(recoveredSegments);
             }
 
-            setPausedStep(data.cancelled_step ?? null);
+            setCancelledStep(data.cancelled_step ?? null);
             setRunState(data.run ?? null);
 
-            if (data.status === 'cancelled') {
-              // 同上（会话恢复那条路）：用户叫停的工程不自动重跑，只摆出断点。
+            if (!isCompleted) {
+              // 同上（会话恢复那条路）：未完成一律弹选择框，不静默续跑。
+              const note = isError
+                ? `上次处理失败：${data.error || '未知错误'}`
+                : isUploaded
+                ? '这个工程还没开始处理'
+                : data.status === 'cancelled'
+                ? `上次已取消（停在：${RUN_STEP_LABEL[data.cancelled_step] ?? data.cancelled_step ?? '处理中'}）`
+                : `上次中断在：${data.status}`;
               setIsTranscribing(false);
-              setRawLog(
-                `Session recovered for: ${idFromUrl}\n` +
-                `上次已取消（停在：${RUN_STEP_LABEL[data.cancelled_step] ?? data.cancelled_step ?? '处理中'}）。\n` +
-                '已完成的产物都已保存，点「继续处理」从断点接着跑。\n'
-              );
-              setPausedResume({
+              setRawLog(`Session recovered for: ${idFromUrl}\n${note}。\n`);
+              const offer = {
                 vid: idFromUrl,
+                note,
                 mode: restoredMode,
                 stems: Boolean(data.has_background),
-              });
-            } else if (isError || isUploaded || (!isCompleted && !isError && data.status !== 'uploaded')) {
-              const reason = isError
-                ? `Previous processing failed: ${data.error || 'Unknown error'}`
-                : isUploaded
-                ? 'Processing has not started yet'
-                : `Processing was interrupted at: ${data.status}`;
-              setRawLog(`Session recovered for: ${idFromUrl}\n${reason}\n\nAuto-retrying pipeline...\n`);
-              setIsLogOpen(true);
-              startPipeline(
-                idFromUrl,
-                undefined,
-                restoredMode,
-                Boolean(data.has_background),
-                'popstate:auto-retry'
-              ).finally(() => setIsTranscribing(false));
+              };
+              setResumeAfterCancel(offer);
+              setResumePrompt(offer);
             } else {
               setIsTranscribing(false);
               setIsAudioLoading(true);
@@ -1849,13 +1840,14 @@ const App: React.FC = () => {
     }
   }, [videoId, isCancelling]);
 
-  /** 从断点继续（已取消的工程不会自动重跑，等用户按这里）。 */
+  /** 从断点继续（未完成的工程不会自动重跑，等用户按这里或选择框）。 */
   const handleResumeCancelled = useCallback(() => {
     if (!resumeAfterCancel) return;
     setRawLog(prev => prev + '\n从断点继续处理…\n');
     setIsLogOpen(true);
     setIsTranscribing(true);
-    setPausedResume(null);
+    setResumeAfterCancel(null);
+    setResumePrompt(null);
     startPipeline(
       resumeAfterCancel.vid,
       undefined,
@@ -1864,6 +1856,32 @@ const App: React.FC = () => {
       'user:resume-cancelled'
     ).finally(() => setIsTranscribing(false));
   }, [resumeAfterCancel, startPipeline]);
+
+  /** 从头开始：清空已有进度（保留原视频）再重跑一遍。 */
+  const handleRestartFromScratch = useCallback(async () => {
+    if (!resumePrompt) return;
+    const { vid, mode } = resumePrompt;
+    setResumePrompt(null);
+    setResumeAfterCancel(null);
+    setRawLog(prev => prev + '\n从头开始：清空已有进度（保留原视频）…\n');
+    setIsLogOpen(true);
+    setIsTranscribing(true);
+    try {
+      await resetVideo(vid);
+      await startPipeline(vid, undefined, mode, false, 'user:restart-from-scratch');
+    } catch (err) {
+      setRawLog(
+        prev => prev + `\n重新开始失败：${err instanceof Error ? err.message : err}\n`
+      );
+    } finally {
+      setIsTranscribing(false);
+    }
+  }, [resumePrompt, startPipeline]);
+
+  /** 先看看：收起选择框，页面照常可用（状态条上仍留「继续处理」）。 */
+  const handleDismissResumePrompt = useCallback(() => {
+    setResumePrompt(null);
+  }, []);
 
   /**
    * 工作流状态轮询。
@@ -1886,7 +1904,7 @@ const App: React.FC = () => {
         const data = await getVideoStatus(videoId);
         if (stopped) return;
         setRunState(data.run ?? null);
-        setPausedStep(data.cancelled_step ?? null);
+        setCancelledStep(data.cancelled_step ?? null);
         // 只在变化时打，避免轮询刷屏。
         const stamp = `${data.run?.active}|${data.run?.step}`;
         if (stamp !== lastRunStamp.current) {
@@ -2540,6 +2558,43 @@ const App: React.FC = () => {
             hasCues={segments.some(segment => Boolean(segment.translatedText))}
           />
 
+          {/*
+            打开未完成工程时的选择框。三个都列出来：继续跑（从断点）、从头开始
+            （清空进度，动作更大所以放第二位并写明后果）、先看看（收起，页面仍
+            可用）。用自建对话框而不是 window.confirm —— 原生弹窗的按钮只能叫
+            "确定/取消"，而"取消"在这里既像"取消运行"又像"取消弹窗"，太容易点错。
+          */}
+          {resumePrompt && (
+            <div className="fixed inset-0 z-[9998] flex items-center justify-center bg-black/30 p-6">
+              <div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl">
+                <h3 className="text-sm font-bold text-gray-800">这个工程上次没有跑完</h3>
+                <p className="mt-2 text-xs leading-relaxed text-gray-500">
+                  {resumePrompt.note}。已完成的阶段都保存在服务器上。
+                </p>
+                <div className="mt-4 flex flex-col gap-2">
+                  <button
+                    onClick={handleResumeCancelled}
+                    className="w-full rounded-xl bg-claude-accent px-4 py-2.5 text-sm font-bold text-white transition hover:bg-claude-accentHover cursor-pointer"
+                  >
+                    继续跑（从断点接着走）
+                  </button>
+                  <button
+                    onClick={() => void handleRestartFromScratch()}
+                    className="w-full rounded-xl border border-gray-300 px-4 py-2.5 text-sm font-bold text-gray-600 transition hover:border-red-300 hover:text-red-600 cursor-pointer"
+                  >
+                    从头开始（清空已有进度重跑）
+                  </button>
+                  <button
+                    onClick={handleDismissResumePrompt}
+                    className="w-full rounded-xl px-4 py-2 text-xs text-gray-400 transition hover:text-gray-600 cursor-pointer"
+                  >
+                    先看看
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           <main className="flex-grow flex flex-col container mx-auto p-4 lg:p-6 pt-12 lg:pt-14 min-h-0">
             {/*
               工作流状态条。它是"这个工程此刻在做什么"的唯一权威显示 —— 数据
@@ -2561,7 +2616,7 @@ const App: React.FC = () => {
                             ? `（${runState.progress ?? 0}/${runState.total}）`
                             : ''
                         }`
-                      : `已取消（停在：${RUN_STEP_LABEL[cancelledStep ?? ''] ?? cancelledStep ?? '处理中'}）`}
+                      : (resumeAfterCancel?.note ?? '上次没有跑完')}
                   </span>
                   {runState?.active && (
                     <span className="text-[11px] text-gray-400 tabular-nums shrink-0">
