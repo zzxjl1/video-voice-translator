@@ -202,8 +202,6 @@ const App: React.FC = () => {
   const [runState, setRunState] = useState<RunState | null>(null);
   /** 已发出取消请求，等服务器确认（当前 provider 请求跑完才停）。 */
   const [isCancelling, setIsCancelling] = useState(false);
-  /** 上次被用户停在哪一步（持久化在工程里），用于"继续处理"。 */
-  const [cancelledStep, setCancelledStep] = useState<string | null>(null);
   const [resumeAfterCancel, setResumeAfterCancel] = useState<
     { vid: string; mode: SeparationMode; stems: boolean } | null
   >(null);
@@ -696,7 +694,6 @@ const App: React.FC = () => {
           const isCompleted = data.status === 'completed';
           const isError = data.status === 'error';
           const isUploaded = data.status === 'uploaded';
-          const isIncomplete = !isCompleted && !isError && !isUploaded;
 
           // Restore settings from server
           if (data.separation_backends) setSeparationBackends(data.separation_backends);
@@ -758,7 +755,6 @@ const App: React.FC = () => {
             setSegments(recoveredSegments);
           }
 
-          setCancelledStep(data.cancelled_step ?? null);
           setRunState(data.run ?? null);
 
           if (data.run?.active) {
@@ -1238,7 +1234,6 @@ const App: React.FC = () => {
                 '已完成的产物都已保存在这个工程里，随时可以继续。\n'
             );
             setIsCancelling(false);
-            setCancelledStep(event.step ?? null);
           } else {
             setRawLog(prev => prev + '\n=== All Processing Complete ===\nClosing in 2 seconds...');
           }
@@ -1629,8 +1624,7 @@ const App: React.FC = () => {
               setSegments(recoveredSegments);
             }
 
-            setCancelledStep(data.cancelled_step ?? null);
-            setRunState(data.run ?? null);
+              setRunState(data.run ?? null);
 
             if (!isCompleted) {
               // 同上（会话恢复那条路）：未完成一律弹选择框，不静默续跑。
@@ -1904,7 +1898,6 @@ const App: React.FC = () => {
         const data = await getVideoStatus(videoId);
         if (stopped) return;
         setRunState(data.run ?? null);
-        setCancelledStep(data.cancelled_step ?? null);
         // 只在变化时打，避免轮询刷屏。
         const stamp = `${data.run?.active}|${data.run?.step}`;
         if (stamp !== lastRunStamp.current) {
