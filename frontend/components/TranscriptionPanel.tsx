@@ -37,6 +37,14 @@ interface TranscriptionPanelProps {
     /** 隐藏 / 取消隐藏某一行的字幕（服务端持久化）。配音不受影响。 */
     onToggleHide?: (segmentId: string, hidden: boolean) => void;
     /**
+     * 目标语言没有内置音色（只能靠声音复刻）。
+     *
+     * 不传的话，行菜单里"没有内置音色，请开启声音复刻"那句提示永远不会出现 ——
+     * 用户看到的是一个空的音色选择器，会当成功能缺失。之前这个 prop 在 App 里
+     * 传了、但这里没有声明，所以整条链路是断的（React 类型没装查不出来）。
+     */
+    needsVoiceCloning?: boolean;
+    /**
      * 只重译这一行。「长一点 / 短一点」调整该行的长度预算，自定义要求则注入
      * 一句话的要求 —— 两者都只影响这一行。
      */
@@ -142,11 +150,13 @@ const SegmentCard: React.FC<{
     onPickVoice?: (speakerId: string, voiceId: string) => void;
     onToggleMute?: (segmentId: string, muted: boolean) => void;
     onToggleHide?: (segmentId: string, hidden: boolean) => void;
+    /** 目标语言没有内置音色（只能靠声音复刻）—— 行菜单据此给出提示。 */
+    needsVoiceCloning?: boolean;
     onRetranslate?: (
         segmentId: string,
         opts: { lengthHint?: 'longer' | 'shorter'; customPrompt?: string },
     ) => void;
-}> = memo(({ segment, speaker, isActive, onSegmentUpdate, onSynthesize, onRefit, onSeek, hasClonedVoice, onPreviewVoice, isPreviewingVoice, voices, pinnedVoice, onPickVoice, onToggleMute, onToggleHide, onRetranslate }) => {
+}> = memo(({ segment, speaker, isActive, onSegmentUpdate, onSynthesize, onRefit, onSeek, hasClonedVoice, onPreviewVoice, isPreviewingVoice, voices, pinnedVoice, onPickVoice, onToggleMute, onToggleHide, onRetranslate, needsVoiceCloning }) => {
     const speakerColor = speaker ? getSpeakerColor(speaker.id) : '#9ca3af';
 
     // Speed stats come from the same helper the player uses, so what is shown
@@ -256,6 +266,7 @@ const SegmentCard: React.FC<{
                     <SegmentActionsMenu
                         speakerName={speaker?.name || '该说话人'}
                         voices={voices ?? []}
+                        needsVoiceCloning={needsVoiceCloning}
                         currentVoice={pinnedVoice}
                         onPickVoice={voiceId => onPickVoice?.(segment.speakerId, voiceId)}
                         actions={[
@@ -417,7 +428,8 @@ const SegmentCard: React.FC<{
 export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = memo(({
     segments, speakers, isTranscribing, currentTime, onSegmentUpdate, onSynthesize, onRefit, onSeek,
     clonedVoices, onPreviewVoice, previewingSpeaker,
-    voices, pinnedVoices, onPickVoice, onToggleMute, onToggleHide, onRetranslate
+    voices, pinnedVoices, onPickVoice, onToggleMute, onToggleHide, onRetranslate,
+    needsVoiceCloning
 }) => {
     const speakerMap = new Map(speakers.map(s => [s.id, s]));
     const listRef = React.useRef<HTMLDivElement>(null);
@@ -489,6 +501,7 @@ export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = memo(({
                                 onPickVoice={onPickVoice}
                         onToggleMute={onToggleMute}
                         onToggleHide={onToggleHide}
+                        needsVoiceCloning={needsVoiceCloning}
                         onRetranslate={onRetranslate}
                             />
                         ))}

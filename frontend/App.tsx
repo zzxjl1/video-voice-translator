@@ -10,6 +10,7 @@ import SettingsModal from './components/SettingsModal';
 import StreamingLog from './components/StreamingLog';
 import { TranscriptionPanel } from './components/TranscriptionPanel';
 import { differFromProject } from './utils/settingsDiff';
+import { getSpeakerColor } from './utils/helpers';
 import {
   uploadVideo,
   translateScript,
@@ -206,7 +207,7 @@ const App: React.FC = () => {
   /** 已发出取消请求，等服务器确认（当前 provider 请求跑完才停）。 */
   const [isCancelling, setIsCancelling] = useState(false);
   const [resumeAfterCancel, setResumeAfterCancel] = useState<
-    { vid: string; mode: SeparationMode; stems: boolean } | null
+    { vid: string; mode: SeparationMode; stems: boolean; note: string } | null
   >(null);
   const [isAudioLoading, setIsAudioLoading] = useState<boolean>(false);
   /**
@@ -763,7 +764,15 @@ const App: React.FC = () => {
               setSpeakers(data.speakers);
             } else {
               const uniqueLabels = Array.from(new Set(recoveredSegments.map(s => s.speakerId)));
-              setSpeakers(uniqueLabels.map(label => ({ id: label, name: label })));
+              setSpeakers(
+                uniqueLabels.map(label => ({
+                  id: label,
+                  name: label,
+                  // 颜色是 Speaker 的必填字段：缺了它界面拿到 undefined 会渲染成透明/灰色，
+                  // 而这里是从 segments 反推说话人，没有服务端给的颜色。
+                  color: getSpeakerColor(label),
+                }))
+              );
             }
             setSegments(recoveredSegments);
           }
@@ -1658,7 +1667,15 @@ const App: React.FC = () => {
                 setSpeakers(data.speakers);
               } else {
                 const uniqueLabels = Array.from(new Set(recoveredSegments.map(s => s.speakerId)));
-                setSpeakers(uniqueLabels.map(label => ({ id: label, name: label })));
+                setSpeakers(
+                uniqueLabels.map(label => ({
+                  id: label,
+                  name: label,
+                  // 颜色是 Speaker 的必填字段：缺了它界面拿到 undefined 会渲染成透明/灰色，
+                  // 而这里是从 segments 反推说话人，没有服务端给的颜色。
+                  color: getSpeakerColor(label),
+                }))
+              );
               }
               setSegments(recoveredSegments);
             }
@@ -3040,7 +3057,7 @@ const App: React.FC = () => {
                     voices={voiceOptions}
                     pinnedVoices={pinnedVoices}
                     onPickVoice={handlePickVoice}
-                    voicesNeedCloning={voicesNeedCloning}
+                    needsVoiceCloning={voicesNeedCloning}
                   />
                 </div>
 

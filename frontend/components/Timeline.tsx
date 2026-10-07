@@ -145,7 +145,10 @@ const Timeline: React.FC<TimelineProps> = ({ segments, speakers, duration, curre
                 {formatTime(tooltip.segment.startTime)} – {formatTime(tooltip.segment.endTime)}
               </div>
               <div className="text-gray-400 text-[10px] mt-0.5 max-w-[200px] truncate">
-                {tooltip.segment.text}
+                {/* 有译文就显示译文（用户看到的就是这句），否则回退原文。
+                    原来读的是 `text` —— TranscriptionSegment 上没有这个字段，
+                    于是 tooltip 里那一行永远是空的。 */}
+                {tooltip.segment.translatedText || tooltip.segment.originalText}
               </div>
               <div className="absolute left-1/2 -translate-x-1/2 top-full w-0 h-0 border-l-[5px] border-l-transparent border-r-[5px] border-r-transparent border-t-[5px] border-t-gray-800"></div>
             </div>

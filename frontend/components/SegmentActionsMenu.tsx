@@ -4,7 +4,11 @@ import type { VoiceOption } from '../services/apiService';
 
 export interface SegmentAction {
   label: string;
-  onSelect: () => void;
+  /**
+   * 选中时执行。**有 children 的项不需要它** —— 那种项点开/hover 出二级菜单，
+   * 真正执行的是子项（写一个空函数假装"合法"会让类型骗人）。
+   */
+  onSelect?: () => void;
   /** Shown greyed with the reason, rather than hidden. */
   disabledReason?: string;
   /**
@@ -211,7 +215,7 @@ const SegmentActionsMenu: React.FC<SegmentActionsMenuProps> = ({
       setDraft('');
       return;
     }
-    action.onSelect();
+    action.onSelect?.();
     close();
   };
 
