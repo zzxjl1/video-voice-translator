@@ -22,7 +22,8 @@ Ledger shape, per video (`data/<video_id>/usage.json`):
       "totals": { "calls": n, "cost_yuan": x, "cost_missing_calls": m,
                   "by_step": { step: {calls, cost_yuan, cost_missing} } } }
 
-Wired today: tts. Planned next: asr, llm, clone (enrollment), separation (302.AI).
+Wired: tts, asr, llm, omni (多模态增强 + 智能选材), clone (enrollment)。
+第三方的 302.AI 分离后端已整体移除，因此不再有 separation 这一步的记账。
 """
 
 import json
@@ -32,7 +33,6 @@ import threading
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from app import config
 from app.models import get_video_dir
 
 logger = logging.getLogger(__name__)
@@ -57,10 +57,6 @@ _PRICE_TABLE: dict[tuple[str, str], dict] = {
     ("asr", "qwen-audio-3.1-asr-flash-filetrans"): {
         "input_per_mtoken": 0.8, "output_per_mtoken": 2.7,
     },
-    # 302.AI 人声分离：0.001 PTC/分钟（仅分离，is_only_demucs=true；见
-    # api_separation_service 模块文档），官方帮助中心明确 1 PTC = 1 美金。
-    # 以美元报价，折算用 config.USD_CNY_RATE —— 汇率变动不用改这张表。
-    ("separation", "302ai-vocal-separation"): {"per_audio_minute_usd": 0.001},
     # qwen3.8-omni-flash — 多模态增强识别与克隆选材 (help.aliyun.com
     # model-pricing, fetched 2026-10-07, 北京). Input is ONE price regardless
     # of modality: audio tokens bill the same as text tokens — unlike the
@@ -92,9 +88,6 @@ _PRICE_NOTES: dict[tuple[str, str], str] = {
     ("asr", "qwen-audio-3.1-asr-flash-filetrans"): "免费额度 100 万 token（北京）",
     ("clone", "qwen-voice-enrollment"): "免费额度 1000 个音色/账号（北京）；删除音色不返还",
     ("llm", "deepseek-flash"): "统一按峰时价保守计（实际峰谷/节假日折扣可能减半）",
-    ("separation", "302ai-vocal-separation"): (
-        "0.001 PTC/分钟（仅分离）; 1 PTC = 1 USD，按 USD_CNY_RATE 折算"
-    ),
 }
 
 
@@ -104,18 +97,6 @@ def _compute_cost(step: str, model: str, entry: dict) -> float | None:
         return None
     if "per_unit" in rule:
         return rule["per_unit"]
-    if "per_audio_minute_usd" in rule or "per_audio_minute" in rule:
-        # 按音频时长计价（第三方分离服务常见口径）。时长取记录时落下的
-        # audio_seconds（服务端给的 duration 优先）—— 没有时长是"未知"，不是 0。
-        seconds = entry.get("audio_seconds")
-        if not seconds:
-            return None
-        minutes = float(seconds) / 60.0
-        if "per_audio_minute_usd" in rule:
-            # 以美元报价的服务（302.AI 的 PTC）：折算用 config.USD_CNY_RATE，
-            # 这样汇率变动不用改这张表。
-            return minutes * rule["per_audio_minute_usd"] * config.USD_CNY_RATE
-        return minutes * rule["per_audio_minute"]
     if not ("input_tokens" in entry or "output_tokens" in entry):
         # 规则按 token 计价，但这次调用没拿到任何 token 用量 —— 这是"未知数量"，
         # 不是"0 元"。原来返回 0.0 会被记成 cost_yuan=0 + cost_source=computed，
@@ -172,14 +153,6 @@ def record(
     # input_tokens/output_tokens. Both are accepted. DeepSeek additionally
     # splits the prompt into cache-hit vs cache-miss, which the price table
     # needs — recorded verbatim, the miss side is derived at compute time.
-    # 计费时长：DashScope 的 ASR 任务在 usage.duration 里给秒数；第三方服务用
-    # audio_seconds（本地 ffprobe）补。按分钟计价的规则靠它算钱。
-    seconds = usage.get("duration") or usage.get("audio_seconds")
-    if seconds:
-        try:
-            entry["audio_seconds"] = round(float(seconds), 3)
-        except (TypeError, ValueError):
-            pass
     input_tokens = int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
     output_tokens = int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
     if input_tokens:

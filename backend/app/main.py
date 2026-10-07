@@ -27,7 +27,7 @@ async def lifespan(app: FastAPI):
     logger.info("Running startup tasks...")
 
     # Nothing to preload: vocal separation runs either in the browser (the
-    # server only hands over the ONNX weights) or on 302.AI. There is no local
+    # server only hands over the ONNX weights). There is no local
     # model to warm up, which is exactly the point on a small host.
     parts = []
     for name, info in config.separation_capabilities().items():

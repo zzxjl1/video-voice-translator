@@ -8,7 +8,7 @@ phase on retry.
 Designed for a small host (2 GB / single core / no GPU):
 
 * Vocal separation never runs here. It is either done in the browser (MDX-Net
-  over WebGPU/WASM, with the stems uploaded to us) or by 302.AI over HTTPS.
+  over WebGPU/WASM, with the stems uploaded to us).
   Do not reintroduce a local (torch) separator.
 * ASR / translation / TTS / cloning are all remote calls, so the local CPU
   only orchestrates.
@@ -89,7 +89,7 @@ async def run_pipeline(
         target_language: Target language for translation (e.g. "English").
         server_url_base: Base URL for serving audio files to ASR.
         emit: async callable(event_dict) to push SSE events to the client.
-        separation_mode: "client" (browser), "api" (302.AI) or "off". Defaults
+        separation_mode: "client" (browser) or "off". Defaults
             to config.SEPARATION_MODE. Validated against the backends that are
             actually usable; an unusable choice degrades to "off" and reports
             the reason.
@@ -148,15 +148,25 @@ async def run_pipeline(
     # Resolve the separation backend for this job.
     #
     # Separation never runs locally: this host has no GPU and the torch-based
-    # backend was removed. Either the browser already produced the stems
-    # (POST /api/videos/{id}/stems drops vocals.wav + background.wav into the
-    # video directory) or the 302.AI backend does it over HTTPS.
+    # backend was removed. It happens in the browser, which POSTs the stems to
+    # /api/videos/{id}/stems (dropping vocals.wav + background.wav into the
+    # video directory).
     #
     # The client's choice is a *request*: it is validated against
     # config.separation_capabilities() so a stale or hand-crafted value can
     # never send us down a path that cannot work.
     # ------------------------------------------------------------------
     separation_mode = (separation_mode or config.SEPARATION_MODE or "off").lower()
+    if separation_mode == "api":
+        # 旧工程里存着 "api"（302.AI，已移除）。直接当未知会掉到 "off"，那是
+        # "这次不分离"，而用户当初选的是"要分离" —— 映射到浏览器后端更贴近
+        # 原意，并会随下面的"Persist settings"落盘纠正。
+        logger.warning(
+            "[%s] separation_mode 'api' (302.AI) is gone; using 'client' "
+            "(in-browser separation) instead.",
+            video_id,
+        )
+        separation_mode = "client"
     if separation_mode not in config.VALID_SEPARATION_MODES:
         logger.warning(
             "[%s] Unknown separation_mode %r, falling back to 'off'",
@@ -240,8 +250,8 @@ async def run_pipeline(
         # Phase 0: Vocal Separation
         #
         # Nothing runs locally. "client" means the browser already produced the
-        # stems and uploaded them; "api" calls 302.AI over HTTPS; "off" does
-        # nothing. There is no torch path any more — this host has no GPU.
+        # stems and uploaded them; "off" does nothing. There is no torch path any
+        # more — this host has no GPU.
         # =====================================================
         audio_path = os.path.join(video_dir, "extracted_audio.wav")
         vocals_path = os.path.join(video_dir, "vocals.wav")
@@ -275,35 +285,6 @@ async def run_pipeline(
                         "the browser did not upload separation stems; "
                         "using the original mixed audio"
                     ),
-                })
-        elif separation_mode == "api":
-            from app.services import api_separation_service
-
-            await emit({"phase": "separation", "status": "started", "mode": "api"})
-            try:
-                await api_separation_service.separate_audio(
-                    video_id=video_id,
-                    audio_path=audio_path,
-                    video_dir=video_dir,
-                    server_url_base=server_url_base,
-                    emit=emit,
-                )
-                await emit({
-                    "phase": "separation",
-                    "status": "done",
-                    "mode": "api",
-                    "background_url": background_url,
-                })
-            except Exception as e:  # noqa: BLE001 - degrade, never kill the job
-                logger.error(
-                    "[%s] 302.AI separation failed: %s", video_id, e, exc_info=True
-                )
-                await emit({
-                    "phase": "separation",
-                    "status": "failed",
-                    "mode": "api",
-                    "error": str(e),
-                    "message": "continuing with the original mixed audio",
                 })
         else:
             await emit({"phase": "separation", "status": "skipped", "mode": "off"})

@@ -135,7 +135,6 @@ function downloadFile(source: string | Blob, filename: string): void {
 /** Human-readable names for the separation backends. */
 const SEPARATION_MODE_LABEL: Record<SeparationMode, string> = {
   client: 'in-browser (MDX-Net)',
-  api: '302.AI',
   off: 'off',
 };
 
@@ -153,7 +152,10 @@ function restoreSeparationMode(
   data: { separation_mode?: string },
   backends?: SeparationBackends,
 ): SeparationMode {
-  const stored = (data.separation_mode ?? 'off') as SeparationMode;
+  const raw = data.separation_mode ?? 'off';
+  // 旧工程可能存着 "api"（302.AI，已移除）：它不再是合法值，而且
+  // `backends['api']` 会是 undefined —— 旧代码的 `?? true` 会把它当成"可用"。
+  const stored: SeparationMode = raw === 'api' ? 'client' : (raw as SeparationMode);
   if (stored === 'off') return 'off';
   return (backends?.[stored]?.available ?? true) ? stored : 'off';
 }
@@ -411,12 +413,9 @@ const App: React.FC = () => {
     off: { available: true, reason: null },
   };
 
-  /** Best backend that can actually run: browser first (free), then the paid API. */
+  /** Best backend that can actually run: the browser one (the only real one). */
   const pickAvailableSeparationMode = (): SeparationMode | null => {
-    for (const mode of ['client', 'api'] as SeparationMode[]) {
-      if (effectiveBackends[mode]?.available) return mode;
-    }
-    return null;
+    return effectiveBackends.client?.available ? 'client' : null;
   };
 
   const handleVoiceCloneChange = (v: boolean) => {
@@ -437,7 +436,7 @@ const App: React.FC = () => {
       return;
     }
 
-    const reasons = (['client', 'api'] as SeparationMode[])
+    const reasons = (['client'] as SeparationMode[])
       .map(m => `${SEPARATION_MODE_LABEL[m]} — ${effectiveBackends[m]?.reason ?? 'unavailable'}`)
       .join('; ');
     window.alert(

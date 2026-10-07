@@ -10,8 +10,10 @@ import type { SeparationMode, SeparationBackends } from '../services/apiService'
  * the server's own reason shown, so the user is never offered something that
  * would fail later.
  *
- * There is intentionally no self-hosted (PyTorch) option: the deployment has no
- * GPU and a local separator would just make the host swap.
+ * Two options only: the browser backend and "off". There is intentionally no
+ * self-hosted (PyTorch) option (no GPU on the deployment) and no third-party
+ * API backend — the 302.AI one was removed on 2026-10-08 as unreliable from
+ * mainland networks.
  */
 
 const OPTIONS: { mode: SeparationMode; label: string; hint: string }[] = [
@@ -19,11 +21,6 @@ const OPTIONS: { mode: SeparationMode; label: string; hint: string }[] = [
     mode: 'client',
     label: 'In-browser',
     hint: 'Runs the MDX-Net model locally via WebGPU/WASM. Free and private; the first run downloads a 64 MB model, cached afterwards.',
-  },
-  {
-    mode: 'api',
-    label: '302.AI',
-    hint: 'Separates on 302.AI servers. Handles hard mixes better, but is billed per use.',
   },
   {
     mode: 'off',

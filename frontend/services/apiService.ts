@@ -273,12 +273,11 @@ export function getExportDownloadUrl(videoId: string): string {
 /**
  * Backend used to split vocals from background music.
  *  - "client": the browser runs the MDX-Net ONNX model (WebGPU/WASM)
- *  - "api":    302.AI's demucs endpoint does it server-side (paid)
  *  - "off":    no separation
  * There is deliberately no self-hosted (PyTorch) option: the deployment has no
  * GPU and a local separator would just make the host swap.
  */
-export type SeparationMode = 'client' | 'api' | 'off';
+export type SeparationMode = 'client' | 'off';
 
 export interface BackendAvailability {
   available: boolean;
@@ -451,9 +450,9 @@ export async function processVideo(
     body: JSON.stringify({
       target_language: targetLanguage,
       accent: options?.accent ?? '',
-      // Which backend splits the vocals: "client" (browser, default), "api"
-      // (302.AI) or "off". The server validates this against the backends it
-      // can actually run and degrades to "off" if the choice is unusable.
+      // Which backend splits the vocals: "client" (browser, default) or
+      // "off". The server validates this against the backends it can actually
+      // run and degrades to "off" if the choice is unusable.
       separation_mode: options?.separationMode ?? 'client',
       enable_voice_clone: options?.enableVoiceClone ?? false,
       mm_enhance: options?.mmEnhance ?? false,

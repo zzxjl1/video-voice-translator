@@ -25,7 +25,6 @@ export interface CurrentSettings {
 /** 分离方式的人话名（给用户看差异列表用）。 */
 const SEPARATION_LABELS: Record<string, string> = {
   client: '浏览器分离',
-  api: '302.AI 分离',
   off: '不分离',
 };
 

@@ -136,10 +136,10 @@ class VideoStatusResponse(BaseModel):
     subtitle_export: dict = {}
     subtitle_capabilities: dict = {}
     # Separation backend the pipeline should use for this video:
-    # "client" (browser runs MDX-Net and uploads stems), "api" (302.AI) or "off".
+    # "client" (browser runs MDX-Net and uploads stems) or "off".
     separation_mode: str = "client"
     # Per-backend availability + the reason an option is unusable:
-    # {"client": {"available": bool, "reason": str|None}, "api": {...}, "off": {...}}
+    # {"client": {"available": bool, "reason": str|None}, "off": {...}}
     separation_backends: dict = {}
     # Live workflow state (active=false when nothing is running):
     # {active, step, step_status, progress, total, cancelling, elapsed_s, started_at}

@@ -630,15 +630,18 @@ def voices_for_language(language: Optional[str]) -> list[str]:
 # Vocal separation
 # =====================================================================
 #
-# Two real backends. There is deliberately NO self-hosted (PyTorch) option:
+# One real backend. There is deliberately NO self-hosted (PyTorch) option:
 # `audio-separator` needs hundreds of MB of RSS and a GPU to be usable, and
 # this deployment has neither. Do not add it back.
 #
 #   "client" — the BROWSER runs the MDX-Net ONNX model (WebGPU/WASM) and
 #              uploads the resulting stems. No server CPU/RAM cost, no API
 #              cost. Default.
-#   "api"    — 302.AI's demucs endpoint does the separation (paid, per use).
 #   "off"    — never separate.
+#
+# The 302.AI ("api") backend was removed on 2026-10-08: a paid third-party
+# dependency whose published hosts are unreliable from mainland networks, while
+# the browser backend covers the same need for free. Do not add it back.
 #
 # `SEPARATION_MODE` is only the DEFAULT the UI starts from. The user picks a
 # backend per job and the choice travels in `ProcessRequest.separation_mode`;
@@ -654,47 +657,20 @@ ENABLE_BGM_SEPARATION_DEFAULT = _env_bool("ENABLE_BGM_SEPARATION_DEFAULT", False
 MODELS_DIR = os.path.join(BASE_DIR, "models")
 SEPARATOR_MODEL_FILE = _env("SEPARATOR_MODEL_FILE", "UVR-MDX-NET-Inst_HQ_3.onnx")
 
-# ----- 302.AI ("api") backend -----
-# Host matters. 302.AI publishes two:
-#     https://api.302.ai   — 海外, DNS-poisoned on mainland-China networks. It
-#                            resolves to Facebook-owned IPs (observed
-#                            66.220.148.145 and 31.13.95.33) and never
-#                            completes a TLS handshake. Do not use it here.
-#     https://api.302ai.com — 国内环境2, documented and reachable.
-# `https://api.302ai.cn` also works (Tencent Cloud, fastest of the three) but
-# is not in the published spec, so the documented host is the default.
-#
-# A task_id is scoped to the environment that issued it (note the `-e1` / `-e2`
-# suffix), so submit and poll MUST use the same host.
-#
-# Both endpoints take a PUBLICLY REACHABLE audio URL — 302's servers download it
-# themselves — so this backend needs SERVER_URL_BASE to be public.
-# 美元兑人民币：只用于把以美元/点数计价的第三方服务折算进台账（人民币）。
-# 默认 6.74 取 2026-10-06 中间价 6.7351 的两位；汇率变动时改 .env 即可。
-USD_CNY_RATE = _env_float("USD_CNY_RATE", 6.74)
+# 这里【没有】第三方分离后端：302.AI（"api" 模式）已于 2026-10-08 整体移除，
+# 相关配置（SEPARATION_API_* 与为它折算美元价格而入的 USD_CNY_RATE）一并删除。
 
-SEPARATION_API_BASE = _env("SEPARATION_API_BASE", "https://api.302ai.com").rstrip("/")
-# POST -> {"task_id": "<uuid>-e2"}
-SEPARATION_API_PATH = _env("SEPARATION_API_PATH", "/302/vt/subtitle/extract")
-# GET -> {"status": "...", "result": {...}, "progress": <int|absent>}
-# status is one of: pending | queue | processing | success | fail
-SEPARATION_API_RESULT_PATH = _env(
-    "SEPARATION_API_RESULT_PATH", "/302/vt/tasks/subtitle/{task_id}"
-)
-# Read without `_secret()`: the API backend is optional, so a missing key must
-# not stop the app from booting.
-SEPARATION_API_KEY = (os.environ.get("SEPARATION_API_KEY") or "").strip()
-SEPARATION_API_TIMEOUT = _env_int("SEPARATION_API_TIMEOUT", 600)
-SEPARATION_API_POLL_INTERVAL = _env_float("SEPARATION_API_POLL_INTERVAL", 5.0)
-# `language` is a required field, but with is_only_demucs=true nothing is
-# transcribed, so it only has to be a valid code (e.g. "zh", "en"). The source
-# language is not known this early in the pipeline — separation runs before ASR.
-SEPARATION_API_LANGUAGE = _env("SEPARATION_API_LANGUAGE", "en")
-# 这里没有 enabled 开关：这个后端能不能用，取决于 key 配没配 —— 那是它真正
-# 需要的东西。配置齐全就让用户选，能力不足就在界面上说明原因（见
-# separation_capabilities），而不是再加一个得跟 key 一起摆对的开关。
+SEPARATION_MODE = SEPARATION_MODE if SEPARATION_MODE in ("client", "off") else "client"
+if SEPARATION_MODE != _env("SEPARATION_MODE", "client").lower():
+    # .env 里残留 "api"（302.AI，已移除）时不该把它发给前端 —— 那会变成一个
+    # 界面上不存在的后端选项。
+    logger.warning(
+        "SEPARATION_MODE=%r is not a valid backend (302.AI was removed); "
+        "using 'client'.",
+        _env("SEPARATION_MODE", "client"),
+    )
 
-VALID_SEPARATION_MODES = ("client", "api", "off")
+VALID_SEPARATION_MODES = ("client", "off")
 
 
 def separation_capabilities() -> dict[str, dict]:
@@ -709,11 +685,6 @@ def separation_capabilities() -> dict[str, dict]:
     browser_model = os.path.join(MODELS_DIR, SEPARATOR_MODEL_FILE)
     browser_ok = os.path.exists(browser_model)
 
-    if not SEPARATION_API_KEY:
-        api_ok, api_reason = False, "SEPARATION_API_KEY is not configured"
-    else:
-        api_ok, api_reason = True, None
-
     return {
         "client": {
             "available": browser_ok,
@@ -721,7 +692,6 @@ def separation_capabilities() -> dict[str, dict]:
             if browser_ok
             else f"separator model '{SEPARATOR_MODEL_FILE}' not found in {MODELS_DIR}",
         },
-        "api": {"available": api_ok, "reason": api_reason},
         "off": {"available": True, "reason": None},
     }
 

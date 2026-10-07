@@ -80,7 +80,7 @@ class VideoState:
     error_message: Optional[str] = None
     segments: list[Segment] = field(default_factory=list)
     speakers: list[Speaker] = field(default_factory=list)
-    # Which backend performed separation: "client" (browser), "api" (302.AI)
+    # Which backend performed separation: "client" (browser)
     # or "off". Persisted so a resumed run keeps the same choice. Empty string
     # means "no pipeline has run yet", so the status endpoint reports the server
     # default for a project that has not started instead of reading as one that
