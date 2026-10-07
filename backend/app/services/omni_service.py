@@ -23,10 +23,20 @@ from app.services import usage_service
 
 logger = logging.getLogger(__name__)
 
+# 超时是量过之后定的：这里传的是音频 URL，由模型服务端去拉。URL 不可达时它
+# 会一直重试下载，而 SDK 默认重试 2 次、每次 300s —— 单次调用最坏能把管线拖
+# 住 15 分钟，界面上看起来就是"卡在 ASR 之后不动了"。
+#   - timeout=300：实测一次真实调用（9 行、42 秒音频）耗时 120.6s，所以 180s
+#     太紧（慢一点就误判失败），而 300s 留了一倍余量。这是【单次】上限，不乘
+#     重试次数。
+#   - max_retries=0：管线对 omni 的失败本来就是降级继续（用原始 ASR 文本），
+#     重试没有价值，只会把"失败"拖成"卡住"。
+# 更长的视频会超出这个预算并降级 —— 那时的正解是分块送（未做）。
 _client = AsyncOpenAI(
     api_key=config.DASHSCOPE_API_KEY,
     base_url=config.OMNI_BASE_URL,
     timeout=300,
+    max_retries=0,
 )
 
 

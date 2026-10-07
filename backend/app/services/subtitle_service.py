@@ -243,7 +243,9 @@ class ExportPlan:
 def default_export_plan() -> ExportPlan:
     """The plan a video starts with, from config."""
     return ExportPlan(
-        enabled=config.SUBTITLE_EXPORT_ENABLED,
+        # 默认开启；能力差异（容器是否支持多轨、烧字幕只有浏览器能做等）由
+        # 导出计划的能力位逐项如实上报，不设全局闸门。
+        enabled=True,
         format=config.SUBTITLE_EXPORT_FORMAT,
         tracks=list(config.SUBTITLE_EXPORT_TRACKS) or ["translated"],
         default_track=(config.SUBTITLE_EXPORT_TRACKS or ["translated"])[0],

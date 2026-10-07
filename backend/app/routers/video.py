@@ -221,7 +221,7 @@ async def get_video_status(video_id: str):
         has_tts=os.path.exists(os.path.join(video_dir, "tts_results.json")),
         has_export=has_export,
         export_url=f"/api/videos/{video_id}/export/download" if has_export else None,
-        export_available=export_service.is_available() and config.EXPORT_ENABLED,
+        export_available=export_service.is_available(),
         # Which container the finished file is in, so the UI can label the
         # download correctly (and re-initialise its export panel).
         export_container=export_found[1] if export_found else None,
@@ -663,11 +663,67 @@ async def serve_separation_source(video_id: str):
     return FileResponse(stereo_path, media_type="audio/wav")
 
 
+# ---------------------------------------------------------------------------
+# One live pipeline per video.
+#
+# Every POST /process used to start its OWN pipeline task. Two clicks on 开始处理
+# (or a retry after something looked stuck) therefore ran two full pipelines over
+# the same project at once: interleaved phase logs, the script translated twice,
+# and both runs synthesizing the same segments — the TTS provider saw double
+# traffic and one segment failed with a rate/limit error that never happened on
+# a single run.
+#
+# Now the FIRST request starts the run, and any later request for the same video
+# SUBSCRIBES to it: it replays the events emitted so far, then follows live. A
+# retry is harmless — it just re-attaches to the work already in flight.
+#
+# Requests that differ in their parameters are not the same job, and silently
+# attaching them to the wrong run would apply the wrong settings; those get 409
+# rather than a surprising result.
+# ---------------------------------------------------------------------------
+_EOF = object()  # stream sentinel; never serialized to the client
+
+
+class _PipelineRun:
+    def __init__(self, signature: str) -> None:
+        self.signature = signature
+        self.subscribers: set = set()
+        self.history: list[dict] = []
+        self.finished = False
+
+    async def emit(self, event: dict) -> None:
+        # History is what makes a late subscriber's log complete rather than
+        # starting mid-sentence.
+        self.history.append(event)
+        for q in list(self.subscribers):
+            q.put_nowait(event)
+
+    def subscribe(self):
+        import asyncio
+        q: asyncio.Queue = asyncio.Queue()
+        for event in self.history:
+            q.put_nowait(event)
+        if self.finished:
+            q.put_nowait(_EOF)
+        else:
+            self.subscribers.add(q)
+        return q
+
+    def unsubscribe(self, q) -> None:
+        self.subscribers.discard(q)
+
+
+_RUNNING_PIPELINES: dict[str, _PipelineRun] = {}
+
+
 @router.post("/{video_id}/process")
 async def process_video(video_id: str, req: ProcessRequest):
     """
     Run the full processing pipeline (separation → ASR → translation → TTS)
     with SSE progress streaming. Frontend only needs to call this once after upload.
+
+    Calling it again while a run is live attaches to that run (see the registry
+    note above) instead of starting a second one.
     """
     import asyncio
     import json as _json
@@ -678,19 +734,40 @@ async def process_video(video_id: str, req: ProcessRequest):
     if not state:
         raise HTTPException(status_code=404, detail="Video not found")
 
-    async def event_stream():
-        queue = asyncio.Queue()
+    signature = _json.dumps(
+        {
+            "target_language": req.target_language,
+            "accent": req.accent,
+            "separation_mode": req.separation_mode,
+            "enable_voice_clone": req.enable_voice_clone,
+            "mm_enhance": req.mm_enhance,
+            "clone_smart_pick": req.clone_smart_pick,
+            "custom_prompt": (req.custom_prompt or "").strip()[:500],
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+    )
 
-        async def emit(event: dict):
-            await queue.put(event)
+    run = _RUNNING_PIPELINES.get(video_id)
+    if run is not None and not run.finished:
+        if run.signature != signature:
+            raise HTTPException(
+                status_code=409,
+                detail="这个工程正在用另一组参数处理中，请等它跑完再改设置重试。",
+            )
+        logger.info(f"[{video_id}] Attaching to the pipeline already running")
 
-        async def run():
+    if run is None or run.finished:
+        run = _PipelineRun(signature)
+        _RUNNING_PIPELINES[video_id] = run
+
+        async def drive() -> None:
             try:
                 await pipeline_service.run_pipeline(
                     video_id=video_id,
                     target_language=req.target_language,
                     server_url_base=config.SERVER_URL_BASE,
-                    emit=emit,
+                    emit=run.emit,
                     separation_mode=req.separation_mode,
                     enable_voice_clone=req.enable_voice_clone,
                     accent=req.accent,
@@ -700,17 +777,26 @@ async def process_video(video_id: str, req: ProcessRequest):
                 )
             except Exception as e:
                 logger.error(f"[{video_id}] Pipeline error: {e}", exc_info=True)
-                await queue.put({"error": str(e)})
+                await run.emit({"error": str(e)})
             finally:
-                await queue.put(None)  # sentinel
+                # Deregister BEFORE the sentinel: a request landing in between
+                # gets a fresh run rather than a stream that is already over.
+                run.finished = True
+                _RUNNING_PIPELINES.pop(video_id, None)
+                await run.emit(_EOF)
 
-        task = asyncio.create_task(run())
+        asyncio.create_task(drive())
 
-        while True:
-            msg = await queue.get()
-            if msg is None:
-                break
-            yield f"data: {_json.dumps(msg)}\n\n"
+    async def event_stream():
+        queue = run.subscribe()
+        try:
+            while True:
+                msg = await queue.get()
+                if msg is _EOF:
+                    break
+                yield f"data: {_json.dumps(msg)}\n\n"
+        finally:
+            run.unsubscribe(queue)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -1062,9 +1148,6 @@ async def export_video(video_id: str, req: Optional[ExportRequest] = None):
     state = get_state(video_id)
     if not state:
         raise HTTPException(status_code=404, detail="Video not found")
-
-    if not config.EXPORT_ENABLED:
-        raise HTTPException(status_code=503, detail="Export is disabled on this server")
 
     if not export_service.is_available():
         raise HTTPException(

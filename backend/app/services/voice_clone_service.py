@@ -33,7 +33,7 @@ import logging
 import os
 import re
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 import dashscope
 from dashscope.audio.tts_v2 import VoiceEnrollmentService, SpeechSynthesizer
@@ -469,6 +469,7 @@ async def clone_voice_for_speaker(
     speaker_id: str,
     segments: list[Segment],
     server_url_base: str,
+    emit: Optional[Callable] = None,
 ) -> tuple[str, bool]:
     """
     Clone voice for a speaker:
@@ -482,6 +483,11 @@ async def clone_voice_for_speaker(
     The cloned voice_id is cached and persisted to disk. `reused` is False only
     when a NEW enrollment actually happened — the one path that consumes
     enrollment quota; the two cache-hit paths log "ALREADY EXISTS" and are free.
+
+    `emit` (optional) reports the 智能选材 step to the UI: which segments omni
+    picked, or that it fell back to the rules. Without it the picker is
+    invisible — the user turns the switch on and nothing anywhere says whether
+    it ran.
     """
     logger.info(
         f"[Clone] ========== Start voice cloning for {speaker_id} (video={video_id}) =========="
@@ -540,14 +546,20 @@ async def clone_voice_for_speaker(
     sample_path = os.path.join(speaker_clone_dir, "sample.wav")
     logger.info(f"[Clone] Output sample path = {sample_path}")
 
-    # Select segments (greedy, time-ordered, max 20s with 2s gaps)
+    # Select segments (longest-first, 20s cap, 1s gaps — see the constraints
+    # block at the top of this module)
     logger.info(f"[Clone] Step 1a: Selecting segments for {speaker_id}...")
     selected: list[Segment] | None = None
-    # 智能选材需要两个开关同时打开：全局能力开关 + 本工程的用户开关
+    # 唯一的控制是这个工程的开关（用户点出来的那个），没有全局闸门。
+    # 读不到 state 时按关处理：配置未知就不擅自花一次 omni 调用。
     _state = get_state(video_id)
-    smart_enabled = bool(
-        config.CLONE_OMNI_PICKER and _state is not None and _state.clone_smart_pick
-    )
+    smart_enabled = bool(_state is not None and _state.clone_smart_pick)
+    if smart_enabled and emit is not None:
+        await emit({
+            "phase": "voice_clone",
+            "status": "picking",
+            "speaker_id": speaker_id,
+        })
     if smart_enabled:
         # 智能选材：omni 听音频挑参考段。任何失败都回退规则 —— 这是增强，
         # 不是依赖。
@@ -570,17 +582,55 @@ async def clone_voice_for_speaker(
                      if s.speaker_id == speaker_id and s.id in picked_set),
                     key=lambda s: s.start_time,
                 )
-                logger.info(f"[Clone] Step 1a: omni picked {len(selected)} segment(s)")
+                if selected:
+                    logger.info(f"[Clone] Step 1a: omni picked {len(selected)} segment(s)")
+                    if emit is not None:
+                        await emit({
+                            "phase": "voice_clone",
+                            "status": "picked",
+                            "speaker_id": speaker_id,
+                            "picked": [s.id for s in selected],
+                        })
+                else:
+                    # picks 非空但一个都对不上本说话人（pick_samples 自带校验，
+                    # 这里是兜底）：当作挑选失败回退规则，而不是让后面
+                    # "no suitable segments" 硬失败。
+                    logger.warning(
+                        f"[Clone] Step 1a: omni picked {len(picks)} id(s), none "
+                        f"matched {speaker_id} — falling back to rule-based selection"
+                    )
+                    selected = None
+                    if emit is not None:
+                        await emit({
+                            "phase": "voice_clone",
+                            "status": "pick_failed",
+                            "speaker_id": speaker_id,
+                            "error": "omni 挑出的 id 都不属于该说话人",
+                        })
             else:
                 logger.warning(
                     f"[Clone] Step 1a: omni picker returned nothing — "
                     f"falling back to rule-based selection"
                 )
+                if emit is not None:
+                    await emit({
+                        "phase": "voice_clone",
+                        "status": "pick_failed",
+                        "speaker_id": speaker_id,
+                        "error": "omni 没有挑出任何段",
+                    })
         except Exception as e:
             logger.warning(
                 f"[Clone] Step 1a: omni picker failed ({e}) — "
                 f"falling back to rule-based selection"
             )
+            if emit is not None:
+                await emit({
+                    "phase": "voice_clone",
+                    "status": "pick_failed",
+                    "speaker_id": speaker_id,
+                    "error": str(e)[:120],
+                })
     if selected is None:
         candidates = _filter_candidates(segments, speaker_id)
         selected = _select_segments_for_speaker(segments, speaker_id, candidates=candidates)
@@ -598,7 +648,7 @@ async def clone_voice_for_speaker(
             f"Insufficient audio for speaker {speaker_id}: only {total_voice:.1f}s (need ≥1s)"
         )
 
-    # Build sample with ffmpeg (segments + 2s gaps)
+    # Build sample with ffmpeg (segments + 1s gaps)
     logger.info(f"[Clone] Step 1b: Building sample with ffmpeg...")
     loop = asyncio.get_event_loop()
     sample_dur = await loop.run_in_executor(

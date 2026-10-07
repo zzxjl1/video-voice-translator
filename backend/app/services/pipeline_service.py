@@ -504,6 +504,7 @@ async def run_pipeline(
                         speaker_id=spk_id,
                         segments=state.segments,
                         server_url_base=server_url_base,
+                        emit=emit,
                     )
                     await emit({
                         "phase": "voice_clone",

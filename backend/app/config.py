@@ -283,7 +283,10 @@ ASR_DIARIZATION_MODELS = {
     ).split(",")
     if m.strip()
 }
-ASR_DIARIZATION_ENABLED = _env_bool("ASR_DIARIZATION_ENABLED", True)
+# 说话人分离没有全局开关：总是请求分离，模型不支持时由 _build_attempt_plan
+# 自动降级（同模型不带分离 → 备用模型带分离）。曾经有个
+# ASR_DIARIZATION_ENABLED 环境变量，一关就把所有说话人悄悄并成一个，界面
+# 上只会显示"说话人 1"，而没有任何地方能看出这是被配置关掉的。
 # Used when the configured model rejects `diarization_enabled`. Deliberately a
 # different model family so a provider-side outage of one line still works.
 ASR_FALLBACK_MODEL = _env("ASR_FALLBACK_MODEL", "fun-asr")
@@ -352,7 +355,10 @@ TTS_TIMEOUT = _env_int("TTS_TIMEOUT", 60)
 #   2. 给每句标注情感控制标签（[excited] 等）与拟声标签（[laughing] 等）。
 # 纠错+标注后的文本作为翻译输入（DeepSeek 的提示词会要求原样保留标签），
 # 译文进 TTS 时标签被渲染成语气。标注结果随工程落盘，恢复时直接复用。
-MULTIMODAL_ENHANCE = _env_bool("MULTIMODAL_ENHANCE", False)
+#
+# 这里【没有】全局开关：唯一的控制是工程里那个可见开关（「多模态增强识别」，
+# 随工程持久化，默认关）。曾经有个 MULTIMODAL_ENHANCE 环境变量，但没有任何
+# 代码读它 —— 一个叫得像总闸门、实际什么都不做的配置，比没有更糟。
 OMNI_MODEL = _env("OMNI_MODEL", "qwen3.8-omni-flash")
 OMNI_BASE_URL = _env("OMNI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
 # 白名单 = TTS 文档列出的标签（2026-10）。omni 返回的标签凡不在表内一律丢弃。
@@ -370,9 +376,13 @@ EMOTION_MAX_CONTROL_PER_LINE = 1
 EMOTION_MAX_RICH_PER_LINE = 2
 
 # ---- 智能选材：omni 听音频挑克隆参考段 ----
-# 开启后（依赖声音复刻开关）由 omni 模型通过 tool call 从候选段里挑选参考素
-# 材，每轮选择都校验（id 归属 / 时长 / 重叠），最多 MAX_TURNS 轮，失败回退规则。
-CLONE_OMNI_PICKER = _env_bool("CLONE_OMNI_PICKER", False)
+# 由 omni 模型通过 tool call 从候选段里挑选参考素材，每轮选择都校验（id 归属 /
+# 时长 / 重叠），最多 MAX_TURNS 轮，失败回退规则。
+#
+# 这里【没有】全局闸门：唯一的控制是工程里那个可见开关（VideoUpload 的
+# 「智能选材」，随工程持久化，默认关）。曾经有过一个默认 False 的
+# CLONE_OMNI_PICKER 环境开关，效果是用户打开界面开关、以为生效了、实际每次
+# 都在走规则选材，且界面上没有任何提示 —— 一个看不见的第二控制权不该存在。
 CLONE_OMNI_MAX_TURNS = _env_int("CLONE_OMNI_MAX_TURNS", 5)
 
 # Number of concurrent synthesis calls. This is I/O bound (blocking SDK call
@@ -691,9 +701,9 @@ SEPARATION_API_POLL_INTERVAL = _env_float("SEPARATION_API_POLL_INTERVAL", 5.0)
 # transcribed, so it only has to be a valid code (e.g. "zh", "en"). The source
 # language is not known this early in the pipeline — separation runs before ASR.
 SEPARATION_API_LANGUAGE = _env("SEPARATION_API_LANGUAGE", "en")
-# While false the "api" backend reports itself unavailable *with a reason*,
-# instead of being selectable and then failing halfway through a job.
-SEPARATION_API_ENABLED = _env_bool("SEPARATION_API_ENABLED", False)
+# 这里没有 enabled 开关：这个后端能不能用，取决于 key 配没配 —— 那是它真正
+# 需要的东西。配置齐全就让用户选，能力不足就在界面上说明原因（见
+# separation_capabilities），而不是再加一个得跟 key 一起摆对的开关。
 
 VALID_SEPARATION_MODES = ("client", "api", "off")
 
@@ -710,9 +720,7 @@ def separation_capabilities() -> dict[str, dict]:
     browser_model = os.path.join(MODELS_DIR, SEPARATOR_MODEL_FILE)
     browser_ok = os.path.exists(browser_model)
 
-    if not SEPARATION_API_ENABLED:
-        api_ok, api_reason = False, "the 302.AI backend is not enabled on this server"
-    elif not SEPARATION_API_KEY:
+    if not SEPARATION_API_KEY:
         api_ok, api_reason = False, "SEPARATION_API_KEY is not configured"
     else:
         api_ok, api_reason = True, None
@@ -766,7 +774,9 @@ SEPARATOR_PARAMS = {
 # Export (ffmpeg mux, video stream copied -> no re-encode)
 # =====================================================================
 
-EXPORT_ENABLED = _env_bool("EXPORT_ENABLED", True)
+# 没有 EXPORT_ENABLED：出片能不能做，取决于 ffmpeg/ffprobe 在不在
+# （export_service.is_available()）—— 这是真实约束，而不是一个能让用户点下
+# 导出键却得到 "Export is disabled" 的环境开关。
 EXPORT_SAMPLE_RATE = _env_int("EXPORT_SAMPLE_RATE", 24000)
 EXPORT_TTS_GAIN = _env_float("EXPORT_TTS_GAIN", 1.0)
 # Gain applied to the separated background stem (or to the original audio when
@@ -816,7 +826,9 @@ SUBTITLE_MAX_CHARS_PER_LINE = _env_int("SUBTITLE_MAX_CHARS_PER_LINE", 18)
 #
 # "soft" is the default because it is free on every axis: no re-encode, no
 # styling to get wrong, and every player understands it.
-SUBTITLE_EXPORT_ENABLED = _env_bool("SUBTITLE_EXPORT_ENABLED", True)
+# 没有 SUBTITLE_EXPORT_ENABLED：字幕导出是每个工程自己的计划（用户可在
+# 导出面板里改），默认开启；能力差异（容器是否支持多轨、浏览器烧字幕等）
+# 由导出计划的能力位如实上报。
 SUBTITLE_EXPORT_FORMAT = _env("SUBTITLE_EXPORT_FORMAT", "soft").lower()
 # Comma-separated. Multiple tracks make the file usable for both viewers who
 # want the dub and viewers who want the original.

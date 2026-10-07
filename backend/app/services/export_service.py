@@ -539,8 +539,6 @@ async def export_video(
 
     if not is_available():
         raise RuntimeError("ffmpeg/ffprobe not found — export requires them on PATH")
-    if not config.EXPORT_ENABLED:
-        raise RuntimeError("Export is disabled (EXPORT_ENABLED=false)")
 
     state = get_state(video_id)
     if not state:

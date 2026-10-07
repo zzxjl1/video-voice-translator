@@ -986,6 +986,52 @@ const App: React.FC = () => {
           }
         }
 
+        /*
+         * Multimodal enhancement (omni listens to the audio and corrects /
+         * annotates the ASR lines). These events existed since the feature was
+         * written but were never rendered — so enabling 多模态增强 looked like
+         * nothing happened, and the multi-second (or, with an unreachable audio
+         * URL, multi-minute) omni call looked like a hang right after ASR.
+         */
+        if (event.phase === 'mm_enhance') {
+          if (event.status === 'started') {
+            setRawLog(prev => prev + `\n--- Multimodal Enhancement (${event.count} segments) ---\n`);
+          } else if (event.status === 'listening') {
+            setRawLog(prev => prev + 'omni is listening to the audio (correcting + tagging)...\n');
+          } else if (event.status === 'done') {
+            setRawLog(
+              prev =>
+                prev +
+                (event.adjusted > 0
+                  ? `Enhancement done: ${event.adjusted} line(s) corrected or tagged.\n`
+                  : 'Enhancement done: no line needed changing.\n')
+            );
+          } else if (event.status === 'failed') {
+            setRawLog(
+              prev =>
+                prev +
+                `Enhancement failed (continuing with the raw ASR text): ${event.error}\n`
+            );
+          }
+        }
+
+        // Voice cloning events (progress, and what 智能选材 picked)
+        if (event.phase === 'voice_clone') {
+          if (event.status === 'picking') {
+            setRawLog(prev => prev + `Picking reference segments for ${event.speaker_id} (omni)...\n`);
+          } else if (event.status === 'pick_failed') {
+            setRawLog(
+              prev =>
+                prev +
+                `Smart pick unavailable for ${event.speaker_id} (falling back to rules): ${event.error}\n`
+            );
+          } else if (event.status === 'picked' && Array.isArray(event.picked)) {
+            setRawLog(
+              prev => prev + `  picked ${event.picked.length} segment(s): ${event.picked.join(', ')}\n`
+            );
+          }
+        }
+
         // Translation events
         if (event.phase === 'translation') {
           if (event.status === 'started') {

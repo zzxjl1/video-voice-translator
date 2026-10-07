@@ -83,7 +83,6 @@ async def health():
         # UI never has to guess (see GET /api/models/separator for the same
         # data alongside the browser model's parameters).
         "separation_backends": config.separation_capabilities(),
-        "export_enabled": config.EXPORT_ENABLED,
     }
 
 

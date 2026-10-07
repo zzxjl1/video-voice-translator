@@ -1,8 +1,9 @@
 """
 Ali DashScope ASR service for speech-to-text transcription.
 
-The default model is `fun-asr` and speaker diarization is ON. Both are
-configurable (see `config.ASR_MODEL` / `config.ASR_DIARIZATION_ENABLED`).
+The default model is `fun-asr` and speaker diarization is always requested
+(see `config.ASR_MODEL`); a model that cannot do it degrades by plan, not by
+a config flag.
 
 Diarization support is provider-side, so it is validated here:
 
@@ -79,7 +80,7 @@ async def submit_transcription_task(
     Returns the task_id.
     """
     model = model or config.ASR_MODEL
-    diarization = config.ASR_DIARIZATION_ENABLED if diarization is None else diarization
+    diarization = True if diarization is None else diarization
 
     parameters: dict = {"channel_id": [0]}
     if diarization:
@@ -89,9 +90,9 @@ async def submit_transcription_task(
             # single speaker without any error).
             raise RuntimeError(
                 f"Model '{model}' is not in the known diarization-capable list "
-                f"({sorted(config.ASR_DIARIZATION_MODELS)}). "
-                "Set ASR_DIARIZATION_ENABLED=false to accept single-speaker output, "
-                "or pick a supported model."
+                f"({sorted(config.ASR_DIARIZATION_MODELS)}). The attempt plan "
+                "falls through to the same model without diarization, then to the "
+                f"fallback model ({config.ASR_FALLBACK_MODEL}) with it."
             )
         parameters["diarization_enabled"] = True
 
@@ -189,17 +190,16 @@ def _build_attempt_plan() -> list[tuple[str, bool]]:
     """
     Ordered list of (model, diarization) attempts.
 
-    1. As configured.
-    2. Same model without diarization (in case the provider rejects the flag).
+    1. Configured model with diarization.
+    2. Same model without it (the provider may reject the flag).
     3. The fallback model with diarization.
 
-    Duplicates are removed while preserving order.
+    Diarization is always the goal; only the provider's support decides how far
+    down this list a run has to go. Duplicates are removed, order preserved.
     """
-    plan: list[tuple[str, bool]] = [(config.ASR_MODEL, config.ASR_DIARIZATION_ENABLED)]
-    if config.ASR_DIARIZATION_ENABLED:
-        plan.append((config.ASR_MODEL, False))
+    plan: list[tuple[str, bool]] = [(config.ASR_MODEL, True), (config.ASR_MODEL, False)]
     if config.ASR_FALLBACK_MODEL != config.ASR_MODEL:
-        plan.append((config.ASR_FALLBACK_MODEL, config.ASR_DIARIZATION_ENABLED))
+        plan.append((config.ASR_FALLBACK_MODEL, True))
 
     seen: set[tuple[str, bool]] = set()
     unique: list[tuple[str, bool]] = []
@@ -241,7 +241,7 @@ async def transcribe_video(video_id: str, video_path: str, audio_path: str, file
 
     # Resolve which model actually can do diarization before spending a call.
     plan = _build_attempt_plan()
-    if config.ASR_DIARIZATION_ENABLED and not check_diarization_support(config.ASR_MODEL):
+    if not check_diarization_support(config.ASR_MODEL):
         logger.warning(
             f"[ASR] Configured model '{config.ASR_MODEL}' is not in the verified "
             f"diarization whitelist. Speaker separation may be lost. "

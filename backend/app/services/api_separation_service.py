@@ -262,10 +262,6 @@ async def separate_audio(
     paths. Raises on any failure; the pipeline catches that and continues with
     the original mixed audio.
     """
-    if not config.SEPARATION_API_ENABLED:
-        raise RuntimeError(
-            "the 302.AI separation backend is disabled (SEPARATION_API_ENABLED=false)"
-        )
     if not config.SEPARATION_API_KEY:
         raise RuntimeError("SEPARATION_API_KEY is not configured")
 
