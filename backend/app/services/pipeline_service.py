@@ -16,6 +16,7 @@ Designed for a small host (2 GB / single core / no GPU):
 * Export copies the video stream instead of re-encoding it.
 """
 import asyncio
+import json
 import logging
 import os
 from typing import Callable, Optional
