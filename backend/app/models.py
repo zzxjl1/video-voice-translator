@@ -47,6 +47,9 @@ class Segment:
     text: str
     translated_text: str = ""
     audio_path: Optional[str] = None
+    # 该行静音：不合成配音，导出时这一段保持无声（原声轨在整条时间轴上已
+    # 被配音轨取代，所以"静音"就是这一格没有任何配音音频）。
+    muted: bool = False
 
     def to_dict(self):
         return asdict(self)
@@ -159,6 +162,31 @@ def save_state(state: VideoState):
     logger.info(f"Saved metadata to {state_path}")
 
 
+SEGMENT_FLAGS_FILENAME = "segment_flags.json"
+
+
+def set_segment_muted(video_id: str, segment_id: str, muted: bool) -> None:
+    """
+    Persist the muted flag for one segment.
+
+    Kept OUT of info.json on purpose: `save_state` writes metadata only and
+    drops segments entirely, so a segment-level flag needs its own file —
+    the same shape `voice_clone_map.json` uses for its own per-speaker state.
+    """
+    path = os.path.join(get_video_dir(video_id), SEGMENT_FLAGS_FILENAME)
+    muted_ids: list[str] = []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            muted_ids = list(json.load(f).get("muted", []))
+    except (OSError, json.JSONDecodeError):
+        muted_ids = []
+    muted_ids = [i for i in muted_ids if i != segment_id]
+    if muted:
+        muted_ids.append(segment_id)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"muted": muted_ids}, f, ensure_ascii=False, indent=1)
+
+
 def load_state(video_id: str) -> Optional[VideoState]:
     """
     Load video state by merging multiple files:
@@ -216,6 +244,18 @@ def load_state(video_id: str) -> Optional[VideoState]:
                     disk_path = os.path.join(video_dir, "tts", audio_file)
                     if os.path.exists(disk_path):
                         s.audio_path = disk_path
+
+        # 4.5 Segment flags (muted) — its own small file, because
+        # `save_state` deliberately writes no segments at all.
+        flags_path = os.path.join(video_dir, SEGMENT_FLAGS_FILENAME)
+        if segments and os.path.exists(flags_path):
+            try:
+                with open(flags_path, "r", encoding="utf-8") as f:
+                    muted_ids = set(json.load(f).get("muted", []))
+                for s in segments:
+                    s.muted = s.id in muted_ids
+            except Exception:
+                pass
 
         # Assemble
         data["segments"] = segments

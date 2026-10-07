@@ -74,11 +74,34 @@ export async function transcribeVideo(videoId: string): Promise<SegmentData[]> {
  * `end_time` lets the backend size each line to the time slot it has to fill,
  * which keeps the dubbed audio aligned with the video.
  */
+/** 静音 / 取消静音某一行（服务端持久化）。 */
+export async function setSegmentMuted(
+  videoId: string,
+  segmentId: string,
+  muted: boolean,
+): Promise<void> {
+  const response = await fetch(
+    `${API_BASE}/videos/${videoId}/segments/${segmentId}/mute`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ muted }),
+    },
+  );
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(err.detail || 'Mute failed');
+  }
+}
+
+
 export async function translateScript(
   videoId: string,
   segments: { id: string; text: string; speaker_id: string; start_time: number; end_time?: number }[],
   targetLanguage: string = 'English',
   customPrompt: string = '',
+  /** 单行重译的长度意图：「长一点」/「短一点」。 */
+  lengthHint?: 'longer' | 'shorter',
 ): Promise<TranslateResult[]> {
   const response = await fetch(`${API_BASE}/videos/${videoId}/translate`, {
     method: 'POST',
@@ -87,6 +110,7 @@ export async function translateScript(
       target_language: targetLanguage,
       segments,
       custom_prompt: customPrompt,
+      length_hint: lengthHint ?? null,
     }),
   });
 

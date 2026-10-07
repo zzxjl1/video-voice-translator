@@ -217,7 +217,10 @@ def build_dubbed_timeline(
     segments = [
         seg
         for seg in state.segments
-        if seg.translated_text and seg.audio_path and os.path.exists(seg.audio_path)
+        if seg.translated_text
+        and seg.audio_path
+        and os.path.exists(seg.audio_path)
+        and not getattr(seg, "muted", False)
     ]
     if not segments:
         logger.warning(f"[{video_id}] No synthesized segments available for export")

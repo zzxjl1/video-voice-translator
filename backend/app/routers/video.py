@@ -23,9 +23,11 @@ from app.models import (
     get_state,
     get_video_dir,
     save_state,
+    set_segment_muted,
 )
 from app.schemas import (
     ExportRequest,
+    MuteRequest,
     ExportResponse,
     SegmentOut,
     SpeakerOut,
@@ -198,7 +200,13 @@ async def get_video_status(video_id: str):
                 end_time=seg.end_time,
                 text=seg.text,
                 translated_text=seg.translated_text,
-                audio_url=f"/api/videos/{video_id}/tts/{seg.id}" if seg.audio_path else None,
+                muted=seg.muted,
+                # 静音行不给 audio_url：界面上播一条已经静音的音轨会让人
+                # 以为静音没生效。
+                audio_url=(
+                    f"/api/videos/{video_id}/tts/{seg.id}"
+                    if seg.audio_path and not seg.muted else None
+                ),
             )
             for seg in state.segments
         ],
@@ -412,8 +420,10 @@ async def translate_video(video_id: str, req: TranslateRequest):
         if custom_prompt:
             state.custom_prompt = custom_prompt
             save_state(state)
+        length_hint = req.length_hint if req.length_hint in ("longer", "shorter") else None
         results = await llm_service.translate_script(
-            video_id, context, req.target_language, custom_prompt=custom_prompt
+            video_id, context, req.target_language,
+            custom_prompt=custom_prompt, length_hint=length_hint,
         )
 
         # Update state with translations
@@ -818,6 +828,31 @@ async def list_voices(video_id: str, language: Optional[str] = None):
         "assigned": tts_service.get_speaker_voice_map(video_id),
         "needs_voice_cloning": not supported,
     }
+
+
+@router.post("/{video_id}/segments/{segment_id}/mute")
+async def mute_segment(video_id: str, segment_id: str, req: MuteRequest):
+    """
+    Mute or unmute ONE line.
+
+    Muted means: no dubbed audio for this line — the export leaves that slice
+    of the timeline silent. The flag is the ONLY change: the previously
+    synthesized take stays on disk, and every consumer (pipeline TTS, the
+    timeline builder, the status endpoint) honours the flag instead. Keeping
+    the take means unmuting brings the line back without paying for a
+    re-synthesis.
+    """
+    state = get_state(video_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Video not found")
+    seg = next((s for s in state.segments if s.id == segment_id), None)
+    if not seg:
+        raise HTTPException(status_code=404, detail="Segment not found")
+
+    seg.muted = bool(req.muted)
+    set_segment_muted(video_id, segment_id, seg.muted)
+    logger.info(f"[{video_id}] Segment {segment_id} muted={seg.muted}")
+    return {"id": seg.id, "muted": seg.muted}
 
 
 @router.post("/{video_id}/speaker-voice")

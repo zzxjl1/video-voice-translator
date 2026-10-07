@@ -32,6 +32,16 @@ interface TranscriptionPanelProps {
     /** speaker_id -> pinned voice_id. A speaker missing here is automatic. */
     pinnedVoices?: Record<string, string>;
     onPickVoice?: (speakerId: string, voiceId: string) => void;
+    /** 静音 / 取消静音某一行（服务端持久化）。 */
+    onToggleMute?: (segmentId: string, muted: boolean) => void;
+    /**
+     * 只重译这一行。「长一点 / 短一点」调整该行的长度预算，自定义要求则注入
+     * 一句话的要求 —— 两者都只影响这一行。
+     */
+    onRetranslate?: (
+        segmentId: string,
+        opts: { lengthHint?: 'longer' | 'shorter'; customPrompt?: string },
+    ) => void;
 }
 
 
@@ -128,7 +138,12 @@ const SegmentCard: React.FC<{
     voices?: VoiceOption[];
     pinnedVoice?: string;
     onPickVoice?: (speakerId: string, voiceId: string) => void;
-}> = memo(({ segment, speaker, isActive, onSegmentUpdate, onSynthesize, onRefit, onSeek, hasClonedVoice, onPreviewVoice, isPreviewingVoice, voices, pinnedVoice, onPickVoice }) => {
+    onToggleMute?: (segmentId: string, muted: boolean) => void;
+    onRetranslate?: (
+        segmentId: string,
+        opts: { lengthHint?: 'longer' | 'shorter'; customPrompt?: string },
+    ) => void;
+}> = memo(({ segment, speaker, isActive, onSegmentUpdate, onSynthesize, onRefit, onSeek, hasClonedVoice, onPreviewVoice, isPreviewingVoice, voices, pinnedVoice, onPickVoice, onToggleMute, onRetranslate }) => {
     const speakerColor = speaker ? getSpeakerColor(speaker.id) : '#9ca3af';
 
     // Speed stats come from the same helper the player uses, so what is shown
@@ -145,6 +160,7 @@ const SegmentCard: React.FC<{
         <div
             id={`segment-${segment.id}`}
             className={`p-6 rounded-2xl space-y-5 border transition-all duration-500 bg-white ${isActive ? 'ring-2 ring-claude-accent/30 border-claude-accent shadow-lg scale-[1.01]' :
+                segment.muted ? 'border-dashed border-[#d8d8d2] shadow-none opacity-70' :
                 segment.audioUrl ? 'border-[#d1d1cc] shadow-md ring-1 ring-[#e5e5e0]/50' : 'border-[#e5e5e0] hover:border-[#d1d1cc] shadow-sm'
                 }`}
         >
@@ -154,6 +170,11 @@ const SegmentCard: React.FC<{
                     <span className="text-[11px] font-bold uppercase tracking-[0.1em] text-gray-500">
                         {speaker?.name || '...'}
                     </span>
+                    {segment.muted && (
+                        <span className="px-1.5 py-px rounded bg-gray-100 text-[10px] font-bold text-gray-500">
+                            已静音
+                        </span>
+                    )}
                     {hasClonedVoice && onPreviewVoice && (
                         <button
                             onClick={() => onPreviewVoice(segment.speakerId)}
@@ -232,7 +253,13 @@ const SegmentCard: React.FC<{
                         actions={[
                             {
                                 label: '重新生成语音',
-                                onSelect: () => onSynthesize(segment.id),
+                                // 静音行上点这个，等于"我要这一行有声音" ——
+                                // 先取消静音，否则新音频会被静音标记挡在导出之外，
+                                // 行内出现播放器却听不到，看起来像坏了。
+                                onSelect: () => {
+                                    if (segment.muted) onToggleMute?.(segment.id, false);
+                                    onSynthesize(segment.id);
+                                },
                                 disabledReason: !segment.translatedText
                                     ? '还没有译文'
                                     : segment.isSynthesizing || segment.isTranslating
@@ -240,13 +267,38 @@ const SegmentCard: React.FC<{
                                       : undefined,
                             },
                             {
-                                label: '按时长重新拟合',
-                                onSelect: () => onRefit?.(segment.id),
-                                disabledReason: !onRefit
+                                // 行级重译：长一点 / 短一点调长度预算，自定义
+                                // 要求注入一句话的要求。都只影响这一行。
+                                label: '重新翻译',
+                                disabledReason: !onRetranslate
                                     ? '不可用'
-                                    : !segment.translatedText
-                                      ? '还没有译文'
+                                    : segment.isTranslating
+                                      ? '正在处理中'
                                       : undefined,
+                                children: [
+                                    {
+                                        label: '长一点',
+                                        onSelect: () => onRetranslate?.(segment.id, { lengthHint: 'longer' }),
+                                    },
+                                    {
+                                        label: '短一点',
+                                        onSelect: () => onRetranslate?.(segment.id, { lengthHint: 'shorter' }),
+                                    },
+                                    {
+                                        label: '自定义要求',
+                                        onSelect: () => {},
+                                        prompt: {
+                                            placeholder: '例：更口语一点；保留英文术语；用敬语…',
+                                            onSubmit: value =>
+                                                onRetranslate?.(segment.id, { customPrompt: value }),
+                                        },
+                                    },
+                                ],
+                            },
+                            {
+                                label: segment.muted ? '取消静音' : '静音',
+                                onSelect: () => onToggleMute?.(segment.id, !segment.muted),
+                                disabledReason: !onToggleMute ? '不可用' : undefined,
                             },
                             ...(hasClonedVoice && onPreviewVoice
                                 ? [
@@ -257,10 +309,6 @@ const SegmentCard: React.FC<{
                                       },
                                   ]
                                 : []),
-                            {
-                                label: '跳到这一行',
-                                onSelect: () => onSeek(segment.startTime),
-                            },
                         ]}
                     />
                 </div>
@@ -351,7 +399,7 @@ const SegmentCard: React.FC<{
 export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = memo(({
     segments, speakers, isTranscribing, currentTime, onSegmentUpdate, onSynthesize, onRefit, onSeek,
     clonedVoices, onPreviewVoice, previewingSpeaker,
-    voices, pinnedVoices, onPickVoice
+    voices, pinnedVoices, onPickVoice, onToggleMute, onRetranslate
 }) => {
     const speakerMap = new Map(speakers.map(s => [s.id, s]));
     const listRef = React.useRef<HTMLDivElement>(null);
@@ -421,6 +469,8 @@ export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = memo(({
                                 voices={voices}
                                 pinnedVoice={pinnedVoices?.[segment.speakerId]}
                                 onPickVoice={onPickVoice}
+                        onToggleMute={onToggleMute}
+                        onRetranslate={onRetranslate}
                             />
                         ))}
                         {isTranscribing && (

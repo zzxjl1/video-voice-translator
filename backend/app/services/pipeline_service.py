@@ -54,7 +54,9 @@ def _detect_resume_phase(video_dir: str, state: VideoState) -> str:
     has_tts = os.path.exists(os.path.join(video_dir, "tts_results.json"))
 
     # Check from the end backwards
-    if has_tts and state.segments and all(seg.audio_path for seg in state.segments if seg.translated_text):
+    if has_tts and state.segments and all(
+        seg.audio_path for seg in state.segments if seg.translated_text and not seg.muted
+    ):
         return "done"
     if has_translation and state.segments and any(seg.translated_text for seg in state.segments):
         return "tts"
@@ -527,7 +529,10 @@ async def run_pipeline(
         # =====================================================
         # Phase 3: TTS Synthesis (concurrent — network bound, not CPU bound)
         # =====================================================
-        to_synthesize = [seg for seg in state.segments if seg.translated_text]
+        # 静音行跳过合成：它们本来就不该有配音音频。
+        to_synthesize = [
+            seg for seg in state.segments if seg.translated_text and not seg.muted
+        ]
 
         if resume_phase == "tts":
             # Only synthesize segments that don't have audio yet

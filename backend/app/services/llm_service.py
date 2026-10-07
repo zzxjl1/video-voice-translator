@@ -440,6 +440,7 @@ def _build_chunk_prompt(
     target_language: str,
     with_tags: bool = False,
     custom_prompt: str = "",
+    length_hint: str | None = None,
 ) -> str:
     rate = config.speech_rate_value(target_language)
     unit = (
@@ -505,6 +506,24 @@ def _build_chunk_prompt(
             "translated line; an inline tag stays next to the words it marks.",
         ]
 
+    if length_hint == "longer":
+        # 与上面的“绝不为凑数而灌水”冲突，所以这行指令必须显式、且放在规则
+        # 之后：用户单独重译这一行就是要更饱满的表达。
+        parts += [
+            "",
+            "## This line was asked to be LONGER",
+            "The requester re-translated this single line and wants a fuller "
+            "version: use close to the full maxLength with natural, idiomatic "
+            "expansion (more detail, a complete phrasing) — still no filler.",
+        ]
+    elif length_hint == "shorter":
+        parts += [
+            "",
+            "## This line was asked to be SHORTER",
+            "The requester re-translated this single line and wants it tighter: "
+            "well under maxLength, keep only what the meaning needs.",
+        ]
+
     if custom_prompt:
         # 用户注入的特别要求，放在规则末尾、数据之前：结尾位置既做出
         # "最高优先级、可覆盖上面默认规则"的声明，又吃到近因效应。空串
@@ -543,6 +562,7 @@ async def _translate_chunk(
     video_id: str | None = None,
     with_tags: bool = False,
     custom_prompt: str = "",
+    length_hint: str | None = None,
 ) -> tuple[dict[str, str], set[str]]:
     """
     Translate one chunk. Returns (id -> translation, failed ids).
@@ -550,7 +570,8 @@ async def _translate_chunk(
     Retries the whole chunk on parse/transport errors; any segment still
     missing after the retries is reported as failed instead of aborting.
     """
-    prompt = _build_chunk_prompt(chunk, context, glossary, target_language, with_tags, custom_prompt)
+    prompt = _build_chunk_prompt(
+        chunk, context, glossary, target_language, with_tags, custom_prompt, length_hint)
     _dump(os.path.join(llm_dir, f"prompt_chunk{chunk_index:03d}.txt"), prompt, "prompt")
 
     chunk_ids = {item["id"] for item in chunk}
@@ -578,7 +599,8 @@ async def _translate_chunk(
                 )
                 prompt = (
                     _build_chunk_prompt(
-                        chunk, context, glossary, target_language, with_tags, custom_prompt)
+                        chunk, context, glossary, target_language, with_tags,
+                        custom_prompt, length_hint)
                     + "\n\nIMPORTANT: your previous reply could not be parsed ("
                     + str(e)[:200]
                     + "). Reply with ONE JSON array of objects — "
@@ -619,7 +641,8 @@ async def _translate_chunk(
             # Give the model another go, this time demanding the missing ids.
             prompt = (
                 _build_chunk_prompt(
-                    chunk, context, glossary, target_language, with_tags, custom_prompt)
+                    chunk, context, glossary, target_language, with_tags,
+                    custom_prompt, length_hint)
                 + "\n\nIMPORTANT: your previous answer was missing these ids, "
                 "you MUST include all of them: "
                 + ", ".join(sorted(missing))
@@ -652,6 +675,7 @@ async def translate_script(
     emit=None,
     text_overrides: dict[str, str] | None = None,
     custom_prompt: str = "",
+    length_hint: str | None = None,
 ) -> list[dict]:
     """
     Translate an entire script in chunks, with glossary consistency and a
@@ -710,6 +734,13 @@ async def translate_script(
         # trailing pause.
         speakable = max(0.3, duration - config.TTS_FIXED_OVERHEAD)
         max_length = int(round(speakable * rate))
+        # 单行重译的“长一点 / 短一点”：同一个时间槽，但用户要的是不同的
+        # 信息密度 —— 长一点利用满预算（±35%），短一点砍到精简（−30%）。
+        # 只影响这一行的预算与提示词，不改别处。
+        if length_hint == "longer":
+            max_length = int(round(max_length * 1.35))
+        elif length_hint == "shorter":
+            max_length = max(2, int(round(max_length * 0.7)))
         if max_length >= 2:
             item["maxLength"] = max_length
         items.append(item)
@@ -769,6 +800,7 @@ async def translate_script(
             video_id=video_id,
             with_tags=bool(text_overrides),
             custom_prompt=custom_prompt,
+            length_hint=length_hint,
             )
         translations.update(chunk_result)
         failed_ids |= chunk_failed
@@ -816,6 +848,7 @@ async def translate_script(
                 video_id=video_id,
                 with_tags=bool(text_overrides),
                 custom_prompt=custom_prompt,
+                length_hint=length_hint,
             )
             recovered += len(result)
             translations.update(result)

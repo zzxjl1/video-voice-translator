@@ -25,6 +25,7 @@ class SegmentOut(BaseModel):
     text: str
     translated_text: str = ""
     audio_url: Optional[str] = None
+    muted: bool = False
 
 
 class TranscribeResponse(BaseModel):
@@ -46,12 +47,20 @@ class TranslationSegmentIn(BaseModel):
     end_time: float = 0.0
 
 
+class MuteRequest(BaseModel):
+    """静音 / 取消静音某一行。"""
+    muted: bool = True
+
+
 class TranslateRequest(BaseModel):
     target_language: str = "English"
     segments: list[TranslationSegmentIn]
     # Optional requester instructions injected into the translation prompts.
     # Clamped server-side; empty means default behaviour.
     custom_prompt: str = ""
+    # 单行重译的长度意图："longer" / "shorter" / None。影响该行的长度预算与
+    # 提示词，用于「长一点 / 短一点」。非法值当作 None（宽容）。
+    length_hint: Optional[str] = None
 
 
 class TranslationResultItem(BaseModel):

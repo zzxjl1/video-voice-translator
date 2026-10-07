@@ -6,6 +6,14 @@ export interface SegmentAction {
   onSelect: () => void;
   /** Shown greyed with the reason, rather than hidden. */
   disabledReason?: string;
+  /** 二级菜单：有 children 就显示右箭头，点进去是第二屏。 */
+  children?: SegmentAction[];
+  /** 需要一行文字输入（自定义要求）：点进去是输入屏。 */
+  prompt?: {
+    placeholder: string;
+    submitLabel?: string;
+    onSubmit: (value: string) => void;
+  };
 }
 
 interface SegmentActionsMenuProps {
@@ -32,12 +40,48 @@ interface SegmentActionsMenuProps {
   actions: SegmentAction[];
 }
 
+const ChevronRight = () => (
+  <svg className="w-3 h-3 shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 5l7 7-7 7" />
+  </svg>
+);
+
+const ChevronLeft = () => (
+  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 19l-7-7 7-7" />
+  </svg>
+);
+
+const BackRow: React.FC<{ label: string; onClick: () => void }> = ({ label, onClick }) => (
+  <button
+    type="button"
+    onClick={onClick}
+    className="w-full flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-gray-400 hover:text-gray-700"
+  >
+    <ChevronLeft />
+    {label}
+  </button>
+);
+
+const ActionRow: React.FC<{ action: SegmentAction; onRun: (a: SegmentAction) => void }> = ({ action, onRun }) => (
+  <button
+    type="button"
+    disabled={Boolean(action.disabledReason)}
+    title={action.disabledReason}
+    onClick={() => onRun(action)}
+    className="w-full flex items-center justify-between gap-2 px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50 transition-colors disabled:text-gray-300 disabled:hover:bg-transparent disabled:cursor-not-allowed"
+  >
+    <span>{action.label}</span>
+    {action.children ? <ChevronRight /> : null}
+  </button>
+);
+
 /**
  * The "⋯" menu on a transcript row.
  *
- * Two screens rather than one long list: the actions, and — behind the voice
- * row — the voices. A single menu holding both would be 26 items tall for
- * Chinese before any action was reachable.
+ * Screens rather than one long list: the actions, the submenus behind them, and
+ * — behind the voice row — the voices. A single menu holding all of it would be
+ * 26 items tall for Chinese before any action was reachable.
  */
 const SegmentActionsMenu: React.FC<SegmentActionsMenuProps> = ({
   speakerName,
@@ -49,15 +93,38 @@ const SegmentActionsMenu: React.FC<SegmentActionsMenuProps> = ({
 }) => {
   const [open, setOpen] = useState(false);
   const [pickingVoice, setPickingVoice] = useState(false);
+  /** 当前打开的二级菜单（null = 顶层）。 */
+  const [submenu, setSubmenu] = useState<SegmentAction | null>(null);
+  /** 正在输入自定义要求的那一项（null = 没在输入）。 */
+  const [prompting, setPrompting] = useState<SegmentAction | null>(null);
+  const [draft, setDraft] = useState('');
 
   const close = () => {
     setOpen(false);
     setPickingVoice(false);
+    setSubmenu(null);
+    setPrompting(null);
+    setDraft('');
   };
 
   const currentLabel = currentVoice
     ? voices.find(v => v.id === currentVoice)?.label ?? currentVoice
     : '自动';
+
+  const runAction = (action: SegmentAction) => {
+    if (action.disabledReason) return;
+    if (action.children) {
+      setSubmenu(action);
+      return;
+    }
+    if (action.prompt) {
+      setPrompting(action);
+      setDraft('');
+      return;
+    }
+    action.onSelect();
+    close();
+  };
 
   return (
     <div className="relative">
@@ -82,19 +149,10 @@ const SegmentActionsMenu: React.FC<SegmentActionsMenuProps> = ({
               so there is nothing to add and forget to remove. */}
           <span className="fixed inset-0 z-30" onClick={close} />
 
-          <div className="absolute right-0 top-full mt-1 z-40 w-56 bg-white rounded-xl border border-gray-200 shadow-xl py-1 text-left">
+          <div className="absolute right-0 top-full mt-1 z-40 w-60 bg-white rounded-xl border border-gray-200 shadow-xl py-1 text-left">
             {pickingVoice ? (
               <>
-                <button
-                  type="button"
-                  onClick={() => setPickingVoice(false)}
-                  className="w-full flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-gray-400 hover:text-gray-700"
-                >
-                  <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 19l-7-7 7-7" />
-                  </svg>
-                  返回
-                </button>
+                <BackRow label="返回" onClick={() => setPickingVoice(false)} />
                 {/* Wrapped rather than truncated: the part that gets cut is
                     "affects all of this speaker's lines", which is the whole
                     reason this list is reached from a per-LINE menu. */}
@@ -135,22 +193,50 @@ const SegmentActionsMenu: React.FC<SegmentActionsMenuProps> = ({
                   ))}
                 </div>
               </>
+            ) : prompting ? (
+              <>
+                <BackRow label="返回" onClick={() => setPrompting(null)} />
+                <div className="px-3 pb-1.5 text-[10px] leading-snug text-gray-400">
+                  只对这句话生效，会覆盖默认的翻译要求。
+                </div>
+                <div className="px-3 pb-2">
+                  <textarea
+                    autoFocus
+                    rows={3}
+                    value={draft}
+                    onChange={e => setDraft(e.target.value.slice(0, 500))}
+                    placeholder={prompting.prompt?.placeholder}
+                    className="w-full resize-none rounded-lg border border-gray-200 px-2 py-1.5 text-xs leading-relaxed text-gray-700 placeholder:text-gray-300 focus:outline-none focus:border-claude-accent/50"
+                  />
+                  <button
+                    type="button"
+                    disabled={!draft.trim()}
+                    onClick={() => {
+                      prompting.prompt?.onSubmit(draft.trim());
+                      close();
+                    }}
+                    className="mt-1.5 w-full rounded-lg bg-claude-accent px-3 py-1.5 text-xs font-bold text-white transition hover:bg-claude-accentHover disabled:bg-gray-200 disabled:text-gray-400"
+                  >
+                    {prompting.prompt?.submitLabel ?? '重新翻译'}
+                  </button>
+                </div>
+              </>
+            ) : submenu ? (
+              <>
+                <BackRow label="返回" onClick={() => setSubmenu(null)} />
+                <div className="px-3 pb-1 text-[10px] font-bold uppercase tracking-wider text-gray-400">
+                  {submenu.label}
+                </div>
+                <div className="border-t border-gray-100">
+                  {submenu.children?.map(child => (
+                    <ActionRow key={child.label} action={child} onRun={runAction} />
+                  ))}
+                </div>
+              </>
             ) : (
               <>
                 {actions.map(action => (
-                  <button
-                    key={action.label}
-                    type="button"
-                    disabled={Boolean(action.disabledReason)}
-                    title={action.disabledReason}
-                    onClick={() => {
-                      action.onSelect();
-                      close();
-                    }}
-                    className="w-full text-left px-3 py-1.5 text-xs text-gray-600 hover:bg-gray-50 transition-colors disabled:text-gray-300 disabled:hover:bg-transparent disabled:cursor-not-allowed"
-                  >
-                    {action.label}
-                  </button>
+                  <ActionRow key={action.label} action={action} onRun={runAction} />
                 ))}
 
                 {voices.length > 0 ? (
@@ -165,9 +251,7 @@ const SegmentActionsMenu: React.FC<SegmentActionsMenuProps> = ({
                         {speakerName} 的音色
                         <span className="ml-1.5 text-claude-accent font-bold">{currentLabel}</span>
                       </span>
-                      <svg className="w-3 h-3 shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 5l7 7-7 7" />
-                      </svg>
+                      <ChevronRight />
                     </button>
                   </>
                 ) : needsVoiceCloning ? (

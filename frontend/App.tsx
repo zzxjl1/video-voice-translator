@@ -43,6 +43,7 @@ import {
   type SubtitleStylePatch,
   type VoiceOption,
   API_BASE,
+  setSegmentMuted,
 } from './services/apiService';
 import { getAudioWaveform, getAudioWaveformFromUrl } from './utils/audioProcessor';
 import { decodeAudio, separateAndUpload, isModelCached } from './utils/mdx/separatorClient';
@@ -679,6 +680,7 @@ const App: React.FC = () => {
               originalText: seg.text,
               translatedText: seg.translated_text || '',
               audioUrl: seg.audio_url || undefined,
+              muted: (seg as { muted?: boolean }).muted ?? false,
               status: (seg.translated_text ? 'ready' : 'pending') as any,
             }));
 
@@ -1348,6 +1350,7 @@ const App: React.FC = () => {
                 originalText: seg.text,
                 translatedText: seg.translated_text || '',
                 audioUrl: seg.audio_url || undefined,
+              muted: (seg as { muted?: boolean }).muted ?? false,
                 status: (seg.translated_text ? 'ready' : 'pending') as any,
               }));
               if (data.speakers && data.speakers.length > 0) {
@@ -1462,6 +1465,7 @@ const App: React.FC = () => {
               originalText: seg.text,
               translatedText: seg.translated_text || '',
               audioUrl: seg.audio_url || undefined,
+              muted: (seg as { muted?: boolean }).muted ?? false,
               status: (seg.translated_text ? 'ready' : 'pending') as any,
             }));
             if (statusData.speakers && statusData.speakers.length > 0) {
@@ -1862,6 +1866,64 @@ const App: React.FC = () => {
    * between closing and rolling its edits back, so "cancel" cannot leave the
    * app showing settings that no run has adopted.
    */
+  /** 静音 / 取消静音一行：服务端持久化 + 本地同步（静音即无配音音频）。 */
+  const handleToggleMute = useCallback(async (segmentId: string, muted: boolean) => {
+    if (!videoId) return;
+    setSegments(prev => prev.map(s => (
+      s.id === segmentId ? { ...s, muted, audioUrl: muted ? undefined : s.audioUrl } : s
+    )));
+    try {
+      await setSegmentMuted(videoId, segmentId, muted);
+    } catch (e) {
+      // 失败就把本地状态拨回去，别让界面显示一个服务端没记住的状态。
+      setSegments(prev => prev.map(s => (s.id === segmentId ? { ...s, muted: !muted } : s)));
+      setRawLog(prev => prev + `\n静音失败: ${e instanceof Error ? e.message : 'unknown'}\n`);
+    }
+  }, [videoId]);
+
+  /**
+   * 只重译这一行：「长一点 / 短一点」调该行的长度预算，自定义要求注入一句话
+   * 的要求。译完立刻重新配音 —— 这两个选项要改的本来就是"这行占多长"，
+   * 只换文字不换音频等于没生效。静音行保持静音，不自动补音频。
+   */
+  const handleRetranslateLine = useCallback(async (
+    segmentId: string,
+    opts: { lengthHint?: 'longer' | 'shorter'; customPrompt?: string },
+  ) => {
+    const seg = segments.find(s => s.id === segmentId);
+    if (!videoId || !seg) return;
+    setSegments(prev => prev.map(s => (s.id === segmentId ? { ...s, isTranslating: true } : s)));
+    try {
+      const results = await translateScript(
+        videoId,
+        [{
+          id: seg.id,
+          text: seg.originalText,
+          speaker_id: seg.speakerId,
+          start_time: seg.startTime,
+          end_time: seg.endTime,
+        }],
+        targetLanguage,
+        opts.customPrompt ?? '',
+        opts.lengthHint,
+      );
+      const match = results.find(r => r.id === segmentId);
+      const newText = match?.translated_text;
+      if (!newText) throw new Error('没有拿到新的译文');
+      setSegments(prev => prev.map(s => (
+        s.id === segmentId
+          ? { ...s, translatedText: newText, isTranslating: false, audioUrl: undefined }
+          : s
+      )));
+      if (!seg.muted) {
+        await handleSynthesizeSegment(segmentId, newText);
+      }
+    } catch (e) {
+      setSegments(prev => prev.map(s => (s.id === segmentId ? { ...s, isTranslating: false } : s)));
+      setRawLog(prev => prev + `\n重译失败: ${e instanceof Error ? e.message : 'unknown'}\n`);
+    }
+  }, [segments, videoId, targetLanguage, handleSynthesizeSegment]);
+
   const handleReprocess = useCallback(async (): Promise<boolean> => {
     if (!videoId || segments.length === 0) return true;
 
@@ -2261,6 +2323,8 @@ const App: React.FC = () => {
                     onSegmentUpdate={handleSegmentUpdate}
                     onSynthesize={handleSynthesizeSegment}
                     onRefit={handleRefitSegment}
+                    onToggleMute={handleToggleMute}
+                    onRetranslate={handleRetranslateLine}
                     currentTime={currentTime}
                     onSeek={handleSeek}
                     clonedVoices={clonedVoices}
