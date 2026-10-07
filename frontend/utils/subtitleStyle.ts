@@ -22,6 +22,67 @@ export interface Rect {
   height: number;
 }
 
+/*
+ * ---------------------------------------------------------------------------
+ * 标签（给 TTS 的指令，不是给观众看的字）
+ * ---------------------------------------------------------------------------
+ * 「多模态增强识别」会给每行打控制类标签（[sad] [whispers]…，见
+ * config.EMOTION_CONTROL_TAGS）与音效类标签（[gasp] [laughing]…）；翻译时被要求
+ * 原样保留，TTS 靠它们加情绪。它们**必须**跟着译文走，但**不该**出现在字幕上 ——
+ * 观众看到的是 "[sarcastic] 我吃很多米饭"，不是台词的语气。
+ *
+ * 形状有两种：半角 `[tag]` 是配置里的规范写法；模型在中文提示下还会自作主张写成
+ * 全角 `【讽刺】`。两种都要认。
+ *
+ * 只匹配"像标签"的括号内容，避免误伤正文：
+ *   · 半角：以字母开头，只含字母/空格/连字符/撇号，≤ 24 字符
+ *     → `[1]`、`[注]`、`[500]` 这类不会被删
+ *   · 全角：内容 ≤ 8 字符且不含标点/换行（模型输出如 `【讽刺】`、`【laughing】`）
+ */
+const TAG_SOURCE = String.raw`\[[A-Za-z][A-Za-z '\-]{0,23}\]|【[^】\n，。！？；：、,.!?;:]{1,8}】`;
+const TAG_RE = new RegExp(TAG_SOURCE, 'g');
+/**
+ * 光标左侧正好一个标签（不带 g，供"退格整块删"判断）。
+ *
+ * 允许尾随一个空格：模型输出的形状就是 `[sad] 台词`，退格时把这个分隔空格一起
+ * 吃掉才叫"整块删"；行内标签吃掉尾随空格也不会破坏词间距，因为前面那个空格还在。
+ */
+export const SUBTITLE_TAG_RE = new RegExp(`(?:${TAG_SOURCE}) ?$`);
+
+/** 文本里有没有标签（避免给无标签的行做多余的渲染工作）。 */
+export function hasSubtitleTags(text: string): boolean {
+  return Boolean(text) && (text.includes('[') || text.includes('【'));
+}
+
+/**
+ * 去掉标签，供**字幕渲染**用（覆盖层、烧录、SRT/ASS 同一条规则）。
+ *
+ * 顺带收拾留下的空格：行首标签去掉后不留前导空格，行中标签去掉后不出现双空格。
+ * 编辑器里的文本【不】经过这里 —— 那里是用户改标签的地方，必须原样保留。
+ */
+export function stripSubtitleTags(text: string): string {
+  if (!hasSubtitleTags(text)) return text;
+  return text
+    .replace(TAG_RE, '')
+    .replace(/[ \t]{2,}/g, ' ')
+    .replace(/^[ \t]+|[ \t]+$/g, '');
+}
+
+/** 切分成 普通文本 / 标签 交替的片段，供侧边栏把标签画成色块。 */
+export function splitSubtitleTags(text: string): { text: string; isTag: boolean }[] {
+  if (!hasSubtitleTags(text)) return [{ text, isTag: false }];
+  const parts: { text: string; isTag: boolean }[] = [];
+  let last = 0;
+  for (const match of text.matchAll(new RegExp(TAG_SOURCE, 'g'))) {
+    const start = match.index ?? 0;
+    if (start > last) parts.push({ text: text.slice(last, start), isTag: false });
+    parts.push({ text: match[0], isTag: true });
+    last = start + match[0].length;
+  }
+  if (last < text.length) parts.push({ text: text.slice(last), isTag: false });
+  return parts;
+}
+
 /**
  * Where a video of `videoW`x`videoH` actually lands inside a container of
  * `containerW`x`containerH` under `object-fit: contain`.

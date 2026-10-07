@@ -62,6 +62,7 @@ import {
   cueAtTime,
   overlayContainerStyle,
   overlayLineStyle,
+  stripSubtitleTags,
   type Rect,
 } from './utils/subtitleStyle';
 import { probeBurnCapability, type BurnCapability } from './utils/burnCapability';
@@ -130,6 +131,22 @@ function downloadFile(source: string | Blob, filename: string): void {
     // to keep a whole video alive in memory for the rest of the session.
     setTimeout(() => URL.revokeObjectURL(url), 60_000);
   }
+}
+
+/**
+ * 一条字幕 cue 去掉标签（[sad] / [gasp] / 【讽刺】…）。
+ *
+ * 只在这一处做，而不是覆盖层、烧录各做一次：两条路径读的是同一份 cues，分开写
+ * 就会出现"屏幕上没有、烧出来还有"这种只修好一半的假修复。空行（整行只有一个
+ * 标签）要丢掉 —— 否则 canvas 会画出一行空气，覆盖层会多占一行高度。
+ */
+function withoutSubtitleTags(cue: SubtitleCue): SubtitleCue {
+  return {
+    ...cue,
+    text: stripSubtitleTags(cue.text),
+    secondary: stripSubtitleTags(cue.secondary),
+    lines: cue.lines.map(stripSubtitleTags).filter(line => line.length > 0),
+  };
 }
 
 /** Human-readable names for the separation backends. */
@@ -599,8 +616,8 @@ const App: React.FC = () => {
       })
         .then(response => {
           if (cancelled) return;
-          setSubtitleCues(response.cues);
-          setSampleCue(response.sample ?? null);
+          setSubtitleCues(response.cues.map(withoutSubtitleTags));
+          setSampleCue(response.sample ? withoutSubtitleTags(response.sample) : null);
           setSubtitleError('');
         })
         .catch(err => {

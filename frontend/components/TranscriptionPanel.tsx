@@ -7,6 +7,9 @@ import {
     isOutsideFitRange,
     fitErrorSeconds,
 } from '../utils/playbackSync';
+// 标签规则与字幕渲染共用一处：侧边栏把标签画成色块、字幕里去掉它们，
+// 两边的"什么是标签"必须是同一个定义。
+import { splitSubtitleTags, SUBTITLE_TAG_RE } from '../utils/subtitleStyle';
 import SegmentActionsMenu from './SegmentActionsMenu';
 import type { VoiceOption } from '../services/apiService';
 
@@ -66,6 +69,7 @@ const EditableTextArea: React.FC<{
     const [isEditing, setIsEditing] = React.useState(false);
     const [localValue, setLocalValue] = React.useState(value);
     const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+    const mirrorRef = React.useRef<HTMLDivElement>(null);
 
     // Sync local value when global value changes (e.g. from batch processing)
     React.useEffect(() => {
@@ -73,6 +77,34 @@ const EditableTextArea: React.FC<{
             setLocalValue(value);
         }
     }, [value, isEditing]);
+
+    /*
+     * 标签（[sad] / [gasp] / 【讽刺】…）在侧边栏要"看得见、但不是一个一个字符"：
+     * 底下这层镜面把标签画成整块色块，真正的 textarea 文字设为透明 —— 编辑、中文
+     * 输入法、选区都仍是原生 textarea 的行为，只是"看得见的东西"由镜面负责。
+     */
+    const tagParts = React.useMemo(() => splitSubtitleTags(localValue), [localValue]);
+    const hasTags = tagParts.some(part => part.isTag);
+
+    /**
+     * 标签是整体的：光标紧贴标签右边时按退格，一次删掉整个标签。
+     * 只在"没有选区 + 光标左边正好一个标签"时接管，其余情况走浏览器默认行为。
+     */
+    const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+        if (e.key !== 'Backspace' || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
+        const el = e.currentTarget;
+        if (el.selectionStart !== el.selectionEnd) return;
+        const caret = el.selectionStart;
+        // 只看光标左边一小段（最长标签也就 24 字符上下），不必扫全文
+        const before = localValue.slice(Math.max(0, caret - 40), caret);
+        const match = before.match(SUBTITLE_TAG_RE);
+        if (!match) return;
+        e.preventDefault();
+        const start = caret - match[0].length;
+        setLocalValue(localValue.slice(0, start) + localValue.slice(caret));
+        // 受控组件重渲染后把光标放回删除处
+        requestAnimationFrame(() => textareaRef.current?.setSelectionRange(start, start));
+    };
 
     const handleEditClick = () => {
         setIsEditing(true);
@@ -86,6 +118,11 @@ const EditableTextArea: React.FC<{
         }
     };
 
+    const typography = isSecondary ? 'font-serif italic' : 'font-sans';
+    const textColor = isSecondary ? 'text-gray-600' : 'text-gray-800';
+    // 非编辑态的整体虚化：镜面和真正的文字要一起虚，否则会出现"清晰色块 + 虚化文字"
+    const blurClass = !isEditing ? 'group-hover:blur-[2px] transition-all' : 'blur-0';
+
     return (
         <div className="relative group">
             <div className="flex items-center justify-between mb-1.5 ml-1">
@@ -94,16 +131,40 @@ const EditableTextArea: React.FC<{
                 </span>
             </div>
 
-            <div className="relative overflow-hidden rounded-xl border border-[#e5e5e0] transition-all duration-300 bg-white">
+            <div className={`relative overflow-hidden rounded-xl border border-[#e5e5e0] transition-all duration-300 ${isSecondary ? 'bg-[#f9f9f8]' : 'bg-white'}`}>
+                {hasTags && (
+                    <div
+                        ref={mirrorRef}
+                        aria-hidden="true"
+                        className={`pointer-events-none absolute inset-0 overflow-hidden p-3 text-sm leading-relaxed whitespace-pre-wrap break-words ${typography} ${textColor} ${blurClass} ${isLoading ? 'opacity-40' : ''}`}
+                    >
+                        {tagParts.map((part, index) =>
+                            part.isTag ? (
+                                // 不加 padding/border/字号变化：任何影响宽度的样式都会
+                                // 让镜面文字和底下的 textarea 错位（颜色和圆角不影响排版）
+                                <span key={index} className="rounded-[3px] bg-claude-accent/15 text-claude-accent">
+                                    {part.text}
+                                </span>
+                            ) : (
+                                <span key={index}>{part.text}</span>
+                            )
+                        )}
+                    </div>
+                )}
+
                 <textarea
                     ref={textareaRef}
                     value={localValue}
                     readOnly={!isEditing || isLoading}
                     onBlur={handleBlur}
                     onChange={(e) => setLocalValue(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    onScroll={(e) => {
+                        if (mirrorRef.current) mirrorRef.current.scrollTop = e.currentTarget.scrollTop;
+                    }}
                     placeholder={placeholder}
-                    className={`w-full p-3 text-sm transition-all duration-300 resize-none outline-none leading-relaxed ${isSecondary ? 'bg-[#f9f9f8] text-gray-600 font-serif italic' : 'bg-white text-gray-800 font-sans'
-                        } ${!isEditing ? 'group-hover:blur-[2px] transition-all' : 'blur-0'} ${isLoading ? 'opacity-40 pointer-events-none' : ''}`}
+                    className={`relative w-full p-3 text-sm transition-all duration-300 resize-none outline-none leading-relaxed bg-transparent ${typography} ${hasTags ? 'text-transparent caret-gray-800' : textColor
+                        } ${blurClass} ${isLoading ? 'opacity-40 pointer-events-none' : ''}`}
                     rows={2}
                 />
 

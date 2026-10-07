@@ -540,9 +540,37 @@ def _split_oversized(cue: Cue, style: SubtitleStyle) -> list[Cue]:
     return out
 
 
+# 标签的形状规则。**必须与前端 `frontend/utils/subtitleStyle.ts` 的 TAG_SOURCE
+# 逐字一致**：服务端是权威（覆盖层、烧录、SRT、ASS 都从 build_cues 出来），前端
+# 那份是兜底。两边不一致会复现"屏幕上没有、下载的字幕文件里却有"这种半修状态。
+#
+#   · 半角 `[sad]` `[clears throat]`：配置里的规范写法（config.EMOTION_*_TAGS）
+#   · 全角 `【讽刺】`：模型在中文提示下自作主张的写法
+#   · 只匹配"像标签"的内容，`[1]` `[注]` 这类正文不会被误删
+_TAG_RE = re.compile(
+    r"""\[[A-Za-z][A-Za-z '\-]{0,23}\]|【[^】\n，。！？；：、,.!?;:]{1,8}】"""
+)
+
+
+def strip_subtitle_tags(text: str) -> str:
+    """
+    去掉字幕文本里的标签（[sad] / [gasp] / 【讽刺】…）。
+
+    它们是多模态增强打给 TTS 的指令（控语气、加音效），不是给观众看的字。编辑器
+    里必须保留（用户在那改标签），但**所有**字幕输出都要剥掉 —— 而覆盖层、烧录、
+    SRT、ASS 全部经由 `build_cues` → `_select_text`，所以剥在这一处就够。
+
+    顺带收拾留下的空格：行首标签去掉后不留前导空格，行中标签去掉后不出现双空格。
+    """
+    if not text or ("[" not in text and "【" not in text):
+        return text
+    collapsed = re.sub(r"[ \t]{2,}", " ", _TAG_RE.sub("", text))
+    return collapsed.strip(" \t")
+
+
 def _select_text(seg, track: str) -> tuple[str, str]:
-    translated = (getattr(seg, "translated_text", "") or "").strip()
-    original = (getattr(seg, "text", "") or "").strip()
+    translated = strip_subtitle_tags((getattr(seg, "translated_text", "") or "").strip())
+    original = strip_subtitle_tags((getattr(seg, "text", "") or "").strip())
     if track == "original":
         return original, ""
     if track == "bilingual":
