@@ -836,6 +836,6 @@ CORS_ORIGINS = [o.strip() for o in _env("CORS_ORIGINS", "*").split(",") if o.str
 
 # Public URL of this server. Required because DashScope must be able to
 # download the audio it transcribes / the voice sample it enrolls.
-SERVER_URL_BASE = _env("SERVER_URL_BASE", "http://119.45.51.201").rstrip("/")
+SERVER_URL_BASE = _env("SERVER_URL_BASE", "https://video-voice-translator.idealbroker.cn").rstrip("/")
 
 API_GENERAL_TIMEOUT = _env_int("API_GENERAL_TIMEOUT", 120)
