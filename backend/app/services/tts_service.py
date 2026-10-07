@@ -221,6 +221,8 @@ def _register_segment_audio(video_dir: str, segment_id: str, rel_path: str) -> N
                 # 【不写回】：写回等于用"只有这一行"的新表覆盖掉其它行已经登记
                 # 的映射 —— 那些行随后会被当成"还没合成"而重做一遍（既花 API
                 # 费用，又会盖掉已经生成好的音频）。宁可这一次登记失败并报错。
+                # video_id 从目录名取（本函数的入参是 video_dir）。
+                video_id = os.path.basename(video_dir.rstrip(os.sep))
                 logger.error(
                     f"[{video_id}] tts_results.json is corrupt ({e}); refusing to "
                     f"overwrite it. Segment {segment_id} was NOT registered in the "
@@ -284,14 +286,16 @@ def _synth_audio(
 
     为什么抽出来：试听（voice_clone_service.preview_cloned_voice）曾经自己 new
     一个 SpeechSynthesizer。同一件事有两份实现，就一定有一份会漏掉后来加的规则
-    —— 那份既没有记账，也不受 instruction 能力探测的保护。
+    —— 那份既没有记账，也没有共用的参数处理。
 
-    `instruction` 只在当前 SDK 支持时才传（见文件顶部 _instruction_supported）。
+    `instruction`（方言/口音）直接传：SDK 版本由 requirements.txt 锁在
+    `dashscope>=1.27.1`，而这个参数正是 1.27.1 引入的 —— 版本已经指定，就不需要
+    再写一层运行时探测。
     """
     kwargs: dict = {"model": model, "voice": voice}
     if speech_rate is not None:
         kwargs["speech_rate"] = speech_rate
-    if instruction and INSTRUCTION_SUPPORTED:
+    if instruction:
         kwargs["instruction"] = instruction
 
     synthesizer = SpeechSynthesizer(**kwargs)
@@ -357,6 +361,12 @@ async def _synthesize_with_retries(
             if audio:
                 return audio
             last_error = RuntimeError("TTS returned empty audio")
+        except TypeError as e:
+            # 参数/签名错是**确定性**的：重试改变不了 SDK 的签名，只会把同一条
+            # 日志刷 TTS_MAX_RETRIES+1 遍并拖慢整批（实测线上就是这个现象）。
+            logger.error(f"TTS cannot run for {segment_id} (SDK/参数不兼容): {e}")
+            last_error = e
+            break
         except Exception as e:
             last_error = e
 
@@ -366,7 +376,11 @@ async def _synthesize_with_retries(
             )
             await asyncio.sleep(1.0 * attempt)
 
-    raise RuntimeError(f"TTS failed for segment {segment_id}: {last_error}")
+    # 不带 "TTS failed for segment X" 前缀：调用方（pipeline / 手动重合成）自己
+    # 会加上下文，两层都带就成了
+    # "... for segment seg-x: TTS failed for segment seg-x: <真原因>"（实测日志）。
+    attempts = min(attempt, config.TTS_MAX_RETRIES + 1)
+    raise RuntimeError(f"{last_error}（尝试 {attempts} 次）")
 
 
 def _write(path: str, payload: bytes) -> None:

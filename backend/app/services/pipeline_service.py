@@ -627,6 +627,7 @@ async def run_pipeline(
         counter_lock = asyncio.Lock()
         counters = {"done": already_done}
         succeeded_segments: list[str] = []
+        last_tts_error: list[str] = []   # 收尾时用它说明"为什么整批都失败"
 
         async def synthesize_segment(seg: Segment) -> None:
             async with semaphore:
@@ -679,6 +680,7 @@ async def run_pipeline(
                     }
                 except Exception as e:
                     logger.error(f"[{video_id}] TTS failed for segment {seg.id}: {e}")
+                    last_tts_error.append(str(e))
                     event = {
                         "phase": "tts",
                         "segment_id": seg.id,
@@ -698,6 +700,22 @@ async def run_pipeline(
         # Persist the audio registry once, after the concurrent fan-out.
         if succeeded_segments:
             tts_service.sync_registry(video_id, succeeded_segments)
+
+        if to_synthesize and not succeeded_segments:
+            # 一句都没合成成功 —— 这不是"完成"。旧行为会把状态写成 COMPLETED，
+            # 于是一个没有任何配音的工程在界面上显示为"已完成"（实测事故：TTS
+            # 全部失败后工程仍是 completed，用户以为片子做好了）。这种"全都失败"
+            # 必须是 ERROR，让用户知道要处理。
+            detail = last_tts_error[-1] if last_tts_error else "unknown error"
+            state.status = VideoStatus.ERROR
+            state.error_message = (
+                f"语音合成全部失败（{len(to_synthesize)} 段）：{detail[:300]}"
+            )
+            save_state(state)
+            logger.error(f"[{video_id}] {state.error_message}")
+            # 不带 phase 的 error 事件＝管线级失败（前端据此打 ERROR 并保留日志窗）
+            await emit({"error": state.error_message})
+            return
 
         state.status = VideoStatus.COMPLETED
         save_state(state)
