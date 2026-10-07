@@ -1975,9 +1975,8 @@ const App: React.FC = () => {
     }
   }, [resumePrompt, startPipeline]);
 
-  /** 先看看：收起选择框，页面照常可用（状态条上仍留「继续处理」）。 */
   const handleDismissResumePrompt = useCallback(() => {
-    setResumePrompt(null);
+    window.location.href = '/'
   }, []);
 
   /**
