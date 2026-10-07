@@ -9,6 +9,7 @@ import Timeline from './components/Timeline';
 import SettingsModal from './components/SettingsModal';
 import StreamingLog from './components/StreamingLog';
 import { TranscriptionPanel } from './components/TranscriptionPanel';
+import { differFromProject } from './utils/settingsDiff';
 import {
   uploadVideo,
   translateScript,
@@ -1731,34 +1732,88 @@ const App: React.FC = () => {
       setRawLog(prev => prev + `Upload complete. Video ID: ${uploadResult.video_id}\n`);
 
       if (uploadResult.exists) {
-        // Video already exists — ask user what to do
+        /*
+         * 这段视频处理过。三道判断，顺序就是这个重要性：
+         *
+         *   1. 设置与工程里存的**完全一样**，且上次是取消/失败/中断 → 弹框问
+         *      "继续还是重来"。这是他唯一需要拿主意的情形。
+         *   2. 设置不一样 → 直接清空重跑，不问。改了设置之后有些步骤本来就失效
+         *      了（换语言要重翻、换分离方式要重分离），问"要不要继续"是在问一
+         *      个不成立的选项：旧进度对不上新设置。
+         *   3. 没跑过（uploaded）→ 直接开始，没什么可继续也没什么可清。
+         *
+         * 设置完全一样 + 已完成 → 打开编辑器（它确实做完了）。
+         */
         setIsLogOpen(false);
         setIsTranscribing(false);
 
         const statusData = await getVideoStatus(uploadResult.video_id);
 
-        // Restore settings from server
+        /*
+         * 只刷新"服务端能跑哪些后端"这份能力清单，**不恢复工程里存的设置**。
+         *
+         * 这条路是用户亲手配好设置、按了开始处理，所以本次运行的设置就是页面上
+         * 那一份。原来这里把 separation_mode 和 enable_voice_clone 覆盖回旧值，
+         * 结果是"语言是新的、分离和克隆是旧的"这种混合配置，看起来就是"选了继
+         * 续，设置自己跳回旧的"。工程里的旧设置只用来跟当前设置做比较。
+         */
         setSeparationBackends(statusData.separation_backends ?? {});
-        setSeparationMode(
-          restoreSeparationMode(statusData, statusData.separation_backends)
-        );
-        if (statusData.enable_voice_clone !== undefined) setEnableVoiceClone(statusData.enable_voice_clone);
 
         const isCompleted = statusData.status === 'completed';
         const isError = statusData.status === 'error';
-        const isInProgress = !isCompleted && !isError && statusData.status !== 'uploaded';
+        const isUploaded = statusData.status === 'uploaded';
 
+        const differing = differFromProject(statusData, {
+          targetLanguage,
+          targetAccent,
+          separationMode,
+          enableVoiceClone,
+          mmEnhance,
+          cloneSmartPick,
+          customPrompt,
+        });
+        console.log('[upload] 同一视频已存在:', {
+          status: statusData.status,
+          settingsDiffer: differing,
+        });
+
+        if (isUploaded) {
+          setRawLog('这个视频上传过但还没处理，直接开始。\n');
+          setIsLogOpen(true);
+          setIsTranscribing(true);
+          await startPipeline(uploadResult.video_id, file, undefined, false, 'upload:never-run');
+          return;
+        }
+
+        if (differing.length > 0) {
+          // 旧进度对新设置无效，直接清空重跑。把差异列出来，用户才知道为什么
+          // 没弹框、为什么要重新跑。
+          setRawLog(
+            '检测到设置与上次不同：' + differing.join('、') + '\n' +
+            '这些设置会改变部分步骤的结果，旧进度已清空，用当前设置重新处理…\n'
+          );
+          setIsLogOpen(true);
+          setIsTranscribing(true);
+          setSegments([]);
+          setSpeakers([]);
+          await resetVideo(uploadResult.video_id);
+          await startPipeline(uploadResult.video_id, file, undefined, false, 'upload:settings-changed');
+          return;
+        }
+
+        // 设置完全一样。已完成就是做完了，直接打开；取消/失败/中断才需要问。
         let message = 'This video has been uploaded before.\n\n';
         if (isCompleted) {
           message += 'Processing is fully completed.\n\n';
         } else if (isError) {
           message += `Previous processing failed: ${statusData.error || 'Unknown error'}\n\n`;
-        } else if (isInProgress) {
+        } else {
           message += `Processing was interrupted at stage: ${statusData.status}\n\n`;
         }
-        message += 'Choose an action:\n• OK = Continue / Retry from where it stopped\n• Cancel = Reset and start over';
+        message +=
+          'Choose an action:\n• OK = Continue / Retry from where it stopped\n• Cancel = Reset and start over';
 
-        const continueExisting = window.confirm(message);
+        const continueExisting = isCompleted ? true : window.confirm(message);
 
         if (continueExisting) {
           // Continue / retry — load existing data first
@@ -1831,7 +1886,17 @@ const App: React.FC = () => {
       setIsTranscribing(false);
       setIsAudioLoading(false);
     }
-  }, [targetLanguage, runPipeline, startPipeline]);
+  }, [
+    targetLanguage,
+    targetAccent,
+    separationMode,
+    enableVoiceClone,
+    mmEnhance,
+    cloneSmartPick,
+    customPrompt,
+    runPipeline,
+    startPipeline,
+  ]);
 
   /**
    * Start the job for the file that was picked.
@@ -2538,6 +2603,13 @@ const App: React.FC = () => {
         onClose={() => setIsLogOpen(false)}
         title="Processing Log"
         isProcessing={isTranscribing}
+        // 处理中这个浮层盖住整个页面，状态条上的「取消运行」点不到，
+        // 所以取消入口必须在这层里也有一份。
+        onCancel={() => void handleCancelProcessing()}
+        isCancelling={isCancelling || Boolean(runState?.cancelling)}
+        stepLabel={
+          runState?.active ? RUN_STEP_LABEL[runState.step ?? ''] ?? runState.step : null
+        }
       />
 
       {isIndexPage ? (
