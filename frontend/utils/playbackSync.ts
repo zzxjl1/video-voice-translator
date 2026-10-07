@@ -20,23 +20,23 @@
  * that are not real.
  */
 
-export const AUDIO_RATE_MIN = 0.8;
-export const AUDIO_RATE_MAX = 1.25;
+const AUDIO_RATE_MIN = 0.8;
+const AUDIO_RATE_MAX = 1.25;
 
 /** Fallback bounds for the video, only reached if the audio could not cope. */
-export const VIDEO_RATE_MIN = 0.8;
-export const VIDEO_RATE_MAX = 1.25;
+const VIDEO_RATE_MIN = 0.8;
+const VIDEO_RATE_MAX = 1.25;
 
 export interface SyncRates {
   audioRate: number;
   videoRate: number;
 }
 
-export function clampAudioRate(rate: number): number {
+function clampAudioRate(rate: number): number {
   return Math.min(Math.max(rate, AUDIO_RATE_MIN), AUDIO_RATE_MAX);
 }
 
-export function clampVideoRate(rate: number): number {
+function clampVideoRate(rate: number): number {
   return Math.min(Math.max(rate, VIDEO_RATE_MIN), VIDEO_RATE_MAX);
 }
 

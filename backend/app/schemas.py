@@ -29,13 +29,6 @@ class SegmentOut(BaseModel):
     hidden: bool = False
 
 
-class TranscribeResponse(BaseModel):
-    video_id: str
-    status: str
-    segments: list[SegmentOut] = []
-    error: Optional[str] = None
-
-
 # ----- Translation -----
 
 class TranslationSegmentIn(BaseModel):
@@ -154,7 +147,6 @@ class VideoStatusResponse(BaseModel):
     # 上一次被用户取消时停在哪个阶段（None = 没取消过）。持久化的，所以重开
     # 页面也知道"上次取消在哪一步、能不能接着跑"。
     cancelled_step: Optional[str] = None
-    enable_bgm_separation: bool = False
     enable_voice_clone: bool = False
     # The dub's target language and Chinese accent as stored on THIS project, so
     # a recovered session resumes the project's own choices instead of whatever
@@ -182,7 +174,6 @@ class ProcessRequest(BaseModel):
     # request still validates instead of getting a 422. Whether the browser
     # already produced the stems is answered by the files on disk, not by a flag
     # from the client, and `separation_mode` is the single source of truth.
-    enable_bgm_separation: bool = False
     enable_voice_clone: bool = False
     # 语气模仿：TTS 前由 omni 听原声给译文注入情感/拟声标签（见 config）。
     mm_enhance: bool = False

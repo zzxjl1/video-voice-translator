@@ -217,8 +217,16 @@ def _register_segment_audio(video_dir: str, segment_id: str, rel_path: str) -> N
             try:
                 with open(results_path, "r", encoding="utf-8") as f:
                     tts_results = json.load(f)
-            except Exception:
-                pass
+            except Exception as e:
+                # 【不写回】：写回等于用"只有这一行"的新表覆盖掉其它行已经登记
+                # 的映射 —— 那些行随后会被当成"还没合成"而重做一遍（既花 API
+                # 费用，又会盖掉已经生成好的音频）。宁可这一次登记失败并报错。
+                logger.error(
+                    f"[{video_id}] tts_results.json is corrupt ({e}); refusing to "
+                    f"overwrite it. Segment {segment_id} was NOT registered in the "
+                    f"resume registry."
+                )
+                return
 
         tts_results[segment_id] = rel_path
 
@@ -479,7 +487,7 @@ async def synthesize_speech(
         write_registry: Whether to update tts_results.json (set False when the
             caller batches the registry write itself).
         speech_rate: Speed to synthesize at (0.5–2.0). None keeps the default.
-            `llm_service.plan_speech_rate()` predicts this from the text.
+            `speech_timing.plan_speech_rate()` predicts this from the text.
         target_duration: The time slot this line has to fill. When given, the
             result is measured with ffprobe and — only if it misses by more than
             `config.TTS_FIT_TOLERANCE` — re-synthesized once at a corrected rate.
@@ -554,9 +562,14 @@ def sync_registry(video_id: str, segment_ids: list[str]) -> None:
             try:
                 with open(results_path, "r", encoding="utf-8") as f:
                     tts_results = json.load(f)
-            except Exception:
-                pass
-
+            except Exception as e:
+                # 同 `_register_segment_audio`：读不出来就不写回，别用残缺的表
+                # 覆盖掉其它行的登记。
+                logger.error(
+                    f"[{video_id}] tts_results.json is corrupt ({e}); refusing to "
+                    f"overwrite it during sync."
+                )
+                return
         for segment_id in segment_ids:
             tts_results[segment_id] = f"tts/{segment_id}.mp3"
 

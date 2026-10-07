@@ -11,15 +11,6 @@ export interface UploadResult {
   status: string;
 }
 
-export interface SegmentData {
-  id: string;
-  speaker_label: string;
-  start_time: number;
-  end_time: number;
-  text: string;
-  translated_text?: string;
-}
-
 export interface TranslateResult {
   id: string;
   translated_text: string;
@@ -53,21 +44,6 @@ export async function uploadVideo(file: File): Promise<UploadResult> {
 /**
  * Trigger transcription via Ali ASR. Returns segments.
  */
-export async function transcribeVideo(videoId: string): Promise<SegmentData[]> {
-  const response = await fetch(`${API_BASE}/videos/${videoId}/transcribe`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-  });
-
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({ detail: response.statusText }));
-    throw new Error(err.detail || 'Transcription failed');
-  }
-
-  const data = await response.json();
-  return data.segments;
-}
-
 /**
  * Translate script segments via the backend LLM.
  *
@@ -891,19 +867,6 @@ export async function saveSubtitleStyle(
  * which needs audio durations. Recomputing it in the browser would drift from
  * what the export produces, and the preview's whole point is that it matches.
  */
-export async function getSubtitleCues(
-  videoId: string,
-  track?: SubtitleTrack,
-): Promise<SubtitleCueResponse> {
-  const query = track ? `?track=${encodeURIComponent(track)}` : '';
-  const response = await fetch(`${API_BASE}/videos/${videoId}/subtitles/cues${query}`);
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({ detail: response.statusText }));
-    throw new Error(err.detail || 'Failed to load subtitle cues');
-  }
-  return response.json();
-}
-
 /**
  * Cues rendered with a style the caller supplies, WITHOUT saving it.
  *

@@ -16,7 +16,12 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 
 from app import config
 from app.deps import enforce_separator_token
-from app.services import token_service, voice_clone_service
+from app.services import (
+    run_registry,
+    speech_timing,
+    token_service,
+    voice_clone_service,
+)
 from app.models import (
     Speaker,
     VideoState,
@@ -34,7 +39,6 @@ from app.schemas import (
     ExportResponse,
     SegmentOut,
     SpeakerOut,
-    TranscribeResponse,
     TranslateRequest,
     TranslateResponse,
     TranslationResultItem,
@@ -46,7 +50,6 @@ from app.schemas import (
     SpeakerVoiceRequest,
 )
 from app.services import (
-    asr_service,
     export_service,
     llm_service,
     subtitle_service,
@@ -228,7 +231,7 @@ async def get_video_status(video_id: str):
         export_available=export_service.is_available(),
         # 工作流状态：这个工程此刻有没有在跑、跑到哪一步、能不能停。
         # 页面重载 / 换标签页后靠它判断"是接管还是新起一单"。
-        run=_current_run_snapshot(video_id),
+        run=run_registry.snapshot(video_id),
         cancelled_step=state.cancelled_step,
         # Which container the finished file is in, so the UI can label the
         # download correctly (and re-initialise its export panel).
@@ -247,7 +250,6 @@ async def get_video_status(video_id: str):
         # deliberately off.
         separation_mode=state.separation_mode or config.SEPARATION_MODE,
         separation_backends=config.separation_capabilities(),
-        enable_bgm_separation=state.enable_bgm_separation,
         enable_voice_clone=state.enable_voice_clone,
         target_language=state.target_language,
         accent=state.accent,
@@ -322,7 +324,7 @@ async def delete_video(video_id: str):
         raise HTTPException(status_code=404, detail="Video not found")
 
     video_dir = get_video_dir(video_id)
-    if video_id in _RUNNING_PIPELINES:
+    if run_registry.get(video_id) is not None:
         raise HTTPException(
             status_code=409,
             detail="这个工程正在处理中，请先取消运行再删除。",
@@ -340,93 +342,6 @@ async def delete_video(video_id: str):
     logger.info(f"[{video_id}] Project deleted (all files removed)")
 
     return {"deleted": True, "video_id": video_id}
-
-
-@router.post("/{video_id}/transcribe", response_model=TranscribeResponse)
-async def transcribe_video(video_id: str, request: Request):
-    """
-    Transcribe a video using Ali DashScope ASR.
-    Extracts audio, submits to ASR, polls for results.
-    """
-    logger.info(f"Transcription requested for video_id: {video_id}")
-    state = get_state(video_id)
-    if not state:
-        logger.warning(f"Transcription failed: Video {video_id} not found")
-        raise HTTPException(status_code=404, detail="Video not found")
-
-    try:
-        state.status = VideoStatus.EXTRACTING_AUDIO
-        logger.info(f"[{video_id}] Status: {state.status.value}")
-        save_state(state)
-
-        # Extract audio to the video specific directory
-        video_dir = get_video_dir(video_id)
-        audio_path = os.path.join(video_dir, "extracted_audio.wav")
-        if not os.path.exists(audio_path):
-            logger.info(f"[{video_id}] Extracting audio...")
-            asr_service.extract_audio(state.file_path, audio_path)
-
-        # Use vocals.wav for ASR if available (better accuracy without background noise)
-        vocals_path = os.path.join(video_dir, "vocals.wav")
-        if os.path.exists(vocals_path):
-            logger.info(f"[{video_id}] Using separated vocals for ASR")
-            state.audio_path = vocals_path
-        else:
-            state.audio_path = audio_path
-
-        state.status = VideoStatus.TRANSCRIBING
-        logger.info(f"[{video_id}] Status: {state.status.value}")
-        save_state(state)
-
-        # Build a URL for the audio file that Ali ASR can reach
-        base_url = config.SERVER_URL_BASE
-        file_serve_url = f"{base_url}/api/videos/{video_id}/audio"
-        logger.info(f"[{video_id}] Serving audio for ASR at: {file_serve_url}")
-
-        # Submit and poll ASR
-        segments = await asr_service.transcribe_video(
-            video_id, state.file_path, audio_path, file_serve_url
-        )
-
-        state.segments = segments
-        
-        # Initialize speakers if not already present
-        if not state.speakers:
-            unique_labels = sorted(list(set(seg.speaker_label for seg in segments)))
-            state.speakers = [
-                Speaker(id=label, name=label)
-                for label in unique_labels
-            ]
-            
-        state.status = VideoStatus.TRANSCRIBED
-        logger.info(f"[{video_id}] Status: {state.status.value}. Found {len(segments)} segments.")
-        save_state(state)
-
-        return TranscribeResponse(
-            video_id=video_id,
-            status=state.status.value,
-            segments=[
-                SegmentOut(
-                    id=seg.id,
-                    speaker_id=seg.speaker_id,
-                    speaker_label=seg.speaker_label,
-                    start_time=seg.start_time,
-                    end_time=seg.end_time,
-                    text=seg.text,
-                )
-                for seg in segments
-            ],
-            speakers=[
-                SpeakerOut(id=s.id, name=s.name)
-                for s in state.speakers
-            ]
-        )
-    except Exception as e:
-        logger.error(f"[{video_id}] Transcription error: {str(e)}", exc_info=True)
-        state.status = VideoStatus.ERROR
-        state.error_message = str(e)
-        save_state(state)
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/{video_id}/translate", response_model=TranslateResponse)
@@ -527,7 +442,7 @@ async def synthesize_speech(video_id: str, req: TTSRequest):
         # measurement-based correction inside synthesize_speech works without
         # it, so a missing language degrades rather than failing.
         planned_rate = (
-            llm_service.plan_speech_rate(
+            speech_timing.plan_speech_rate(
                 req.text, req.target_language, req.target_duration
             )
             if (req.target_duration and req.target_duration > 0 and req.target_language)
@@ -709,98 +624,6 @@ async def serve_separation_source(video_id: str):
     return FileResponse(stereo_path, media_type="audio/wav")
 
 
-# ---------------------------------------------------------------------------
-# One live pipeline per video.
-#
-# Every POST /process used to start its OWN pipeline task, so two triggers (a
-# second click, a dev-mode double-mount of the recovery effect) ran two full
-# pipelines over the same project at once: interleaved logs, the script
-# translated twice, both runs synthesizing the same lines — the TTS provider saw
-# double traffic and a segment failed on a rate limit that never happened on a
-# single run.
-#
-# So: while a run is live, a second request for the same video is REFUSED with
-# 409 and a message saying what is running. It deliberately does NOT attach to
-# the running pipeline. Attaching looked friendlier, but it means one pipeline
-# fanning out to several streams — a second consumer of a job whose settings
-# (language, accent, enhancement switches) belong to whoever started it. A
-# client that cannot start what it asked for should be told so, not quietly
-# given somebody else's run.
-#
-# The registry is only a live-run registry: the entry is removed the moment the
-# run ends, and a cancelled project's state lives in its own files (status,
-# cancelled_step) like everything else.
-# ---------------------------------------------------------------------------
-# 运行状态的时间戳用带时区的北京时间，和 usage 台账一致（这样前端显示"已跑
-# 1m20s"不会因为服务器时区不同而偏移）。
-from datetime import datetime, timedelta, timezone as _tz
-_RUN_TZ = _tz(timedelta(hours=8))
-
-
-class _PipelineRun:
-    """
-    One live pipeline, plus the state needed to watch or stop it.
-
-    Fields are derived from the events the pipeline already emits, so there is
-    no second progress bookkeeping to keep in sync. `queue` is the ONE stream
-    that started this run; when that client disconnects the queue is dropped and
-    the run continues on its own (nothing to write to any more).
-    """
-
-    def __init__(self) -> None:
-        self.queue: asyncio.Queue | None = None
-        # ── 步骤状态 ──
-        self.step: str | None = None          # separation / asr / mm_enhance / …
-        self.step_status: str | None = None   # started / listening / done / failed
-        self.done_count: int | None = None    # 批次进度（TTS 分段数）
-        self.total_count: int | None = None
-        self.cancelled = False
-        self.error: str | None = None
-        self.started_at = datetime.now(_RUN_TZ)
-        self.cancel_event = asyncio.Event()
-
-    async def emit(self, event: dict) -> None:
-        phase = event.get("phase")
-        if phase:
-            self.step = phase
-            self.step_status = event.get("status")
-        if event.get("progress") is not None:
-            self.done_count = event.get("progress")
-            self.total_count = event.get("total")
-        if event.get("cancelled"):
-            self.cancelled = True
-        if event.get("error") and not phase:
-            self.error = str(event["error"])
-        if self.queue is not None:
-            self.queue.put_nowait(event)
-
-    def request_cancel(self) -> None:
-        """请求停止。真正的停止发生在下一个步骤边界（见 run_pipeline）。"""
-        self.cancel_event.set()
-
-    def snapshot(self) -> dict:
-        return {
-            "active": True,
-            "step": self.step,
-            "step_status": self.step_status,
-            "progress": self.done_count,
-            "total": self.total_count,
-            "cancelling": self.cancel_event.is_set(),
-            "cancelled": self.cancelled,
-            "error": self.error,
-            "started_at": self.started_at.isoformat(),
-            "elapsed_s": round((datetime.now(_RUN_TZ) - self.started_at).total_seconds(), 1),
-        }
-
-
-_RUNNING_PIPELINES: dict[str, _PipelineRun] = {}
-
-
-def _current_run_snapshot(video_id: str) -> dict:
-    run = _RUNNING_PIPELINES.get(video_id)
-    return run.snapshot() if run is not None else {"active": False}
-
-
 @router.post("/{video_id}/cancel")
 async def cancel_processing(video_id: str):
     """
@@ -812,7 +635,7 @@ async def cancel_processing(video_id: str):
     Everything already produced stays on disk, so a later run resumes from the
     last finished phase instead of redoing it.
     """
-    run = _RUNNING_PIPELINES.get(video_id)
+    run = run_registry.get(video_id)
     if run is None:
         return {"cancelling": False, "reason": "no pipeline is running for this video"}
 
@@ -841,8 +664,9 @@ async def process_video(video_id: str, req: ProcessRequest):
     if not state:
         raise HTTPException(status_code=404, detail="Video not found")
 
-    live = _RUNNING_PIPELINES.get(video_id)
+    live = run_registry.get(video_id)
     if live is not None:
+        # 拒绝，而不是接管：一条管线的设置属于发起它的人（见 run_registry）。
         raise HTTPException(
             status_code=409,
             detail=(
@@ -851,8 +675,7 @@ async def process_video(video_id: str, req: ProcessRequest):
             ),
         )
 
-    run = _PipelineRun()
-    _RUNNING_PIPELINES[video_id] = run
+    run = run_registry.start(video_id)
 
     async def drive() -> None:
         try:
@@ -875,7 +698,7 @@ async def process_video(video_id: str, req: ProcessRequest):
             logger.error(f"[{video_id}] Pipeline error: {e}", exc_info=True)
             await run.emit({"error": str(e)})
         finally:
-            _RUNNING_PIPELINES.pop(video_id, None)
+            run_registry.finish(video_id)
             if run.queue is not None:
                 run.queue.put_nowait(None)
 
@@ -1240,7 +1063,6 @@ async def upload_stems(
             raise HTTPException(status_code=400, detail=f"Invalid stem {filename}: {e}")
 
     # Separation is done — make sure the pipeline does not try to redo it.
-    state.enable_bgm_separation = False
     state.audio_path = os.path.join(video_dir, "vocals.wav")
     save_state(state)
 

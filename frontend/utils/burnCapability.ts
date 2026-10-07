@@ -126,7 +126,3 @@ export async function probeBurnCapability(): Promise<BurnCapability> {
   }
 }
 
-/** Test seam: forget the memoised probe. */
-export function resetBurnCapabilityCache(): void {
-  cached = null;
-}

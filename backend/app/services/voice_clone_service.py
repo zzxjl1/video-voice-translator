@@ -123,8 +123,15 @@ def save_clone_entry(
                 loaded = json.load(f)
             if isinstance(loaded, dict):
                 raw = loaded
-        except Exception:
-            raw = {}
+        except Exception as e:
+            # 【不写回】：写回会用"只有这一位说话人"的新表覆盖掉整份克隆记录，
+            # 其它说话人随后会被认为"没克隆过"而重新走一遍 enrollment ——
+            # 那是要花配额（1000 个/账号）且不可退还的操作。
+            logger.error(
+                f"[{video_id}] voice_clones.json is corrupt ({e}); refusing to "
+                f"overwrite it. Speaker {speaker_id}'s voice was NOT persisted."
+            )
+            return
 
     raw[speaker_id] = {
         "voice_id": voice_id,

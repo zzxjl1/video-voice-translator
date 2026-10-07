@@ -25,7 +25,7 @@ import { cueAtTime, drawCueOnCanvas } from './subtitleStyle';
  * seconds of CPU.
  */
 
-export const BURN_MIME_TYPE = 'video/mp4';
+const BURN_MIME_TYPE = 'video/mp4';
 
 export interface BurnRequest {
   /** The dubbed export WITHOUT subtitles — the canvas paints them in. */

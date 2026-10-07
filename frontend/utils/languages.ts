@@ -98,7 +98,7 @@ export const MORE_LANGUAGES: TargetLanguage[] = [
 export const ALL_LANGUAGES: TargetLanguage[] = [...COMMON_LANGUAGES, ...MORE_LANGUAGES];
 
 /** Where the selector lands when nothing about the browser is recognised. */
-export const DEFAULT_TARGET_LANGUAGE = 'English';
+const DEFAULT_TARGET_LANGUAGE = 'English';
 
 /**
  * The target language to start on, taken from the browser's own preference.
@@ -160,7 +160,6 @@ export const CHINESE_ACCENTS: LanguageOption[] = [
 ];
 
 /** Mandarin. The empty value means "send no instruction at all". */
-export const DEFAULT_CHINESE_ACCENT = '';
 
 /** Whether this language takes an accent. Only Chinese has documented ones. */
 export function hasAccents(value: string): boolean {

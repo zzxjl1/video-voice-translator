@@ -2,7 +2,7 @@ import datetime
 import json
 import logging
 import os
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from enum import Enum
 from typing import Optional
 
@@ -80,7 +80,6 @@ class VideoState:
     error_message: Optional[str] = None
     segments: list[Segment] = field(default_factory=list)
     speakers: list[Speaker] = field(default_factory=list)
-    enable_bgm_separation: bool = True
     # Which backend performed separation: "client" (browser), "api" (302.AI)
     # or "off". Persisted so a resumed run keeps the same choice. Empty string
     # means "no pipeline has run yet", so the status endpoint reports the server
@@ -139,6 +138,11 @@ class VideoState:
         segments_data = data.pop("segments", [])
         speakers_data = data.pop("speakers", [])
         status_val = data.pop("status", VideoStatus.UPLOADED.value)
+        # 只保留本版本认识的字段：`cls(**data)` 遇到未知键会抛 TypeError，而那
+        # 意味着"删掉一个字段" = "所有写过那个字段的老工程都读不出来"。这不是
+        # 兼容补丁，是"状态文件不认识某个字段也不该让工程报废"。
+        known_fields = {f.name for f in fields(cls)}
+        data = {k: v for k, v in data.items() if k in known_fields}
         # Handle potential invalid status values
         try:
             status = VideoStatus(status_val)
@@ -251,8 +255,14 @@ def load_state(video_id: str) -> Optional[VideoState]:
             try:
                 with open(tts_results_path, "r", encoding="utf-8") as f:
                     tts_map = json.load(f)
-            except Exception:
-                pass
+            except Exception as e:
+                # 以前这里是 `pass`：文件坏掉时静默当成"一行都没合成过"，于
+                # 是整个工程的配音在界面上凭空消失（而且没有任何线索）。读不
+                # 出来是异常情况，必须留痕。
+                logger.warning(
+                    f"[{video_id}] tts_results.json is unreadable ({e}); "
+                    f"falling back to scanning the tts/ directory for audio files"
+                )
                 
         if segments:
             for s in segments:
@@ -277,8 +287,13 @@ def load_state(video_id: str) -> Optional[VideoState]:
                 for s in segments:
                     s.muted = s.id in muted_ids
                     s.hidden = s.id in hidden_ids
-            except Exception:
-                pass
+            except Exception as e:
+                # 同上：坏掉时静默丢弃，用户会看到"我明明静音/隐藏了，怎么又
+                # 有声音/又有字幕了"，且无从查起。
+                logger.warning(
+                    f"[{video_id}] {SEGMENT_FLAGS_FILENAME} is unreadable ({e}); "
+                    f"muted/hidden flags for this project are treated as unset"
+                )
 
         # Assemble
         data["segments"] = segments

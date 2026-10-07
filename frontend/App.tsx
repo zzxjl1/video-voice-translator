@@ -10,19 +10,23 @@ import SettingsModal from './components/SettingsModal';
 import StreamingLog from './components/StreamingLog';
 import { TranscriptionPanel } from './components/TranscriptionPanel';
 import { differFromProject } from './utils/settingsDiff';
-import { getSpeakerColor } from './utils/helpers';
+import { useSegmentActions } from './hooks/useSegmentActions';
+import {
+  RUN_STEP_LABEL,
+  deriveSpeakers,
+  mapServerSegment,
+  mapServerSpeakers,
+  resumeOfferNote,
+} from './utils/projectState';
 import {
   uploadVideo,
   translateScript,
-  synthesizeSpeech,
   processVideo,
   getVideoStatus,
   resetVideo,
   cancelProcessing,
   deleteProject,
-  setSegmentHidden,
   getVoiceCloneStatus,
-  getLanguageVoices,
   getVoices,
   setSpeakerVoice,
   generateVoicePreview,
@@ -49,7 +53,6 @@ import {
   type SubtitleStylePatch,
   type VoiceOption,
   API_BASE,
-  setSegmentMuted,
 } from './services/apiService';
 import { getAudioWaveform, getAudioWaveformFromUrl } from './utils/audioProcessor';
 import { decodeAudio, separateAndUpload, isModelCached } from './utils/mdx/separatorClient';
@@ -139,18 +142,18 @@ const SEPARATION_MODE_LABEL: Record<SeparationMode, string> = {
 /**
  * Decide which backend to adopt from a server payload.
  *
- * Prefers the persisted `separation_mode` and falls back to the legacy
- * `enable_bgm_separation` boolean for state written by older versions. A stored
- * backend that can no longer run (say the browser model was removed from the
- * server) degrades to "off" instead of queueing a job that would silently lose
- * separation.
+ * `separation_mode` is the only source: the legacy `enable_bgm_separation`
+ * boolean it used to fall back to has been removed from the server model, so
+ * reading it again would only resurrect a second, contradictory source of
+ * truth. A stored backend that can no longer run (say the browser model was
+ * removed from the server) degrades to "off" instead of queueing a job that
+ * would silently lose separation.
  */
 function restoreSeparationMode(
-  data: { separation_mode?: string; enable_bgm_separation?: boolean },
+  data: { separation_mode?: string },
   backends?: SeparationBackends,
 ): SeparationMode {
-  const stored = (data.separation_mode ??
-    (data.enable_bgm_separation ? 'client' : 'off')) as SeparationMode;
+  const stored = (data.separation_mode ?? 'off') as SeparationMode;
   if (stored === 'off') return 'off';
   return (backends?.[stored]?.available ?? true) ? stored : 'off';
 }
@@ -166,19 +169,6 @@ function restoreSeparationMode(
  * so the guess moved next to the list, and the tags it matches on now live ON
  * the options rather than in a table that can fall out of step.
  */
-
-/**
- * 后端阶段名 → 界面说法。用户看到的应该是"在做什么"，不是内部阶段 id。
- * 与 pipeline_service 的 phase 名一一对应。
- */
-const RUN_STEP_LABEL: Record<string, string> = {
-  separation: '人声分离',
-  asr: '语音识别',
-  mm_enhance: '多模态增强（omni 正在听）',
-  translation: '翻译',
-  voice_clone: '声音复刻',
-  tts: '语音合成',
-};
 
 const App: React.FC = () => {
   const [videoFile, setVideoFile] = useState<File | null>(null);
@@ -673,6 +663,143 @@ const App: React.FC = () => {
   }, [videoUrl, videoFile, duration, measureVideoRect]);
 
   /**
+   * 把服务端的工程状态应用到界面：设置、分段、说话人、记住这个工程。
+   * 返回恢复后的分离方式（调用方还要用它起管线）。
+   *
+   * **只有这一份实现** —— mount 时的会话恢复和浏览器前进/后退都调它。以前是
+   * 两份抄来的代码，而前进/后退那份少还原了语言、口音、自定义翻译要求、字幕
+   * 样式：从不同入口进同一个工程，看到的配置不一样，重翻时会用错语言/口音。
+   */
+  const applyProjectToView = useCallback((idFromUrl: string, data: any): SeparationMode => {
+    if (data.separation_backends) setSeparationBackends(data.separation_backends);
+    // 解析一次就用它：下面 startPipeline 跑在状态更新渲染之前，读不回 state。
+    const restoredMode = restoreSeparationMode(data, data.separation_backends);
+    setSeparationMode(restoredMode);
+    if (data.enable_voice_clone !== undefined) setEnableVoiceClone(data.enable_voice_clone);
+    if (data.mm_enhance !== undefined) setMmEnhance(data.mm_enhance);
+    if (data.clone_smart_pick !== undefined) setCloneSmartPick(data.clone_smart_pick);
+
+    /*
+     * 恢复的是【工程的选择】，不是这个浏览器的：语言、口音（不还原的话，之后
+     * 任何一次重配都会把一个粤语配音悄悄换回普通话）、字幕样式、注入的翻译
+     * 要求，都得回到当时的样子。空值表示工程从没选过，保留客户端初始值。
+     */
+    if (data.target_language) setTargetLanguage(data.target_language);
+    if (data.accent !== undefined && data.accent !== null) setTargetAccent(data.accent);
+    if (data.custom_prompt) setCustomPrompt(data.custom_prompt);
+    if (data.subtitle_style && Object.keys(data.subtitle_style).length > 0) {
+      setSubtitleStyle(prev => ({ ...prev, ...data.subtitle_style }));
+    }
+
+    // 这个浏览器碰过这个工程了：记进落地页的最近列表。
+    touchRecentProject(idFromUrl, data.filename || '');
+
+    if (data.segments && data.segments.length > 0) {
+      const recoveredSegments = data.segments.map(mapServerSegment);
+      setSpeakers(
+        data.speakers && data.speakers.length > 0
+          ? data.speakers
+          : deriveSpeakers(recoveredSegments)
+      );
+      setSegments(recoveredSegments);
+    }
+    return restoredMode;
+  }, []);
+
+  /**
+   * 未完成的工程 → 摆出"继续跑 / 从头开始"的选择；已完成 → null。
+   *
+   * 不静默续跑：用户可能是主动取消的，"自己又跑起来了"是越权；也不能什么都不
+   * 做：那样页面是空的，用户进不去下一步。
+   */
+  const buildResumeOffer = useCallback(
+    (idFromUrl: string, data: any, mode: SeparationMode) => {
+      const note = resumeOfferNote(data);
+      if (!note) return null;
+      return { vid: idFromUrl, note, mode, stems: Boolean(data.has_background) };
+    },
+    []
+  );
+
+  /**
+   * 进入一个工程：取服务端状态、应用到界面、按状态决定下一步。
+   *
+   * 这是"打开工程"的**唯一实现** —— mount 时的会话恢复和浏览器前进/后退都只
+   * 调它一行。以前两处各写一份，结果前进/后退那份漏还原语言/口音/自定义要求/
+   * 字幕样式：从不同入口进同一个工程，看到（并会用）不同的配置。
+   *
+   * 三种结局：
+   *   · 服务器上已经有一条在跑 → 只显示状态，不发起（不接管别人的运行）
+   *   · 未完成 → 摆出"继续跑 / 从头开始"的选择，不替用户决定
+   *   · 已完成 → 打开编辑器，波形与克隆音色就地加载
+   */
+  const recoverProject = useCallback(
+    async (idFromUrl: string): Promise<void> => {
+      setIsTranscribing(true);
+      try {
+        const data = await getVideoStatus(idFromUrl);
+        const restoredMode = applyProjectToView(idFromUrl, data);
+        console.log('[recovery] 工程状态已应用:', {
+          status: data.status,
+          mode: restoredMode,
+          segments: data.segments?.length ?? 0,
+        });
+        setRunState(data.run ?? null);
+
+        if (data.run?.active) {
+          /*
+           * 这个工程已经有一条在跑（另一个标签页开的，或本页刷新前那条还
+           * 活着）。这里【不发起任何请求】——服务器对重复请求是 409 拒绝，而
+           * 不是把它接到别人的运行上：一条管线的设置属于发起它的那个人，
+           * 后来者拿到的应该是"现在不能开始"，不是一个不是自己配的任务。
+           * 状态条会显示它在哪一步，并给出「取消运行」。
+           */
+          console.log('[recovery] 服务器报告该工程已在处理中 → 不发起，仅显示状态:', {
+            step: data.run.step,
+            elapsed_s: data.run.elapsed_s,
+          });
+          setIsTranscribing(false);
+          setRawLog(
+            `Session recovered for: ${idFromUrl}\n` +
+            `这个工程正在处理中（当前步骤：${RUN_STEP_LABEL[data.run.step] ?? data.run.step}）。\n` +
+            '本页不参与该次运行；需要的话可以点「取消运行」，或在它结束后再发起。\n'
+          );
+          return;
+        }
+
+        const offer = buildResumeOffer(idFromUrl, data, restoredMode);
+        if (offer) {
+          console.log('[recovery] 未完成 → 弹出「继续跑/从头开始」选择:', offer.note);
+          setIsTranscribing(false);
+          setRawLog(`Session recovered for: ${idFromUrl}\n${offer.note}。\n`);
+          setResumeAfterCancel(offer);
+          setResumePrompt(offer);
+          return;
+        }
+
+        // 已完成：直接打开编辑器，波形从服务端音频生成，顺带取克隆音色。
+        setIsTranscribing(false);
+        setIsAudioLoading(true);
+        getAudioWaveformFromUrl(`/api/videos/${idFromUrl}/audio`, 300).then(peaks => {
+          setWaveform(peaks);
+          setIsAudioLoading(false);
+        });
+        getVoiceCloneStatus(idFromUrl)
+          .then(res => {
+            if (res.cloned_voices && Object.keys(res.cloned_voices).length > 0) {
+              setClonedVoices(res.cloned_voices);
+            }
+          })
+          .catch(() => {});
+      } catch (err) {
+        console.error('Session recovery failed:', err);
+        setIsTranscribing(false);
+      }
+    },
+    [applyProjectToView, buildResumeOffer]
+  );
+
+  /**
    * 只自动开工一次。
    *
    * 开发模式下 React.StrictMode 会把 effect 执行两遍（mount → cleanup →
@@ -702,155 +829,7 @@ const App: React.FC = () => {
       setVideoId(idFromUrl);
       setBackgroundAudioUrl(`/api/videos/${idFromUrl}/audio/background`);
 
-      setIsTranscribing(true);
-      getVideoStatus(idFromUrl)
-        .then(data => {
-          const isCompleted = data.status === 'completed';
-          const isError = data.status === 'error';
-          const isUploaded = data.status === 'uploaded';
-
-          // Restore settings from server
-          if (data.separation_backends) setSeparationBackends(data.separation_backends);
-          // Resolve the saved backend once: the retry below runs before this
-          // state update is rendered, so it cannot read it back off state.
-          const restoredMode = restoreSeparationMode(
-            data,
-            data.separation_backends
-          );
-          setSeparationMode(restoredMode);
-          if (data.enable_voice_clone !== undefined) setEnableVoiceClone(data.enable_voice_clone);
-          if (data.mm_enhance !== undefined) setMmEnhance(data.mm_enhance);
-          if (data.clone_smart_pick !== undefined) setCloneSmartPick(data.clone_smart_pick);
-
-          /*
-           * Resume the PROJECT's choices, not this browser's.
-           *
-           * Browser-language detection only picks a landing-page starting value;
-           * a recovered session has to come back exactly as this project was
-           * configured — the language it was dubbed into, the accent (without
-           * which a later refit would quietly switch a Cantonese dub to
-           * Mandarin), and the subtitle look the preview was showing when the
-           * user left. Empty fields mean the pipeline never chose: keep the
-           * client's initial values.
-           */
-          if (data.target_language) setTargetLanguage(data.target_language);
-          if (data.accent !== undefined && data.accent !== null) setTargetAccent(data.accent);
-          // 注入的翻译要求同属工程配置：不还原的话 reprocess 会按默认行为
-          // 重翻，悄悄丢掉当初的要求。
-          if (data.custom_prompt) setCustomPrompt(data.custom_prompt);
-          if (data.subtitle_style && Object.keys(data.subtitle_style).length > 0) {
-            setSubtitleStyle(prev => ({ ...prev, ...data.subtitle_style }));
-          }
-
-          // This browser has now touched this project; remember it for the
-          // landing page's recent list.
-          touchRecentProject(idFromUrl, data.filename || '');
-
-          // Always load existing segments/speakers
-          if (data.segments && data.segments.length > 0) {
-            const recoveredSegments: TranscriptionSegment[] = data.segments.map((seg: any) => ({
-              id: seg.id,
-              speakerId: seg.speaker_label,
-              startTime: seg.start_time,
-              endTime: seg.end_time,
-              originalText: seg.text,
-              translatedText: seg.translated_text || '',
-              audioUrl: seg.audio_url || undefined,
-              muted: (seg as { muted?: boolean }).muted ?? false,
-              hidden: (seg as { hidden?: boolean }).hidden ?? false,
-              status: (seg.translated_text ? 'ready' : 'pending') as any,
-            }));
-
-            if (data.speakers && data.speakers.length > 0) {
-              setSpeakers(data.speakers);
-            } else {
-              const uniqueLabels = Array.from(new Set(recoveredSegments.map(s => s.speakerId)));
-              setSpeakers(
-                uniqueLabels.map(label => ({
-                  id: label,
-                  name: label,
-                  // 颜色是 Speaker 的必填字段：缺了它界面拿到 undefined 会渲染成透明/灰色，
-                  // 而这里是从 segments 反推说话人，没有服务端给的颜色。
-                  color: getSpeakerColor(label),
-                }))
-              );
-            }
-            setSegments(recoveredSegments);
-          }
-
-          setRunState(data.run ?? null);
-
-          if (data.run?.active) {
-            /*
-             * 这个工程已经有一条在跑（另一个标签页开的，或本页刷新前那条还
-             * 活着）。这里【不发起任何请求】——服务器对重复请求是 409 拒绝，
-             * 而不是把它接到别人的运行上：一条管线的设置属于发起它的那个人，
-             * 后来者拿到的应该是"现在不能开始"，不是一个不是自己配的任务。
-             * 状态条会显示它在哪一步，并给出「取消运行」。
-             */
-            console.log(
-              '[recovery] 服务器报告该工程已在处理中 → 不发起，仅显示状态:',
-              {
-                step: data.run.step,
-                step_status: data.run.step_status,
-                elapsed_s: data.run.elapsed_s,
-              }
-            );
-            setIsTranscribing(false);
-            setRawLog(
-              `Session recovered for: ${idFromUrl}\n` +
-              `这个工程正在处理中（当前步骤：${RUN_STEP_LABEL[data.run.step] ?? data.run.step}）。\n` +
-              '本页不参与该次运行；需要的话可以点「取消运行」，或在它结束后再发起。\n'
-            );
-          } else if (!isCompleted) {
-            /*
-             * 上次没跑完（取消 / 失败 / 中断 / 还没开始）。
-             *
-             * 不静默续跑：用户可能是主动取消的，"自己又跑起来了"是越权；也不
-             * 什么都不做：那样页面是空的，用户进不去下一步。摆出选择框，让他
-             * 自己决定。
-             */
-            const note = isError
-              ? `上次处理失败：${data.error || '未知错误'}`
-              : isUploaded
-              ? '这个工程还没开始处理'
-              : data.status === 'cancelled'
-              ? `上次已取消（停在：${RUN_STEP_LABEL[data.cancelled_step] ?? data.cancelled_step ?? '处理中'}）`
-              : `上次中断在：${data.status}`;
-            console.log('[recovery] 未完成 → 弹出"继续跑/从头开始"选择', {
-              status: data.status,
-              cancelled_step: data.cancelled_step,
-            });
-            setIsTranscribing(false);
-            setRawLog(`Session recovered for: ${idFromUrl}\n${note}。\n`);
-            const offer = {
-              vid: idFromUrl,
-              note,
-              mode: restoredMode,
-              stems: Boolean(data.has_background),
-            };
-            setResumeAfterCancel(offer);
-            setResumePrompt(offer);
-          } else {
-            // Completed — just show editor, generate waveform from server audio
-            setIsTranscribing(false);
-            setIsAudioLoading(true);
-            getAudioWaveformFromUrl(`/api/videos/${idFromUrl}/audio`, 300).then(peaks => {
-              setWaveform(peaks);
-              setIsAudioLoading(false);
-            });
-            // Load cloned voice map if any
-            getVoiceCloneStatus(idFromUrl).then(res => {
-              if (res.cloned_voices && Object.keys(res.cloned_voices).length > 0) {
-                setClonedVoices(res.cloned_voices);
-              }
-            }).catch(() => {});
-          }
-        })
-        .catch(err => {
-          console.error("Session recovery failed:", err);
-          setIsTranscribing(false);
-        });
+      void recoverProject(idFromUrl);
     }
   }, []);
 
@@ -1098,34 +1077,15 @@ const App: React.FC = () => {
           } else if (event.status === 'skipped') {
             const segs = event.segments || [];
             const spks = event.speakers || [];
-            const newSegments: TranscriptionSegment[] = segs.map((seg: any) => ({
-              id: seg.id,
-              speakerId: seg.speaker_label,
-              startTime: seg.start_time,
-              endTime: seg.end_time,
-              originalText: seg.text,
-              translatedText: seg.translated_text || '',
-              status: (seg.translated_text ? 'ready' : 'pending') as any,
-            }));
-            setSpeakers(spks.map((s: any) => ({ id: s.id, name: s.name })));
-            setSegments(newSegments);
+            setSpeakers(mapServerSpeakers(spks));
+            setSegments(segs.map(mapServerSegment));
             setRawLog(prev => prev + `ASR: already done (${segs.length} segments), skipping.\n`);
           } else if (event.status === 'done') {
             const segs = event.segments || [];
             const spks = event.speakers || [];
 
-            const newSegments: TranscriptionSegment[] = segs.map((seg: any) => ({
-              id: seg.id,
-              speakerId: seg.speaker_label,
-              startTime: seg.start_time,
-              endTime: seg.end_time,
-              originalText: seg.text,
-              translatedText: '',
-              status: 'pending' as const,
-            }));
-
-            setSpeakers(spks.map((s: any) => ({ id: s.id, name: s.name })));
-            setSegments(newSegments);
+            setSpeakers(mapServerSpeakers(spks));
+            setSegments(segs.map(mapServerSegment));
             setRawLog(prev => prev + `Transcription complete. Found ${segs.length} segments.\n`);
           }
         }
@@ -1631,95 +1591,7 @@ const App: React.FC = () => {
         setCurrentTime(0);
         setBackgroundAudioUrl(`/api/videos/${idFromUrl}/audio/background`);
 
-        setIsTranscribing(true);
-        getVideoStatus(idFromUrl)
-          .then(data => {
-            const isCompleted = data.status === 'completed';
-            const isError = data.status === 'error';
-            const isUploaded = data.status === 'uploaded';
-
-            // Restore settings from server
-            if (data.separation_backends) setSeparationBackends(data.separation_backends);
-            // Resolve the saved backend once: the retry below runs before this
-            // state update is rendered, so it cannot read it back off state.
-            const restoredMode = restoreSeparationMode(
-              data,
-              data.separation_backends
-            );
-            setSeparationMode(restoredMode);
-            if (data.enable_voice_clone !== undefined) setEnableVoiceClone(data.enable_voice_clone);
-          if (data.mm_enhance !== undefined) setMmEnhance(data.mm_enhance);
-          if (data.clone_smart_pick !== undefined) setCloneSmartPick(data.clone_smart_pick);
-
-            if (data.segments && data.segments.length > 0) {
-              const recoveredSegments: TranscriptionSegment[] = data.segments.map((seg: any) => ({
-                id: seg.id,
-                speakerId: seg.speaker_label,
-                startTime: seg.start_time,
-                endTime: seg.end_time,
-                originalText: seg.text,
-                translatedText: seg.translated_text || '',
-                audioUrl: seg.audio_url || undefined,
-              muted: (seg as { muted?: boolean }).muted ?? false,
-              hidden: (seg as { hidden?: boolean }).hidden ?? false,
-                status: (seg.translated_text ? 'ready' : 'pending') as any,
-              }));
-              if (data.speakers && data.speakers.length > 0) {
-                setSpeakers(data.speakers);
-              } else {
-                const uniqueLabels = Array.from(new Set(recoveredSegments.map(s => s.speakerId)));
-                setSpeakers(
-                uniqueLabels.map(label => ({
-                  id: label,
-                  name: label,
-                  // 颜色是 Speaker 的必填字段：缺了它界面拿到 undefined 会渲染成透明/灰色，
-                  // 而这里是从 segments 反推说话人，没有服务端给的颜色。
-                  color: getSpeakerColor(label),
-                }))
-              );
-              }
-              setSegments(recoveredSegments);
-            }
-
-              setRunState(data.run ?? null);
-
-            if (!isCompleted) {
-              // 同上（会话恢复那条路）：未完成一律弹选择框，不静默续跑。
-              const note = isError
-                ? `上次处理失败：${data.error || '未知错误'}`
-                : isUploaded
-                ? '这个工程还没开始处理'
-                : data.status === 'cancelled'
-                ? `上次已取消（停在：${RUN_STEP_LABEL[data.cancelled_step] ?? data.cancelled_step ?? '处理中'}）`
-                : `上次中断在：${data.status}`;
-              setIsTranscribing(false);
-              setRawLog(`Session recovered for: ${idFromUrl}\n${note}。\n`);
-              const offer = {
-                vid: idFromUrl,
-                note,
-                mode: restoredMode,
-                stems: Boolean(data.has_background),
-              };
-              setResumeAfterCancel(offer);
-              setResumePrompt(offer);
-            } else {
-              setIsTranscribing(false);
-              setIsAudioLoading(true);
-              getAudioWaveformFromUrl(`/api/videos/${idFromUrl}/audio`, 300).then(peaks => {
-                setWaveform(peaks);
-                setIsAudioLoading(false);
-              });
-              getVoiceCloneStatus(idFromUrl).then(res => {
-                if (res.cloned_voices && Object.keys(res.cloned_voices).length > 0) {
-                  setClonedVoices(res.cloned_voices);
-                }
-              }).catch(() => {});
-            }
-          })
-          .catch(err => {
-            console.error("Forward navigation recovery failed:", err);
-            setIsTranscribing(false);
-          });
+        void recoverProject(idFromUrl);
       }
     };
 
@@ -1837,21 +1709,12 @@ const App: React.FC = () => {
         if (continueExisting) {
           // Continue / retry — load existing data first
           if (statusData.segments && statusData.segments.length > 0) {
-            const recoveredSegments: TranscriptionSegment[] = statusData.segments.map((seg: any) => ({
-              id: seg.id,
-              speakerId: seg.speaker_label,
-              startTime: seg.start_time,
-              endTime: seg.end_time,
-              originalText: seg.text,
-              translatedText: seg.translated_text || '',
-              audioUrl: seg.audio_url || undefined,
-              muted: (seg as { muted?: boolean }).muted ?? false,
-              hidden: (seg as { hidden?: boolean }).hidden ?? false,
-              status: (seg.translated_text ? 'ready' : 'pending') as any,
-            }));
-            if (statusData.speakers && statusData.speakers.length > 0) {
-              setSpeakers(statusData.speakers);
-            }
+            const recoveredSegments = statusData.segments.map(mapServerSegment);
+            setSpeakers(
+              statusData.speakers && statusData.speakers.length > 0
+                ? statusData.speakers
+                : deriveSpeakers(recoveredSegments)
+            );
             setSegments(recoveredSegments);
           }
           if (statusData.has_background) {
@@ -2098,114 +1961,26 @@ const App: React.FC = () => {
     };
   }, [videoId, isTranscribing, runState?.active]);
 
-  const handleTranslateSegmentImpl = useCallback(async (id: string, textToTranslate?: string) => {
-    // Find the latest segment data from state
-    const segmentToTranslate = segments.find(s => s.id === id);
-    if (!segmentToTranslate || !videoId) return null;
-
-    // Use the latest text passed from the update handler or fallback to current state
-    const text = textToTranslate || segmentToTranslate.originalText;
-    if (!text) return null;
-
-    setSegments(prev => prev.map(s => s.id === id ? { ...s, isTranslating: true } : s));
-
-    try {
-      const results = await translateScript(
-        videoId,
-        [{
-          id: segmentToTranslate.id,
-          text: text,
-          speaker_id: segmentToTranslate.speakerId,
-          start_time: segmentToTranslate.startTime,
-          end_time: segmentToTranslate.endTime,
-        }],
-        targetLanguage
-      );
-
-      if (results.length > 0) {
-        const translatedText = results[0].translated_text;
-        setSegments(prev => prev.map(s => s.id === id ? { ...s, translatedText, isTranslating: false } : s));
-        return translatedText;
-      }
-    } catch (e) {
-      console.error("Translation failed:", e);
-    } finally {
-      setSegments(prev => prev.map(s => s.id === id ? { ...s, isTranslating: false } : s));
-    }
-    return null;
-  }, [videoId, targetLanguage, segments]);
-
-  const handleSynthesizeSegment = useCallback(async (id: string, textToSynthesize?: string) => {
-    const targetSegment = segments.find(s => s.id === id);
-    if (!targetSegment || !videoId) return;
-
-    const text = textToSynthesize || targetSegment.translatedText;
-    if (!text) return;
-
-    setSegments(prev => prev.map(s => s.id === id ? { ...s, isSynthesizing: true } : s));
-
-    try {
-      // Always aim at this line's own time slot. Every synthesis path has to
-      // fit, not just the batch pipeline: the playback clamp was tightened on
-      // the assumption that the server keeps lines close to their slot, so an
-      // unfitted re-synthesis here would be the one case that gets cut short.
-      const result = await synthesizeSpeech(videoId, targetSegment.id, text, undefined, {
-        targetDuration: Math.max(0.5, targetSegment.endTime - targetSegment.startTime),
-        targetLanguage,
-        // Without this, re-recording ONE line would drop it back to Mandarin
-        // while the rest of the video stayed in the chosen dialect.
-        accent: targetAccent,
-      });
-      // Cache-buster: the file at this URL has just been replaced, and without
-      // it the browser serves the previous take and `actualDuration` never
-      // updates. Clearing actualDuration forces `onLoadedMetadata` to re-measure.
-      setSegments(prev => prev.map(s => s.id === id
-        ? { ...s, audioUrl: `${result.audio_url}?v=${Date.now()}`, actualDuration: undefined, isSynthesizing: false }
-        : s));
-    } catch (e) {
-      console.error("Synthesis failed:", e);
-    } finally {
-      setSegments(prev => prev.map(s => s.id === id ? { ...s, isSynthesizing: false } : s));
-    }
-  }, [videoId, segments, targetLanguage, targetAccent]);
-
   /**
-   * Re-synthesize one line so it fits its own time slot.
-   *
-   * Delegates to `handleSynthesizeSegment`, which already aims every synthesis
-   * at the slot — this exists for the clearer log line the "Refit" action next
-   * to a Duration Mismatch badge produces.
+   * 逐行的动作（重译 / 重生成配音 / 重配时隙 / 静音 / 隐藏）搬到了
+   * `hooks/useSegmentActions`：它们只依赖下面这几个值，留在 App 里唯一的效果
+   * 就是让这个组件更长。
    */
-  const handleRefitSegment = useCallback(async (id: string) => {
-    setRawLog(prev => prev + `Refitting ${id} to fit its time slot...\n`);
-    await handleSynthesizeSegment(id);
-  }, [handleSynthesizeSegment]);
-
-  const handleSegmentUpdate = useCallback((id: string, updates: Partial<TranscriptionSegment>) => {
-    setSegments(prev => prev.map(s => {
-      if (s.id === id) {
-        // Clear audio URL if text is changing (will be re-synthesized)
-        if ((updates.originalText !== undefined || updates.translatedText !== undefined) && s.audioUrl) {
-          return { ...s, ...updates, audioUrl: undefined };
-        }
-        return { ...s, ...updates };
-      }
-      return s;
-    }));
-
-    // Auto-trigger Processing Chain
-    if (updates.originalText !== undefined) {
-      // Chain: ASR -> Translation -> TTS
-      handleTranslateSegmentImpl(id, updates.originalText).then(newTranslation => {
-        if (newTranslation) {
-          handleSynthesizeSegment(id, newTranslation);
-        }
-      });
-    } else if (updates.translatedText !== undefined) {
-      // Chain: Translation -> TTS
-      handleSynthesizeSegment(id, updates.translatedText);
-    }
-  }, [handleTranslateSegmentImpl, handleSynthesizeSegment]);
+  const {
+    handleSynthesizeSegment,
+    handleRefitSegment,
+    handleRetranslateLine,
+    handleSegmentUpdate,
+    handleToggleHide,
+    handleToggleMute,
+  } = useSegmentActions({
+    videoId,
+    targetLanguage,
+    targetAccent,
+    segments,
+    setSegments,
+    setRawLog,
+  });
 
   /**
    * Apply a style change immediately and persist it on a short delay.
@@ -2429,80 +2204,6 @@ const App: React.FC = () => {
    * app showing settings that no run has adopted.
    */
   /** 静音 / 取消静音一行：服务端持久化 + 本地同步（静音即无配音音频）。 */
-  /**
-   * 隐藏/取消隐藏一行的字幕。
-   *
-   * 乐观更新（先改界面再发请求，失败回滚），与静音一致 —— 这是个高频的
-   * "扫一遍随手点"的操作，等一个来回再变色会很难用。
-   */
-  const handleToggleHide = useCallback(async (segmentId: string, hidden: boolean) => {
-    if (!videoId) return;
-    setSegments(prev => prev.map(s => (s.id === segmentId ? { ...s, hidden } : s)));
-    try {
-      await setSegmentHidden(videoId, segmentId, hidden);
-    } catch (e) {
-      console.error('Failed to toggle hidden:', e);
-      setSegments(prev => prev.map(s => (s.id === segmentId ? { ...s, hidden: !hidden } : s)));
-    }
-  }, [videoId]);
-
-  const handleToggleMute = useCallback(async (segmentId: string, muted: boolean) => {
-    if (!videoId) return;
-    setSegments(prev => prev.map(s => (
-      s.id === segmentId ? { ...s, muted, audioUrl: muted ? undefined : s.audioUrl } : s
-    )));
-    try {
-      await setSegmentMuted(videoId, segmentId, muted);
-    } catch (e) {
-      // 失败就把本地状态拨回去，别让界面显示一个服务端没记住的状态。
-      setSegments(prev => prev.map(s => (s.id === segmentId ? { ...s, muted: !muted } : s)));
-      setRawLog(prev => prev + `\n静音失败: ${e instanceof Error ? e.message : 'unknown'}\n`);
-    }
-  }, [videoId]);
-
-  /**
-   * 只重译这一行：「长一点 / 短一点」调该行的长度预算，自定义要求注入一句话
-   * 的要求。译完立刻重新配音 —— 这两个选项要改的本来就是"这行占多长"，
-   * 只换文字不换音频等于没生效。静音行保持静音，不自动补音频。
-   */
-  const handleRetranslateLine = useCallback(async (
-    segmentId: string,
-    opts: { lengthHint?: 'longer' | 'shorter'; customPrompt?: string },
-  ) => {
-    const seg = segments.find(s => s.id === segmentId);
-    if (!videoId || !seg) return;
-    setSegments(prev => prev.map(s => (s.id === segmentId ? { ...s, isTranslating: true } : s)));
-    try {
-      const results = await translateScript(
-        videoId,
-        [{
-          id: seg.id,
-          text: seg.originalText,
-          speaker_id: seg.speakerId,
-          start_time: seg.startTime,
-          end_time: seg.endTime,
-        }],
-        targetLanguage,
-        opts.customPrompt ?? '',
-        opts.lengthHint,
-      );
-      const match = results.find(r => r.id === segmentId);
-      const newText = match?.translated_text;
-      if (!newText) throw new Error('没有拿到新的译文');
-      setSegments(prev => prev.map(s => (
-        s.id === segmentId
-          ? { ...s, translatedText: newText, isTranslating: false, audioUrl: undefined }
-          : s
-      )));
-      if (!seg.muted) {
-        await handleSynthesizeSegment(segmentId, newText);
-      }
-    } catch (e) {
-      setSegments(prev => prev.map(s => (s.id === segmentId ? { ...s, isTranslating: false } : s)));
-      setRawLog(prev => prev + `\n重译失败: ${e instanceof Error ? e.message : 'unknown'}\n`);
-    }
-  }, [segments, videoId, targetLanguage, handleSynthesizeSegment]);
-
   /**
    * 设置弹窗里点保存。
    *

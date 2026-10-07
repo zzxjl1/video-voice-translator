@@ -261,8 +261,11 @@ def build_dubbed_timeline(
         if progress and (index % 5 == 0 or index == len(segments) - 1):
             try:
                 progress(index + 1, len(segments))
-            except Exception:
-                pass
+            except Exception as e:
+                # 回调是 UI 的进度条。它抛错不该中断导出，但也不能静默 ——
+                # 静默的话现象是"进度条永远卡在同一格"，而服务器日志里什么都
+                # 没有，排查时完全无从下手。
+                logger.warning(f"[{video_id}] export progress callback failed: {e}")
 
     if placed == 0:
         return None

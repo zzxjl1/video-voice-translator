@@ -172,44 +172,6 @@ async def put_style(video_id: str, style: dict):
     return {"video_id": video_id, "style": state.subtitle_style}
 
 
-@video_router.get("/{video_id}/subtitles/cues")
-async def get_cues(video_id: str, track: str = Query(default="")):
-    """
-    Display cues with adapted timing, for the preview overlay.
-
-    `track` overrides the saved style's track so the UI can preview "original"
-    or "bilingual" without persisting the change first.
-    """
-    state = get_state(video_id)
-    if not state:
-        raise HTTPException(status_code=404, detail="Video not found")
-
-    style = _style_for(state)
-    if track:
-        style = SubtitleStyle.from_dict({**style.to_dict(), "track": track})
-
-    cues = subtitle_service.build_cues(state.segments, style)
-    return {
-        "video_id": video_id,
-        "track": style.track,
-        "count": len(cues),
-        "style": style.to_dict(),
-        "sample": _sample_cue(style),
-        "cues": [
-            {
-                "start": round(cue.start, 3),
-                "end": round(cue.end, 3),
-                "text": cue.text,
-                "secondary": cue.secondary,
-                # Advisory: the client may re-wrap while a slider moves, but
-                # these are what the export will produce.
-                "lines": cue.lines(style),
-            }
-            for cue in cues
-        ],
-    }
-
-
 @video_router.post("/{video_id}/subtitles/preview")
 async def preview_cues(video_id: str, body: dict):
     """

@@ -36,7 +36,6 @@ const Header: React.FC<HeaderProps> = ({
   isExporting,
   exportError,
 }) => {
-  const [isScrolled, setIsScrolled] = useState(false);
   const [isVisible, setIsVisible] = useState(true);
   const [isHovered, setIsHovered] = useState(false);
   const [lastScrollY, setLastScrollY] = useState(0);
@@ -46,10 +45,8 @@ const Header: React.FC<HeaderProps> = ({
       const currentScrollY = window.scrollY;
 
       if (currentScrollY < 10) {
-        setIsScrolled(false);
         setIsVisible(true);
       } else {
-        setIsScrolled(true);
         if (currentScrollY > lastScrollY && currentScrollY > 50 && !isHovered) {
           setIsVisible(false);
         } else {

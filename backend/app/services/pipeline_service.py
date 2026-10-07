@@ -33,6 +33,7 @@ from app.models import (
 )
 from app.services import (
     asr_service,
+    speech_timing,
     llm_service,
     tts_service,
     voice_clone_service,
@@ -190,10 +191,7 @@ async def run_pipeline(
             )
             separation_mode = "off"
 
-    enable_bgm_separation = separation_mode != "off"
-
     # Persist settings into state
-    state.enable_bgm_separation = enable_bgm_separation
     state.separation_mode = separation_mode
     state.enable_voice_clone = enable_voice_clone
     # A pinned voice belongs to a LANGUAGE. Voice ids are language-specific, so
@@ -674,7 +672,7 @@ async def run_pipeline(
                     slot = max(
                         0.5, (seg.end_time or 0.0) - (seg.start_time or 0.0)
                     )
-                    planned_rate = llm_service.plan_speech_rate(
+                    planned_rate = speech_timing.plan_speech_rate(
                         seg.translated_text, target_language, slot
                     )
                     audio_file_path = await tts_service.synthesize_speech(

@@ -210,7 +210,7 @@ SPEECH_RATE_VALUE = {
 DEFAULT_SPEECH_RATE_VALUE = 2.9
 
 # The same measurement expressed in "spoken units" — roughly syllables, as
-# counted by `llm_service.speech_units()`. This is what the TTS duration
+# counted by `speech_timing.speech_units()`. This is what the TTS duration
 # prediction uses, because a character count is a bad proxy: "Python" is 6
 # characters but 2 units, "73%" is 3 characters but ~8 units.
 SPEECH_UNITS_PER_SECOND = {
@@ -233,21 +233,6 @@ DEFAULT_SPEECH_UNITS_PER_SECOND = 4.4
 # ranged 0.04–0.61s across a noisy 4-sample set, so a single shared value is
 # used instead — the slopes are what carry the signal.
 TTS_FIXED_OVERHEAD = _env_float("TTS_FIXED_OVERHEAD", 0.3)
-
-SPEECH_RATE_UNIT = {
-    "Chinese": "Chinese characters",
-    "Japanese": "Japanese characters",
-    "Korean": "Korean characters",
-}
-DEFAULT_SPEECH_RATE_UNIT = "words"
-
-
-def speech_rate_hint(language: str) -> str:
-    """Human-readable speaking-rate budget for the given target language."""
-    rate = SPEECH_RATE_VALUE.get(language, DEFAULT_SPEECH_RATE_VALUE)
-    unit = SPEECH_RATE_UNIT.get(language, DEFAULT_SPEECH_RATE_UNIT)
-    return f"about {rate} {unit} per second"
-
 
 def speech_rate_value(language: str) -> float:
     """Numeric speaking rate (chars or words per second)."""
