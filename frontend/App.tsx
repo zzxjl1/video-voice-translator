@@ -1211,12 +1211,12 @@ const App: React.FC = () => {
           }
         }
 
-        // 某个阶段被取消（协作式取消，停在该阶段边界）
+        // 某个阶段被取消（协作式取消，停在该阶段边界）。
+        // 日志里只说"已取消"，不写是哪个阶段 —— 阶段名是内部词汇，用户看它没有
+        // 任何可做的动作；event.phase 仍打在同一行的 console 里供排查。
         if (event.status === 'cancelled') {
           console.log('[pipeline] 收到 cancelled 事件:', event);
-          setRawLog(
-            prev => prev + `\n${RUN_STEP_LABEL[event.phase] ?? event.phase}：已取消。\n`
-          );
+          setRawLog(prev => prev + '\n已取消。\n');
         }
 
         // Final done
@@ -1232,13 +1232,14 @@ const App: React.FC = () => {
            */
           if (event.cancelled) {
             /*
-             * 用户叫停的收尾。要说清三件事：停在哪、东西还在、怎么继续 ——
-             * "停了"本身不足以让人放心关掉页面。
+             * 用户叫停的收尾。要说清两件事：东西还在、怎么继续 —— "停了"本身
+             * 不足以让人放心关掉页面。（不断说"停在哪一步"：见 utils/projectState
+             * 里 resumeOfferNote 的说明。）
              */
             setRawLog(
               prev =>
                 prev +
-                `\n=== 已取消（停在：${RUN_STEP_LABEL[event.step] ?? event.step ?? '处理中'}）===\n` +
+                '\n=== 已取消 ===\n' +
                 '已完成的产物都已保存在这个工程里，随时可以继续。\n'
             );
             setIsCancelling(false);
@@ -1699,7 +1700,9 @@ const App: React.FC = () => {
         } else if (isError) {
           message += `Previous processing failed: ${statusData.error || 'Unknown error'}\n\n`;
         } else {
-          message += `Processing was interrupted at stage: ${statusData.status}\n\n`;
+          // 不写 `status`：那是内部状态枚举（translated / transcribed / …），
+          // 用户看不出差别也做不了什么。
+          message += 'Processing was not finished.\n\n';
         }
         message +=
           'Choose an action:\n• OK = Continue / Retry from where it stopped\n• Cancel = Reset and start over';

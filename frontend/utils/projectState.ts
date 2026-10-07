@@ -19,10 +19,6 @@ export const RUN_STEP_LABEL: Record<string, string> = {
   tts: '语音合成',
 };
 
-function stepLabel(step: string | null | undefined): string {
-  return RUN_STEP_LABEL[step ?? ''] ?? step ?? '处理中';
-}
-
 /** 一个服务端分段 → 界面分段。 */
 export function mapServerSegment(seg: any): TranscriptionSegment {
   return {
@@ -65,15 +61,18 @@ export function deriveSpeakers(segments: TranscriptionSegment[]): Speaker[] {
 /**
  * "这个工程上次没跑完"的说明文案；**已完成返回 null**（没什么要问的）。
  *
- * 四种未完成状态各有各的说法 —— 用户需要知道上次是失败了、被自己取消了，还是
- * 压根没开始，因为这三件事的下一步不一样。
+ * 未完成状态各有各的说法 —— 用户需要知道上次是失败了、被自己取消了，还是压根
+ * 没开始，因为这三件事的下一步不一样。
+ *
+ * 【刻意不显示停在哪一步 / 内部状态名】：`cancelled_step` 是阶段名、`status` 是
+ * 状态枚举（translated / transcribed / …），两者都是内部词汇。曾经这里会显示
+ * "上次中断在：translated" —— 用户不知道那是什么，也无法据此做任何决定。要说明
+ * 的只有"为什么需要你选下一步"，具体断点由服务器自己恢复时用，不必给人看。
  */
 export function resumeOfferNote(data: any): string | null {
   if (data?.status === 'completed') return null;
   if (data?.status === 'error') return `上次处理失败：${data.error || '未知错误'}`;
   if (data?.status === 'uploaded') return '这个工程还没开始处理';
-  if (data?.status === 'cancelled') {
-    return `上次已取消（停在：${stepLabel(data.cancelled_step)}）`;
-  }
-  return `上次中断在：${data?.status}`;
+  if (data?.status === 'cancelled') return '上次已取消';
+  return '上次没有跑完';
 }
