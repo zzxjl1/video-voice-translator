@@ -23,15 +23,20 @@ from app.services import usage_service
 
 logger = logging.getLogger(__name__)
 
-# 超时是量过之后定的：这里传的是音频 URL，由模型服务端去拉。URL 不可达时它
-# 会一直重试下载，而 SDK 默认重试 2 次、每次 300s —— 单次调用最坏能把管线拖
-# 住 15 分钟，界面上看起来就是"卡在 ASR 之后不动了"。
-#   - timeout=300：实测一次真实调用（9 行、42 秒音频）耗时 120.6s，所以 180s
-#     太紧（慢一点就误判失败），而 300s 留了一倍余量。这是【单次】上限，不乘
-#     重试次数。
+# 超时与重试策略（都量过）：
+#   - timeout=300：这是【单次】上限，不乘重试次数。正常情况下关掉思考后一次
+#     调用是 1-2 秒级（见下），300s 是给"特别长的音频 + 服务端排队"留的余量。
 #   - max_retries=0：管线对 omni 的失败本来就是降级继续（用原始 ASR 文本），
 #     重试没有价值，只会把"失败"拖成"卡住"。
-# 更长的视频会超出这个预算并降级 —— 那时的正解是分块送（未做）。
+#
+# ⚠️ 【思考模式必须关掉】—— 这是这条链路上最大的性能陷阱，实测数据：
+#     同一段音频、同一个 prompt、同一个模型：
+#       默认（思考开）：112.7s，output 12268 token，思维链 49075 字符
+#       关掉思考      ：  1.2s，output    67 token，思维链 0
+#     94 倍差距。任务是"对照音频校对转写并标注语气"，输出只有几百字符，模型却
+#     先生成了上万 token 的推理过程 —— 用户看到的就是"卡在 ASR 之后两分钟"。
+#     注意 `qwen3.8-omni-flash` 默认开启思考，不显式关闭就会付这个代价。
+_THINKING_OFF = {"enable_thinking": False}
 _client = AsyncOpenAI(
     api_key=config.DASHSCOPE_API_KEY,
     base_url=config.OMNI_BASE_URL,
@@ -97,6 +102,9 @@ async def enhance_transcript(
                     ],
                 }],
                 response_format={"type": "json_object"},
+                # 关掉思考：这一段的输出是"改几个字 + 加标签"，不需要推理过程，
+                # 开着会让每次调用多花两分钟（见文件顶部实测）。
+                extra_body=_THINKING_OFF,
             )
             usage = r.usage.model_dump() if r.usage else {}
             for key in ("input_tokens", "prompt_tokens", "output_tokens", "completion_tokens"):
@@ -212,6 +220,9 @@ async def pick_samples(
             r = await _client.chat.completions.create(
                 model=config.OMNI_MODEL, messages=messages, tools=tools,
                 tool_choice="auto",
+                # 同上：选段是判断，不是长推理。多轮重选时这个开关尤其重要
+                # （最多 CLONE_OMNI_MAX_TURNS 轮，开着思考就是按轮数翻倍）。
+                extra_body=_THINKING_OFF,
             )
             usage = r.usage.model_dump() if r.usage else {}
             for key in ("input_tokens", "prompt_tokens", "output_tokens", "completion_tokens"):
