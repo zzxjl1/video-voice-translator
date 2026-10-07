@@ -5,7 +5,9 @@ python-dotenv>=1.0.0
 openai>=1.60.0
 requests>=2.32.0
 httpx>=0.27.0
-dashscope>=1.23.4
+# `instruction`（方言/口音）参数从 1.27.1 才有：1.27.0 及以前传它会让每个
+# 分段在 SpeechSynthesizer 构造器上抛 TypeError（配音整批失败）。
+dashscope>=1.27.1
 
 # --- Vocal separation ---
 # No Python package is required for this. The browser (WebGPU/WASM) runs the
