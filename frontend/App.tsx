@@ -1000,7 +1000,7 @@ const App: React.FC = () => {
             ? '← CANCELLED'
             : event.done === true
             ? '← DONE'
-            : event.error
+            : event.error && !event.phase
             ? `← ERROR ${event.error}`
             : ''
         );
@@ -1250,8 +1250,14 @@ const App: React.FC = () => {
           setRunState(prev => (prev ? { ...prev, active: false } : prev));
         }
 
-        // Error
-        if (event.error) {
+        /*
+         * Error —— 只对【管线级】失败打 ERROR 行（那种事件没有 `phase`）。
+         * 带 phase 的 error 都是"这一步降级继续"，各自在上面已经有专门的人话说明
+         * （例如 `Smart pick unavailable for X (falling back to rules): ...`）。
+         * 以前一律再补一行 `ERROR: ...`，于是智能选材退回规则这种正常降级会被显示
+         * 成两条红色错误，看起来像整单失败。
+         */
+        if (event.error && !event.phase) {
           setRawLog(prev => prev + `\nERROR: ${event.error}\n`);
         }
       }, {

@@ -493,7 +493,17 @@ export async function processVideo(
           const data = JSON.parse(line.slice(6));
           received += 1;
           onEvent(data);
-          if (data.error) {
+          /*
+           * 只有【管线级】失败才中断读取。区分办法：后端那一种不带 `phase`
+           * （`run.emit({"error": str(e)})`，见 routers/video.py 的 drive()），
+           * 带 phase 的 error 是"这一步降级继续"—— omni 选材失败退回规则、多模态
+           * 增强失败退回原始 ASR 文本、分离失败继续。
+           *
+           * 以前这里是 `if (data.error) throw`：第一个降级事件就把整条 SSE 流掐断，
+           * 此后界面再也不更新（现象是"日志停在某一行不动了"），而服务器其实还在
+           * 正常跑完 —— 用户看到的和实际发生的是两件事。
+           */
+          if (data.error && !data.phase) {
             throw new Error(data.error);
           }
         } catch (e) {

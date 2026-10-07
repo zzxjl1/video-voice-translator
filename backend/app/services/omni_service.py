@@ -49,6 +49,26 @@ def _audio_part(url: str) -> dict:
     return {"type": "input_audio", "input_audio": {"data": url, "format": "wav"}}
 
 
+async def _chat(video_id: str, detail: str, **kwargs):
+    """
+    【所有】 omni 调用的唯一出口：调用与记账在同一个地方完成。
+
+    记账为什么不写在每个 return 之前：那是"成功分支记一次、失败分支各记一次"，
+    两处漏一处就少一笔账 —— 实测漏掉的正是最贵的多轮重试。既然"调用发生过就必须
+    记账"是个不变量，它就该和调用绑在一起，而不是让每个退出路径自觉。
+
+    返回原始响应；调用抛错时不记账（没有响应 = 没有可计费的用量）。
+    """
+    r = await _client.chat.completions.create(**kwargs)
+    usage = r.usage.model_dump() if r.usage else {}
+    if usage:
+        usage_service.record(
+            video_id=video_id, step="omni", model=config.OMNI_MODEL,
+            detail=detail, usage=usage,
+        )
+    return r
+
+
 async def enhance_transcript(
     video_id: str,
     items: list[dict],
@@ -88,11 +108,14 @@ async def enhance_transcript(
         "unchanged. Never add explanations."
     )
 
-    usage_total: dict = {}
     by_id: dict | None = None
     for attempt in (1, 2):  # 一次失败重试一次，再失败就放弃
         try:
-            r = await _client.chat.completions.create(
+            # 每次尝试都走 _chat：重试也是真实调用，也各自记一笔账（旧的合并记法
+            # 只留一行，看起来像只调用过一次）。
+            r = await _chat(
+                video_id,
+                "mm_enhance",
                 model=config.OMNI_MODEL,
                 messages=[{
                     "role": "user",
@@ -106,10 +129,6 @@ async def enhance_transcript(
                 # 开着会让每次调用多花两分钟（见文件顶部实测）。
                 extra_body=_THINKING_OFF,
             )
-            usage = r.usage.model_dump() if r.usage else {}
-            for key in ("input_tokens", "prompt_tokens", "output_tokens", "completion_tokens"):
-                if usage.get(key):
-                    usage_total[key] = usage_total.get(key, 0) + usage[key]
             data = json.loads(r.choices[0].message.content or "{}")
             lines_out = data.get("lines") or []
             by_id = {
@@ -123,8 +142,6 @@ async def enhance_transcript(
         except Exception as e:
             logger.warning(f"[MmEnhance] attempt {attempt} failed: {e}")
             by_id = None
-    usage_service.record(video_id=video_id, step="omni", model=config.OMNI_MODEL,
-                         detail="mm_enhance", usage=usage_total)
 
     if not by_id:
         return {}
@@ -140,21 +157,60 @@ async def enhance_transcript(
     return enhanced
 
 
+# 校验下限/上限：picks 的总时长必须落在 [下限, 上限] 之间，否则把原因喂回去
+# 重选。这两个数【必须】与下面校验块一致 —— 前置可行性检查靠它们判断"omni 有
+# 没有可能选出一个合格答案"。
+_PICK_MIN_TOTAL_S = 5.0
+_PICK_MAX_TOTAL_S = 30.0
+
+
 async def pick_samples(
     video_id: str,
     speaker_id: str,
     candidates: list[dict],
     audio_url: str,
-) -> list[str] | None:
+) -> tuple[list[str] | None, str]:
     """
     让 omni 听音频，通过 tool call 挑选克隆参考段。
 
     candidates: [{"id", "start", "end", "duration", "text"}]（同一说话人）。
-    返回选中的 id 列表（已通过全部校验），或 None（超轮数/失败 → 调用方回退
-    到规则选材）。
+
+    返回 `(ids, reason)`：
+      * 成功 → `(选中的 id 列表, "")`
+      * 失败 → `(None, 人话原因)`
+
+    为什么带 reason：以前所有失败都返回一个 None，调用方只能笼统报"omni 没有
+    挑出任何段"。而实际上"候选为空""候选总共才 2.4 秒、达不到 5 秒下限""API
+    调用失败""模型连轮数给不出可用选择"这四件事的排查方向完全不同 —— 用户看到
+    同一句话，我们也看不出是哪一件。
     """
-    if not candidates or not audio_url:
-        return None
+    if not candidates:
+        return None, "该说话人在这个工程里没有可用的候选段"
+    if not audio_url:
+        return None, "音频地址为空，omni 无法听"
+
+    # 下限取 min(建议下限, 实际可用素材)：约束必须【可满足】。
+    #
+    # 实测过发一个不可满足的约束会怎样（说话人只有一段 2.4s，而下限写死 5s）：
+    # 模型第 1 轮正确选择了那一段 → 被"below 5s"驳回 → 第 2 轮它直接说明
+    # "the provided candidate list only contains one segment" → 之后每轮都重复，
+    # 5 轮全废、白花 5 次调用，最后调用方只能报一句"没挑出任何段"。
+    #
+    # 正确的做法不是绕过模型，而是把约束放到它做得到的范围，并告诉它原因和真实
+    # 可用量 —— 素材少的时候，"从仅有素材里挑最好的"仍然是模型比死规则更会做的判断。
+    available = sum(float(c.get("duration") or 0) for c in candidates)
+    min_total = min(_PICK_MIN_TOTAL_S, available)
+    material_note = (
+        ""
+        if available >= _PICK_MIN_TOTAL_S
+        else (
+            f"\n\nMATERIAL LIMIT: this speaker has only {available:.1f}s of usable "
+            f"speech in the whole video, so the usual {_PICK_MIN_TOTAL_S:.0f}s floor "
+            "cannot be reached. That is expected — pick the best material that "
+            "actually exists (never invent ids), and do not keep trying to reach "
+            f"{_PICK_MIN_TOTAL_S:.0f}s."
+        )
+    )
 
     by_id = {str(c["id"]): c for c in candidates}
     listing = "\n".join(
@@ -173,8 +229,9 @@ async def pick_samples(
         "whispered lines. Timbre comes from the reference; emotion is added "
         "later by tags. Pick neutral, normal-paced delivery.\n"
         "- Skip noise and music-heavy spans.\n"
-        "- Together the picks should total 10-30 seconds and must not overlap "
-        "each other in time.\n"
+        f"- Together the picks must total {min_total:.1f}-{_PICK_MAX_TOTAL_S:.0f} "
+        "seconds and must not overlap each other in time."
+        f"{material_note}\n"
         "- Prefer longer, complete sentences over fragments.\n\n"
         "You MUST answer by calling the select_samples tool with the chosen ids "
         "and a one-line reason for each. If a previous attempt was rejected, fix "
@@ -214,23 +271,21 @@ async def pick_samples(
         ]},
     ]
 
-    usage_total: dict = {}
     for turn in range(1, config.CLONE_OMNI_MAX_TURNS + 1):
         try:
-            r = await _client.chat.completions.create(
+            r = await _chat(
+                video_id,
+                f"pick_samples({speaker_id})",
                 model=config.OMNI_MODEL, messages=messages, tools=tools,
                 tool_choice="auto",
                 # 同上：选段是判断，不是长推理。多轮重选时这个开关尤其重要
                 # （最多 CLONE_OMNI_MAX_TURNS 轮，开着思考就是按轮数翻倍）。
                 extra_body=_THINKING_OFF,
             )
-            usage = r.usage.model_dump() if r.usage else {}
-            for key in ("input_tokens", "prompt_tokens", "output_tokens", "completion_tokens"):
-                if usage.get(key):
-                    usage_total[key] = usage_total.get(key, 0) + usage[key]
         except Exception as e:
             logger.warning(f"[SamplePick] {speaker_id} turn {turn} API error: {e}")
-            return None
+            # 记账在 _chat 里已经做过了（成功拿到响应才记）—— 这里不需要再管。
+            return None, f"omni 调用失败：{str(e)[:120]}"
 
         msg = r.choices[0].message
         calls = getattr(msg, "tool_calls", None) or []
@@ -272,19 +327,24 @@ async def pick_samples(
             if overlaps:
                 problems.append(f"selected spans overlap each other: {overlaps}")
             total = sum(c["duration"] for c in picked)
-            if total > 30.0:
-                problems.append(f"total {total:.1f}s exceeds 30s — drop some picks")
-            elif total < 5.0:
-                problems.append(f"total {total:.1f}s is below 5s — pick more or longer segments")
+            if total > _PICK_MAX_TOTAL_S:
+                problems.append(
+                    f"total {total:.1f}s exceeds {_PICK_MAX_TOTAL_S:.0f}s — drop some picks"
+                )
+            elif total < min_total:
+                # 下限是 min_total（= min(建议下限, 可用素材)），所以这条只在模型
+                # 【没把可用的都选上】时出现，仍然是一条可执行的指令。
+                problems.append(
+                    f"total {total:.1f}s is below {min_total:.1f}s — "
+                    "pick more or longer segments"
+                )
 
         if not problems:
-            usage_service.record(video_id=video_id, step="omni", model=config.OMNI_MODEL,
-                                 detail=f"pick_samples({speaker_id})", usage=usage_total)
             logger.info(
                 f"[SamplePick] {speaker_id}: accepted after {turn} turn(s): "
                 f"{[c['id'] for c in picked]} ({'; '.join(reasons)[:200]})"
             )
-            return [c["id"] for c in picked]
+            return [c["id"] for c in picked], ""
 
         reason = "; ".join(problems)
         logger.warning(f"[SamplePick] {speaker_id} turn {turn} rejected: {reason}")
@@ -308,4 +368,13 @@ async def pick_samples(
         f"[SamplePick] {speaker_id}: gave up after {config.CLONE_OMNI_MAX_TURNS} "
         "turns — caller will fall back to rule-based selection"
     )
-    return None
+    if available < _PICK_MIN_TOTAL_S:
+        return None, (
+            f"omni 连续 {config.CLONE_OMNI_MAX_TURNS} 轮没能挑出可用素材；这位说话人"
+            f"在本工程里只有 {available:.1f}s 可用（低于建议下限 "
+            f"{_PICK_MIN_TOTAL_S:.0f}s），音色质量可能不稳"
+        )
+    return None, (
+        f"omni 连续 {config.CLONE_OMNI_MAX_TURNS} 轮没给出能通过校验的选择"
+        "（候选可能确实都不合适）"
+    )

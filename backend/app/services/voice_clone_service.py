@@ -579,7 +579,7 @@ async def clone_voice_for_speaker(
                 if s.speaker_id == speaker_id and (s.end_time - s.start_time) >= 0.3
             ]
             audio_url = f"{server_url_base}/api/videos/{video_id}/audio"
-            picks = await omni_service.pick_samples(
+            picks, pick_reason = await omni_service.pick_samples(
                 video_id, speaker_id, candidates, audio_url
             )
             if picks:
@@ -616,15 +616,17 @@ async def clone_voice_for_speaker(
                         })
             else:
                 logger.warning(
-                    f"[Clone] Step 1a: omni picker returned nothing — "
-                    f"falling back to rule-based selection"
+                    f"[Clone] Step 1a: omni picker returned nothing ({pick_reason}) "
+                    f"— falling back to rule-based selection"
                 )
                 if emit is not None:
                     await emit({
                         "phase": "voice_clone",
                         "status": "pick_failed",
                         "speaker_id": speaker_id,
-                        "error": "omni 没有挑出任何段",
+                        # 具体原因（候选不足 / API 失败 / 超轮数）原样带出去：
+                        # 界面上这一句是用户唯一能看到的解释。
+                        "error": pick_reason or "omni 没有挑出任何段",
                     })
         except Exception as e:
             logger.warning(
