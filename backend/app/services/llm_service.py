@@ -46,6 +46,39 @@ _SYSTEM_PROMPT = (
 )
 
 
+def _tag_mismatches(source: str, translated: str) -> tuple[list[str], list[str]]:
+    """
+    比一行里"源文标签"与"译文标签"，返回 (丢掉, 新造)。
+
+    为什么要查：标签是合成器的控制指令，不是词。翻译模型偶尔会把它当正文处理
+    —— 译成中文（[大笑]）、换成全角（【laughing】）、挪到别的位置或直接漏掉。
+    漏掉的表现最隐蔽：这一行**照常有译文、照常有配音**，只是没有情绪/音效，
+    在成片里才听得出差别。所以这里点名，让它可追查（与"缺口不允许以完成收尾"
+    同一原则：能发现的问题不该只留一句 warning 在服务器日志里）。
+
+    比对用规范化后的写法（大小写/全角/多空格不算差别），否则全是假警报。
+    """
+    known = set(config.EMOTION_CONTROL_TAGS) | set(config.EMOTION_RICH_TAGS)
+
+    def shaped_tags(text: str) -> list[str]:
+        """
+        "像标签的"方括号标记：名字是纯 ASCII 字母/空格。`[inaudible]` 这类非官方
+        标注因此也算进来 —— 它们同样会被合成器当正文念出来，值得看见；而 `[1]`、
+        `[注]` 这种（含非 ASCII 字母）不会误报。
+        """
+        found: list[str] = []
+        for match in config.EMOTION_TAG_RE.finditer(text or ""):
+            inner = match.group(1).strip()
+            if inner and all(ch.isascii() and (ch.isalpha() or ch == " ") for ch in inner):
+                found.append(config.canonical_emotion_tag(inner))
+        return found
+
+    src, out = shaped_tags(source), shaped_tags(translated)
+    missing = [t for t in src if t not in out and t in known]
+    invented = [t for t in out if t not in src and t not in known]
+    return missing, invented
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -422,6 +455,16 @@ def _build_chunk_prompt(
             "invent tags.",
             "- A tag at the start of a line stays at the start of the "
             "translated line; an inline tag stays next to the words it marks.",
+            "- A tag is a SYNTHESIZER CONTROL TOKEN, not a word: it is never "
+            "part of the sentence and is never translated. Copy it "
+            "character-for-character, in HALF-WIDTH square brackets. Never "
+            "convert it to full-width 【…】 or any other bracket style, never "
+            "translate the name inside the brackets, and never add a tag that "
+            "was not in the source line.",
+            f"- The complete set of valid tags: {' '.join(config.EMOTION_CONTROL_TAGS + config.EMOTION_RICH_TAGS)}.",
+            f"- At most one control tag (kept at the start of the line) and at "
+            f"most {config.EMOTION_MAX_RICH_PER_LINE} inline sound tags per line; "
+            "if the source has more, keep the first ones and drop the rest.",
         ]
 
     if length_hint == "longer":
@@ -843,6 +886,28 @@ async def translate_script(
         )
     if failed_ids:
         logger.warning(f"[{video_id}] {len(failed_ids)} segment(s) were not translated")
+
+    # ---- 标签完整性：译文里的标签是否与源文一致 ----
+    tag_missing: dict[str, list[str]] = {}
+    tag_invented: dict[str, list[str]] = {}
+    for item in items:
+        if item["id"] not in translations:
+            continue
+        missing, invented = _tag_mismatches(
+            item.get("text") or "", translations.get(item["id"]) or ""
+        )
+        if missing:
+            tag_missing[item["id"]] = missing
+        if invented:
+            tag_invented[item["id"]] = invented
+    if tag_missing or tag_invented:
+        # 合成前还有一道白名单防线（会把自造标签剥掉、把全角/大小写归一），
+        # 所以这里不是致命问题，但必须点名：丢掉的那个标签 = 丢掉的情绪/音效。
+        logger.warning(
+            f"[{video_id}] translation tag check: "
+            f"{len(tag_missing)} line(s) lost a tag {list(tag_missing)[:6]}, "
+            f"{len(tag_invented)} line(s) added an unknown tag {list(tag_invented)[:6]}"
+        )
 
     # ---- Persist in the format expected by models.load_state ----
     ordered = [

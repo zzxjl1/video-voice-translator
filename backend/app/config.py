@@ -347,15 +347,46 @@ TTS_TIMEOUT = _env_int("TTS_TIMEOUT", 60)
 OMNI_MODEL = _env("OMNI_MODEL", "qwen3.8-omni-flash")
 OMNI_BASE_URL = _env("OMNI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
 # 白名单 = TTS 文档列出的标签（2026-10）。omni 返回的标签凡不在表内一律丢弃。
+# 情感/富语言标签 —— 白名单必须与官方文档一致。
+#
+# ⚠️ 只有这三个模型认这些标签（官方文档）：
+
+#   qwen-audio-3.1-tts-flash（TTS_MODEL 默认值）/ qwen-audio-3.0-tts-plus /
+#   qwen-audio-3.0-tts-flash。换成别的 TTS 模型时，标签不但无效，还会被当正文
+#   念出来 —— 那样必须同时关掉多模态增强（mm_enhance），或改写这条链路。
+#
+# 漏掉任何一个官方标签的后果是**功能被静默剥掉**：`tts_service._sanitize_for_tts`
+# 会把白名单之外的一切当噪音删除（自造标签、被翻成中文的标签都走这条路），
+# 所以清单短一个，模型按文档写的标签就少一个。
 EMOTION_CONTROL_TAGS = [
-    "[sad]", "[amazed]", "[trembling]", "[angry]", "[excited]", "[sarcastic]",
-    "[curious]", "[bored]", "[tired]", "[shouting]", "[asmr]", "[panicked]",
-    "[empathetic]", "[whispers]", "[reluctantly]", "[crying]", "[serious]",
+    "[sad]", "[amazed]", "[deep and loud shouting]", "[trembling]", "[angry]",
+    "[excited]", "[sarcastic]", "[curious]", "[like dracula]", "[bored]",
+    "[tired]", "[scornful]", "[shouting]", "[asmr]", "[panicked]",
+    "[mischievously]", "[empathetic]", "[whispers]", "[reluctantly]", "[crying]",
+    "[serious]", "[very slowly]", "[very fast]",
 ]
 EMOTION_RICH_TAGS = [
     "[gasp]", "[sighing]", "[clears throat]", "[giggles]", "[laughing]",
     "[cough]", "[snorts]",
 ]
+import re as _re
+
+# 识别文本里的情感/富语言标签。**两种括号都认**：全角 【…】 是模型（尤其中文
+# 语境）常见的输出，而合成器只认半角 [tag]；只认半角会让【大笑】被当正文念出来。
+EMOTION_TAG_RE = _re.compile(r"[\[【]([^\[\]【】]{1,32})[\]】]")
+
+
+def canonical_emotion_tag(inner: str) -> str:
+    """
+    标签名的规范写法：半角方括号 + 去多余空白的小写名。
+
+    大小写与空格都不该让功能被静默丢掉：`[Excited]`、`[very  slowly]`、
+    `【Excited】` 与 `[excited]`、`[very slowly]` 是同一个标签，而合成器只认后者。
+    tts_service（合成前归一）与 llm_service（译文标签比对）共用这一处定义。
+    """
+    return f"[{' '.join(inner.strip().lower().split())}]"
+
+
 # 每句最多 1 个控制标签 + 2 个富语言标签，再多就成了音效串烧。
 EMOTION_MAX_CONTROL_PER_LINE = 1
 EMOTION_MAX_RICH_PER_LINE = 2

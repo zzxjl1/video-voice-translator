@@ -473,7 +473,9 @@ async def _write_fitted_audio(
     return (final or actual), corrected
 
 
-_TAG_RE = re.compile(r"\[[^\[\]]{1,32}\]")
+# 标签的识别与规范化统一在 config（同一套定义还要给"译文标签比对"用）。
+_TAG_RE = config.EMOTION_TAG_RE
+_canonical_tag = config.canonical_emotion_tag
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
@@ -487,9 +489,14 @@ def _sanitize_for_tts(text: str, segment_id: str) -> str:
     约定（控制类每句 1、富语言每句 2）——多出来的同类标签对合成本来就没
     有增量意义。
 
-    剥除会打日志（带被剥内容），让"防线拦了什么"可追查而不是静默丢失。
+    三种写法在这里被**归一**成合成器认的形态，而不是被剥掉：
+      * 全角 【excited】 → [excited]
+      * 大小写  [Excited] → [excited]
+      * 多空格  [very  slowly] → [very slowly]
+    只有归一之后仍不在白名单里的（自造标签、歧义括号内容）才剥除 ——
+    剥除一律打日志，让"防线拦了什么"可追查而不是静默丢失。
     """
-    if "[" not in text:
+    if "[" not in text and "【" not in text:
         return text
 
     kept_control = kept_rich = 0
@@ -497,19 +504,30 @@ def _sanitize_for_tts(text: str, segment_id: str) -> str:
 
     def _keep(m: re.Match) -> str:
         nonlocal kept_control, kept_rich
-        tag = m.group(0)
+        tag = _canonical_tag(m.group(1))
         if tag in config.EMOTION_CONTROL_TAGS and kept_control < config.EMOTION_MAX_CONTROL_PER_LINE:
             kept_control += 1
             return tag
         if tag in config.EMOTION_RICH_TAGS and kept_rich < config.EMOTION_MAX_RICH_PER_LINE:
             kept_rich += 1
             return tag
-        stripped.append(tag)
+        stripped.append(m.group(0))
         return ""
 
     out = _TAG_RE.sub(_keep, text)
+
     if not stripped:
+        # 没有任何标签被剥除。但**可能发生过归一**（全角/大小写/多空格）——
+        # 那时必须返回 `out`：以前这里直接 `return text`，于是"归一"算了却
+        # 丢掉，【excited】照样原样送去合成（合成器只认 [excited]）。
+        if out != text:
+            logger.info(
+                f"[TTS] {segment_id}: normalized tag spelling for synthesis: "
+                f"{out[:80]}"
+            )
+            return out
         return text
+
     cleaned = _WHITESPACE_RE.sub(" ", out).strip()
     logger.warning(
         f"[TTS] {segment_id}: stripped non-whitelisted tag(s) "
