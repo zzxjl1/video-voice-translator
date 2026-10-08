@@ -410,6 +410,18 @@ def _build_chunk_prompt(
         "3. Keep each speaker's personality consistent across the script.",
         "4. Write idiomatic lines a native speaker would actually say — avoid translationese.",
         "5. Adapt cultural references so they land for the target audience.",
+        # 机器识别必然会出同音错字；这里明确"按听到的意思翻"。
+        # 与 omni 那段的目的相同，但生效时机不同：omni 没开（或多模态增强模型漏掉
+        # 了某一句）时，翻译模型是唯一还能兜住的人 —— 它手上有 asr_original 与
+        # 上下文，足以判断一个词是不是同音误听。
+        "6. The transcript comes from machine speech recognition and can contain "
+        "obvious slips: near-homophones that make no sense in context (e.g. "
+        "字体一致 heard as 字体移植, 'at six' heard as 'at sex'), a name or a "
+        "number that contradicts the rest of the line, a word that breaks the "
+        "sentence. When the intended words are unambiguous from context, "
+        "translate the intended meaning rather than the literal slip. Only fix "
+        "what is plainly a recognition error — never substitute a different idea "
+        "of your own.",
         "",
         "## Length budget (important — this audio is lip/duration synced)",
         f"Spoken {target_language} runs at roughly {rate} {unit} per second here.",
@@ -450,6 +462,13 @@ def _build_chunk_prompt(
             "Translate the REVIEWED text. Use \"asr_original\" only to resolve "
             "something that looks like an over-correction (a word the reviewer "
             "changed that the transcript clearly had right).",
+            # 消歧义：规则 6 允许"按本意纠正同音误听"，而这里两个文本可能互相矛盾
+            # —— omni 已经改对的那一处，asr_original 里是**错的**版本。不写清楚的话
+            # 模型可能把审听版的正确纠正'改回'成转写里的同音错字。
+            "- When the two versions disagree on a near-homophone (the reviewer "
+            "changed a word the raw transcript got wrong), the REVIEWED text "
+            "wins: that IS the fix, not a slip to re-correct. Fix only slips that "
+            "BOTH versions still carry.",
             "- PRESERVE every [tag] exactly as written, at the corresponding "
             "position of your translation. Do not translate, rename, drop, or "
             "invent tags.",
