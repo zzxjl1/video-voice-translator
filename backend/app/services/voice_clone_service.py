@@ -340,8 +340,15 @@ def _select_segments_for_speaker(
     # The one docs requirement selection alone cannot always satisfy: if even
     # the longest segment is short of 5s, the sample has no continuous stretch.
     # Nothing to select differently — surface it instead of failing silently.
-    longest = max((s.end_time - s.start_time) for s in selected)
-    if longest < 5.0:
+    # selected 可能为空（规则选材一条都没选到）：max() 对空序列会抛 ValueError，
+    # 把本意的"警告一声继续"变成整段崩溃。
+    longest = max((s.end_time - s.start_time for s in selected), default=0.0)
+    if not selected:
+        logger.warning(
+            f"[SegSelect] {speaker_id}: no usable segment at all — "
+            f"cloning will be skipped for this speaker"
+        )
+    elif longest < 5.0:
         logger.warning(
             f"[SegSelect] {speaker_id}: longest segment {longest:.2f}s < 5s — "
             f"the sample has no ≥5s continuous stretch (docs requirement); "
@@ -456,7 +463,11 @@ def _ffmpeg_build_sample(
     ]
     logger.info(f"[FFmpeg] cmd: {' '.join(cmd)}")
 
-    result = subprocess.run(cmd, check=True, capture_output=True)
+    # timeout 是必需的：ffmpeg 卡在损坏输入/坏挂载上会永久占住一个线程池 worker，
+    # 而整条管线在等它。超时会让 subprocess 杀掉子进程并抛 TimeoutExpired。
+    result = subprocess.run(
+        cmd, check=True, capture_output=True, timeout=config.CLONE_SAMPLE_TIMEOUT
+    )
     if result.stderr:
         logger.debug(
             f"[FFmpeg] stderr: "
@@ -664,10 +675,25 @@ async def clone_voice_for_speaker(
     # Build sample with ffmpeg (segments + 1s gaps)
     logger.info(f"[Clone] Step 1b: Building sample with ffmpeg...")
     loop = asyncio.get_event_loop()
-    sample_dur = await loop.run_in_executor(
-        None,
-        lambda: _ffmpeg_build_sample(vocals_path, selected, sample_path),
-    )
+    if emit is not None:
+        await emit({
+            "phase": "voice_clone",
+            "status": "sampling",
+            "speaker_id": speaker_id,
+            "seconds": round(total_voice, 1),
+        })
+    try:
+        sample_dur = await asyncio.wait_for(
+            loop.run_in_executor(
+                None,
+                lambda: _ffmpeg_build_sample(vocals_path, selected, sample_path),
+            ),
+            timeout=config.CLONE_SAMPLE_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        raise RuntimeError(
+            f"参考音频拼接超时（>{config.CLONE_SAMPLE_TIMEOUT}s）"
+        ) from None
     logger.info(f"[Clone] Step 1b done: sample ready, duration={sample_dur:.2f}s")
 
     # Step 2: Public URL for the sample
@@ -704,7 +730,26 @@ async def clone_voice_for_speaker(
     voice_id = None
     for attempt in range(1, max_create_attempts + 1):
         try:
-            voice_id = await loop.run_in_executor(None, _create_voice)
+            if attempt == 1 and emit is not None:
+                await emit({
+                    "phase": "voice_clone",
+                    "status": "enrolling",
+                    "speaker_id": speaker_id,
+                    "timeout_s": config.CLONE_ENROLL_TIMEOUT,
+                })
+            try:
+                voice_id = await asyncio.wait_for(
+                    loop.run_in_executor(None, _create_voice),
+                    timeout=config.CLONE_ENROLL_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                # asyncio 的超时是"放弃等待"，不是"杀掉那个调用"：线程里的
+                # DashScope 请求会自己跑完（结果被丢弃）。消息要说人话，
+                # 否则日志里只剩一个空白的 TimeoutError。
+                raise RuntimeError(
+                    f"注册音色超时（>{config.CLONE_ENROLL_TIMEOUT}s，"
+                    f"DashScope 无响应或正在排队）"
+                ) from None
             logger.info(
                 f"[Clone] Step 3 done: enrollment submitted, voice_id={voice_id} (attempt {attempt}/{max_create_attempts})"
             )
@@ -774,7 +819,17 @@ async def clone_voice_for_speaker(
             f"Voice clone timed out for {speaker_id} after {max_attempts * poll_interval}s"
         )
 
-    await loop.run_in_executor(None, _poll_voice)
+    # 每次轮询也套上限：整个轮询窗口是 30×10s，但单次调用挂住的话，
+    # 预算再大也救不了（协作式取消同样进不来）。
+    try:
+        await asyncio.wait_for(
+            loop.run_in_executor(None, _poll_voice),
+            timeout=config.CLONE_POLL_CALL_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        raise RuntimeError(
+            f"查询音色状态超时（>{config.CLONE_POLL_CALL_TIMEOUT}s）"
+        ) from None
     logger.info(f"[Clone] Step 4 done: voice ready! voice_id={voice_id}")
 
     # Step 5: Cache and persist, tagged with the model it was created for

@@ -1,5 +1,5 @@
 
-import React, { useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { TranscriptionSegment, Speaker } from '../types';
 import { formatTime, getSpeakerColor } from '../utils/helpers';
 
@@ -48,6 +48,19 @@ const Timeline: React.FC<TimelineProps> = ({ segments, speakers, duration, curre
     });
   };
 
+  /**
+   * 每根波形柱的颜色。只依赖 (waveform, duration, segments)，算一次即可 ——
+   * 播放时父组件每帧更新 currentTime，这个计算不该跟着重做。
+   */
+  const barColors = useMemo(() => {
+    if (!waveform.length || !duration) return [] as string[];
+    return waveform.map((_, idx) => {
+      const time = (idx / waveform.length) * duration;
+      const seg = segments.find(s => time >= s.startTime && time <= s.endTime);
+      return seg ? getSpeakerColor(seg.speakerId) : '#d1d5db';
+    });
+  }, [waveform, duration, segments]);
+
   return (
     <div className="p-4 bg-white border border-claude-border rounded-2xl shadow-sm select-none">
       <div className="flex justify-between text-[10px] font-mono text-gray-400 mb-2 uppercase tracking-widest">
@@ -69,8 +82,9 @@ const Timeline: React.FC<TimelineProps> = ({ segments, speakers, duration, curre
           {waveform.length > 0 ? waveform.map((peak, idx) => {
             const progress = idx / waveform.length;
             const time = progress * duration;
-            const activeSeg = segments.find(s => time >= s.startTime && time <= s.endTime);
-            const color = activeSeg ? getSpeakerColor(activeSeg.speakerId) : '#d1d5db';
+            // 颜色来自预计算表（见下方 barColors）：原来在这里对每根柱子做
+            // 一次 segments.find，而播放时每帧都会重渲染 → O(柱数 × 段数)（P2 #28）。
+            const color = barColors[idx] ?? '#d1d5db';
             return (
               <div
                 key={idx}

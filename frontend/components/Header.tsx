@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   CHINESE_ACCENTS,
   COMMON_LANGUAGES,
@@ -38,7 +38,17 @@ const Header: React.FC<HeaderProps> = ({
 }) => {
   const [isVisible, setIsVisible] = useState(true);
   const [isHovered, setIsHovered] = useState(false);
-  const [lastScrollY, setLastScrollY] = useState(0);
+  /*
+   * 上次滚动位置与悬停态放 ref：它们只是判断依据，放进 state 会让 effect 依赖
+   * 它们 → 每滚动一像素就解绑/重绑监听并重渲染一次（P2 #28）。现在监听只绑一次，
+   * 只有 isVisible 真正变化时才重渲染。
+   */
+  const lastScrollYRef = useRef(0);
+  const isHoveredRef = useRef(false);
+
+  useEffect(() => {
+    isHoveredRef.current = isHovered;
+  }, [isHovered]);
 
   useEffect(() => {
     const handleScroll = () => {
@@ -47,18 +57,22 @@ const Header: React.FC<HeaderProps> = ({
       if (currentScrollY < 10) {
         setIsVisible(true);
       } else {
-        if (currentScrollY > lastScrollY && currentScrollY > 50 && !isHovered) {
+        if (
+          currentScrollY > lastScrollYRef.current &&
+          currentScrollY > 50 &&
+          !isHoveredRef.current
+        ) {
           setIsVisible(false);
         } else {
           setIsVisible(true);
         }
       }
-      setLastScrollY(currentScrollY);
+      lastScrollYRef.current = currentScrollY;
     };
 
     window.addEventListener('scroll', handleScroll, { passive: true });
     return () => window.removeEventListener('scroll', handleScroll);
-  }, [lastScrollY, isHovered]);
+  }, []);
 
   const expanded = isHovered;
 

@@ -238,8 +238,16 @@ def build_dubbed_timeline(
 
     use_numpy = np is not None
 
+    timeline_path = os.path.join(get_video_dir(video_id), "dubbed_timeline.wav")
+    raw_path = f"{timeline_path}.raw"
+
     if use_numpy:
-        timeline = np.zeros(total_samples, dtype=np.int32)
+        # 时间轴用**磁盘映射**（memmap）而不是内存数组（P2 #26）。
+        # 2 小时 @24kHz 的 int32 缓冲是 ~691MB；旧写法还要再来一次
+        # clip().astype(int16).tobytes()（~345MB 的字节串）—— 两个峰值都只为
+        # "拼完再整体写出去"。memmap 的读写接口与 ndarray 一致（叠加逻辑不用改），
+        # 热数据由页缓存兜着，RSS 不再与视频时长成正比。
+        timeline = np.memmap(raw_path, dtype=np.int32, mode="w+", shape=(total_samples,))
     else:
         timeline = array.array("h", bytes(total_samples * SAMPLE_WIDTH))
 
@@ -271,17 +279,29 @@ def build_dubbed_timeline(
         return None
 
     if use_numpy:
-        pcm_bytes = np.clip(timeline, MIN_SAMPLE, MAX_SAMPLE).astype(np.int16).tobytes()
+        with wave.open(timeline_path, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(SAMPLE_WIDTH)
+            wav.setframerate(sample_rate)
+            # 分块 裁剪→int16→写出：不再构造整条时间轴的字节串。
+            chunk_samples = 1 << 20          # 约 4MB int32 / 2MB int16 每块
+            for start in range(0, int(timeline.shape[0]), chunk_samples):
+                block = timeline[start : start + chunk_samples]
+                wav.writeframes(
+                    np.clip(block, MIN_SAMPLE, MAX_SAMPLE).astype(np.int16).tobytes()
+                )
+        del timeline                          # 先解除映射，再删中间文件
+        try:
+            os.remove(raw_path)
+        except OSError:
+            # 残留一个 .raw 不影响导出结果（下次导出会覆盖同名文件）。
+            logger.warning(f"[{video_id}] could not remove {raw_path}")
     else:
-        pcm_bytes = timeline.tobytes()
-
-    timeline_path = os.path.join(get_video_dir(video_id), "dubbed_timeline.wav")
-
-    with wave.open(timeline_path, "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(SAMPLE_WIDTH)
-        wav.setframerate(sample_rate)
-        wav.writeframes(pcm_bytes)
+        with wave.open(timeline_path, "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(SAMPLE_WIDTH)
+            wav.setframerate(sample_rate)
+            wav.writeframes(timeline.tobytes())
 
     logger.info(
         f"[{video_id}] Dubbed timeline built: {placed}/{len(segments)} segments, "

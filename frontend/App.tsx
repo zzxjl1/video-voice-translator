@@ -23,6 +23,7 @@ import {
   translateScript,
   processVideo,
   getVideoStatus,
+  subscribeToRun,
   resetVideo,
   cancelProcessing,
   deleteProject,
@@ -479,6 +480,46 @@ const App: React.FC = () => {
   const activeAudiosRef = useRef<Map<string, HTMLAudioElement>>(new Map());
 
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  /**
+   * 当前界面上的工程 id（ref 版）。用于丢弃"上一个工程"的迟到事件：
+   * state 在异步回调里读到的可能是旧值，必须用 ref 才能即时判断。
+   */
+  const currentVideoIdRef = React.useRef<string>('');
+
+  /**
+   * ref 跟着 `videoId` 走。
+   *
+   * 它是给**异步回调**看的"当前工程"：事件流的 onEvent、接管后的
+   * applyPipelineEvent 都在回调里判断归属，读 state 会拿到旧值。
+   *
+   * 这一处同步是兜底：任何设置 videoId 的路径（恢复、前进/后退、上传、清空）
+   * 都不会再漏 —— 之前是在每个入口手写赋值，恢复路径漏了一处，表现是"接管成功
+   * 但日志一个字都不动"（事件全被归属守卫丢弃），且不报任何错。
+   */
+  useEffect(() => {
+    currentVideoIdRef.current = videoId;
+  }, [videoId]);
+
+  /**
+   * 用户对字幕样式的编辑次数。用于挡住一个窄竞态：打开工程时发起的那次
+   * "拉当前样式"如果晚于用户的第一次修改返回，会把用户刚改的值覆盖回旧值
+   * （服务器那边其实还没收到新值）。取回时比对代次，改过就不套用。
+   */
+  const styleEditRef = React.useRef(0);
+
+  /** 正在试听的音色预览（切工程/换一个试听时要停掉并释放，见 handlePreviewVoice）。 */
+  const previewAudioRef = React.useRef<HTMLAudioElement | null>(null);
+
+  const stopVoicePreview = React.useCallback(() => {
+    const audio = previewAudioRef.current;
+    if (!audio) return;
+    audio.onended = null;
+    audio.onerror = null;
+    audio.pause();
+    audio.src = '';          // 断开底层流，Audio 对象交给 GC
+    previewAudioRef.current = null;
+  }, []);
+
   const [backgroundAudioUrl, setBackgroundAudioUrl] = useState<string | null>(null);
 
   const isIndexPage = !videoFile && !videoId;
@@ -568,9 +609,12 @@ const App: React.FC = () => {
       return;
     }
     let cancelled = false;
+    const editSeqAtFetch = styleEditRef.current;
     getSubtitleStyle(videoId)
       .then(response => {
-        if (!cancelled) setSubtitleStyle(response.style);
+        if (!cancelled && styleEditRef.current === editSeqAtFetch) {
+          setSubtitleStyle(response.style);
+        }
       })
       .catch(err => console.warn('Subtitle style unavailable:', err));
     return () => {
@@ -714,11 +758,24 @@ const App: React.FC = () => {
       const recoveredSegments = data.segments.map(mapServerSegment);
       setSpeakers(
         data.speakers && data.speakers.length > 0
-          ? data.speakers
+          ? mapServerSpeakers(data.speakers)   // 后端只发 {id,name}，要过映射
           : deriveSpeakers(recoveredSegments)
       );
       setSegments(recoveredSegments);
     }
+
+    /*
+     * 背景音轨只在工程真的有 background.wav 时挂上（#19）。
+     *
+     * 挂上它意味着两件事：音频指向 /audio/background，以及 handleTimeUpdate 会把
+     * video 永久静音（"配音轨取代原声"的设计）。对一个没有分离产物的工程，那个
+     * URL 是 404 —— 于是视频被静音、又没有替代音轨，打开后**完全没声音**，用户
+     * 只会以为片子坏了。恢复路径以前是无条件挂的。
+     */
+    setBackgroundAudioUrl(
+      data.has_background ? `/api/videos/${idFromUrl}/audio/background` : null
+    );
+
     return restoredMode;
   }, []);
 
@@ -843,8 +900,8 @@ const App: React.FC = () => {
     if (idFromUrl && /^[a-f0-9]{32}$/i.test(idFromUrl)) {
       console.log("Attempting session recovery for:", idFromUrl);
       setVideoId(idFromUrl);
-      setBackgroundAudioUrl(`/api/videos/${idFromUrl}/audio/background`);
-
+      // 背景音轨不在这里挂：由 recoverProject → applyProjectToView 按
+      // data.has_background 决定（见那里的说明）。
       void recoverProject(idFromUrl);
     }
   }, []);
@@ -941,6 +998,18 @@ const App: React.FC = () => {
             if (existingAudio.playbackRate !== audioRate) {
               existingAudio.playbackRate = audioRate;
             }
+            /*
+             * 视频重新播放时，这一句的 audio 对象还在 map 里但处于 paused 状态
+             * （onPause 只 pause、不从 map 删除）。以前这里只改 playbackRate，
+             * 从不 play() —— 于是"暂停 → 再播放"之后，当前这句配音再也不出声，
+             * 直到播放头进入下一句（#21）。
+             */
+            if (existingAudio.paused) {
+              const slot = Math.max(0.001, seg.endTime - seg.startTime);
+              const progress = Math.max(0, Math.min(1, (time - seg.startTime) / slot));
+              existingAudio.currentTime = progress * (seg.actualDuration || slot);
+              existingAudio.play().catch(e => console.warn('Audio resume blocked:', e));
+            }
           }
         } else if (existingAudio) {
           existingAudio.pause();
@@ -966,6 +1035,356 @@ const App: React.FC = () => {
     }
   };
 
+  /*
+   * 每次运行的临时状态：分离进度的去重位与 TTS 总数。
+   * 原来是 runPipeline 里的局部变量（闭包），处理器抽成组件级函数之后没有
+   * "每次运行一份"的闭包了，所以换成 ref。
+   */
+  const lastSepPctRef = useRef(-1);
+  const ttsTotalRef = useRef(0);
+
+  const resetEventScratch = useCallback(() => {
+    lastSepPctRef.current = -1;
+    ttsTotalRef.current = 0;
+  }, []);
+
+  /**
+   * 处理一条管线事件 —— **两条路径共用**（P3 #9）：
+   *   1. 本页发起处理时的 SSE（runPipeline → processVideo）
+   *   2. 接管"别处已经在跑"的那条（recoverProject → subscribeToRun）
+   *
+   * 抽出来之前它是 runPipeline 里的内联箭头函数，只有第 1 条能用 —— 于是刷新
+   * 页面（或从另一个标签页打开）之后事件流再也接不回来：界面上只剩一条轮询出来
+   * 的粗粒度状态条，日志停在那一刻。
+   *
+   * sourceVideoId = 事件属于哪个工程。不等于"当前正在看的工程"就丢弃：跑着 A
+   * 切到 B 时，A 的后续事件会把 A 的分段/音频写进 B 的界面（#11）。
+   */
+  const applyPipelineEvent = useCallback((event: any, sourceVideoId: string) => {
+    if (currentVideoIdRef.current !== sourceVideoId) {
+      // 归属不符：丢弃。**必须留痕** —— 静默丢弃的表现是"接管了但日志不动"，
+      // 排查时完全看不出是没收到还是被丢了。
+      console.log(
+        `[pipeline] 丢弃非当前工程的事件（事件属于 ${sourceVideoId}，当前是 ` +
+          `${currentVideoIdRef.current || '(空)'}）`,
+        event.phase ?? event
+      );
+      return;
+    }
+    /*
+     * 紧凑单行，每条都打：并发时的"交替出现"正是靠这个看出来的。
+     *
+     * 注意 `done` 这个字段是**双关**的：翻译进度事件里它是"已译条数"
+     * （数字），只有整条流的最后一条才是布尔 true。所以判断一律用
+     * `=== true` —— 用真值判断会把每个翻译进度事件都当成"全部完成"。
+     */
+    console.log(
+      '[pipeline] 事件',
+      [
+        event.phase ?? '',
+        event.status ?? '',
+        event.progress != null ? `${event.progress}/${event.total ?? '?'}` : '',
+        // 没有 phase/status 的事件（resume_phase 等）把它的键显出来，
+        // 否则日志里只剩一个 '-'，什么也看不出。
+        !event.phase && !event.status
+          ? Object.keys(event).map(k => `${k}=${event[k]}`).join(' ')
+          : '',
+      ]
+        .filter(Boolean).join(' ') || '-',
+      event.cancelled
+        ? '← CANCELLED'
+        : event.done === true
+        ? '← DONE'
+        : event.error && !event.phase
+        ? `← ERROR ${event.error}`
+        : ''
+    );
+
+    // Resume info
+    if (event.resume_phase) {
+      const phase = event.resume_phase;
+      if (phase !== 'separation') {
+        setRawLog(prev => prev + `Resuming from phase: ${phase}\n`);
+      }
+    }
+
+    // Separation events
+    if (event.phase === 'separation') {
+      if (event.status === 'started') {
+        setRawLog(prev => prev + 'Separating vocals from background audio...\n');
+      } else if (event.status === 'unavailable') {
+        // The server refused the backend we asked for and carried on
+        // without separation. Remember that so we stop offering it, and
+        // report the actual reason instead of a generic "not available".
+        const failedMode = event.mode as SeparationMode | undefined;
+        if (failedMode && failedMode !== 'off') {
+          setSeparationBackends(prev => ({
+            ...prev,
+            [failedMode]: {
+              available: false,
+              reason: event.message || 'unavailable',
+            },
+          }));
+        }
+        setSeparationMode('off');
+        setRawLog(prev => prev + `Vocal separation unavailable: ${event.message || 'backend unavailable'}\n`);
+      } else if (event.status === 'failed') {
+        setRawLog(prev => prev + `Vocal separation failed: ${event.error || 'unknown error'} (continuing without it)\n`);
+      } else if (event.status === 'skipped') {
+        // `skipped` means separation did NOT run — the backend reworked this
+        // event from "already done, nothing to do" into "no isolated vocals,
+        // continuing with the original mixed audio". The old wording here
+        // said the exact opposite of what had happened.
+        const why =
+          event.message ||
+          (event.mode === 'off'
+            ? 'separation is off'
+            : 'using the original mixed audio');
+        const label = event.mode ? ` [${event.mode}]` : '';
+        setRawLog(prev => prev + `Vocal separation skipped${label} — ${why}\n`);
+      } else if (event.progress !== undefined) {
+        const pct = event.progress;
+        if (pct !== lastSepPctRef.current) {
+          lastSepPctRef.current = pct;
+          setRawLog(prev => {
+            const lines = prev.split('\n');
+            const lastIdx = lines.length - 1;
+            if (lines[lastIdx].startsWith('Separation progress:')) {
+              lines[lastIdx] = `Separation progress: ${pct}%`;
+            } else {
+              lines.push(`Separation progress: ${pct}%`);
+            }
+            return lines.join('\n');
+          });
+        }
+      } else if (event.status === 'done') {
+        if (event.background_url) {
+          setBackgroundAudioUrl(event.background_url);
+        }
+        setRawLog(prev => prev + '\nVocal separation complete.\n');
+      }
+    }
+
+    // ASR events
+    if (event.phase === 'asr') {
+      if (event.status === 'started') {
+        setRawLog(prev => prev + '\nStarting ASR transcription...\n');
+      } else if (event.status === 'skipped') {
+        const segs = event.segments || [];
+        const spks = event.speakers || [];
+        setSpeakers(mapServerSpeakers(spks));
+        setSegments(segs.map(mapServerSegment));
+        setRawLog(prev => prev + `ASR: already done (${segs.length} segments), skipping.\n`);
+      } else if (event.status === 'done') {
+        const segs = event.segments || [];
+        const spks = event.speakers || [];
+
+        setSpeakers(mapServerSpeakers(spks));
+        setSegments(segs.map(mapServerSegment));
+        setRawLog(prev => prev + `Transcription complete. Found ${segs.length} segments.\n`);
+      }
+    }
+
+    /*
+     * Multimodal enhancement (omni listens to the audio and corrects /
+     * annotates the ASR lines). These events existed since the feature was
+     * written but were never rendered — so enabling 多模态增强 looked like
+     * nothing happened, and the multi-second (or, with an unreachable audio
+     * URL, multi-minute) omni call looked like a hang right after ASR.
+     */
+    if (event.phase === 'mm_enhance') {
+      if (event.status === 'started') {
+        setRawLog(prev => prev + `\n--- Multimodal Enhancement (${event.count} segments) ---\n`);
+      } else if (event.status === 'listening') {
+        setRawLog(prev => prev + 'omni is listening to the audio (correcting + tagging)...\n');
+      } else if (event.status === 'done') {
+        setRawLog(
+          prev =>
+            prev +
+            (event.adjusted > 0
+              ? `Enhancement done: ${event.adjusted} line(s) corrected or tagged.\n`
+              : 'Enhancement done: no line needed changing.\n')
+        );
+      } else if (event.status === 'failed') {
+        setRawLog(
+          prev =>
+            prev +
+            `Enhancement failed (continuing with the raw ASR text): ${event.error}\n`
+        );
+      }
+    }
+
+    // Voice cloning events (progress, and what 智能选材 picked)
+    if (event.phase === 'voice_clone') {
+      if (event.status === 'picking') {
+        setRawLog(prev => prev + `Picking reference segments for ${event.speaker_id} (omni)...\n`);
+      } else if (event.status === 'pick_failed') {
+        setRawLog(
+          prev =>
+            prev +
+            `Smart pick unavailable for ${event.speaker_id} (falling back to rules): ${event.error}\n`
+        );
+      } else if (event.status === 'picked' && Array.isArray(event.picked)) {
+        setRawLog(
+          prev => prev + `  picked ${event.picked.length} segment(s): ${event.picked.join(', ')}\n`
+        );
+      } else if (event.status === 'sampling') {
+        /*
+         * 这两条（sampling / enrolling）是"正在等外部"的可见化。
+         * 之前这段时间界面上一个字都没有 —— 而它可能要等一两分钟（DashScope
+         * 注册音色），用户看到的就是"卡住了"。现在两个阶段都有明确文案与上限。
+         */
+        setRawLog(
+          prev =>
+            prev +
+            `  building reference sample from ${event.seconds}s of speech...\n`
+        );
+      } else if (event.status === 'enrolling') {
+        setRawLog(
+          prev =>
+            prev +
+            `  registering voice with DashScope (may take up to ${event.timeout_s}s)...\n`
+        );
+      }
+    }
+
+    // Translation events
+    if (event.phase === 'translation') {
+      /*
+       * 部分失败：这些行没有译文，后面也就不会有配音。必须在日志里点名，
+       * 因为管线最终会把工程标成 ERROR（缺口不允许以"完成"收尾）。
+       */
+      if (event.status === 'incomplete' && Array.isArray(event.failed)) {
+        setRawLog(
+          prev =>
+            prev +
+            `\n⚠ ${event.count} 行没有译文（不会出现在成片里）：${event.failed.join(', ')}\n`
+        );
+      }
+      if (event.status === 'started') {
+        setRawLog(prev => prev + `\n--- Starting Translation (${targetLanguage}) ---\n`);
+        setRawLog(prev => prev + `Sending ${event.count} segments with full context...\n`);
+      } else if (event.status === 'skipped') {
+        const translations = event.translations || [];
+        setSegments(prev => prev.map(seg => {
+          const match = translations.find((r: any) => r.id === seg.id);
+          return match ? { ...seg, translatedText: match.translated_text } : seg;
+        }));
+        setRawLog(prev => prev + `Translation: already done (${translations.length} segments), skipping.\n`);
+      } else if (event.status === 'progress') {
+        setRawLog(prev => prev + `Translated ${event.done}/${event.total}.\n`);
+      } else if (event.status === 'repairing') {
+        setRawLog(prev => prev + `Retrying ${event.count} dropped segment(s)...\n`);
+      } else if (event.status === 'repair_done') {
+        setRawLog(prev => prev + (
+          event.still_failed > 0
+            ? `Repair recovered ${event.recovered}; ${event.still_failed} segment(s) still failed — those lines will have no dub audio.\n`
+            : `Repair recovered all ${event.recovered} dropped segment(s).\n`
+        ));
+      } else if (event.status === 'done') {
+        const translations = event.translations || [];
+        setSegments(prev => prev.map(seg => {
+          const match = translations.find((r: any) => r.id === seg.id);
+          return match ? { ...seg, translatedText: match.translated_text } : seg;
+        }));
+        setRawLog(prev => prev + `Translation complete. ${translations.length} segments translated.\n`);
+      }
+    }
+
+    // Voice Clone events
+    if (event.phase === 'voice_clone') {
+      if (event.status === 'started') {
+        setRawLog(prev => prev + `\n--- Voice Cloning (${event.total} speakers) ---\n`);
+      } else if (event.status === 'cloning') {
+        setRawLog(prev => prev + `[${event.progress}/${event.total}] Cloning voice for ${event.speaker_id}...\n`);
+      } else if (event.status === 'done' && event.voice_id) {
+        setClonedVoices(prev => ({ ...prev, [event.speaker_id]: event.voice_id }));
+        setRawLog(prev => prev + (
+          event.reused
+            ? `[${event.progress}/${event.total}] ${event.speaker_id}: voice ALREADY EXISTS, reusing (${event.voice_id})\n`
+            : `[${event.progress}/${event.total}] ${event.speaker_id}: new voice cloned (${event.voice_id})\n`
+        ));
+      } else if (event.status === 'failed') {
+        setRawLog(prev => prev + `[${event.progress}/${event.total}] ${event.speaker_id}: FAILED (${event.error})\n`);
+      } else if (event.status === 'complete') {
+        setRawLog(prev => prev + 'Voice cloning complete.\n');
+      }
+    }
+
+    // TTS events
+    if (event.phase === 'tts') {
+      if (event.status === 'started') {
+        ttsTotalRef.current = event.total || 0;
+        const alreadyDone = event.already_done || 0;
+        setRawLog(prev => prev + `\n--- Starting Audio Synthesis (${ttsTotalRef.current - alreadyDone} remaining of ${ttsTotalRef.current} total) ---\n`);
+      } else if (event.progress !== undefined) {
+        const { progress, total, segment_id, audio_url, tts_error } = event;
+        if (tts_error) {
+          setRawLog(prev => prev + `[${progress}/${total}] Segment ${segment_id}: FAILED.\n`);
+        } else {
+          setRawLog(prev => prev + `[${progress}/${total}] Segment ${segment_id}: Done.\n`);
+          if (audio_url) {
+            setSegments(prev => prev.map(s =>
+              s.id === segment_id ? { ...s, audioUrl: audio_url } : s
+            ));
+          }
+        }
+      } else if (event.status === 'done') {
+        setRawLog(prev => prev + '\n--- Audio Synthesis Complete ---\n');
+      }
+    }
+
+    // 某个阶段被取消（协作式取消，停在该阶段边界）。
+    // 日志里只说"已取消"，不写是哪个阶段 —— 阶段名是内部词汇，用户看它没有
+    // 任何可做的动作；event.phase 仍打在同一行的 console 里供排查。
+    if (event.status === 'cancelled') {
+      console.log('[pipeline] 收到 cancelled 事件:', event);
+      setRawLog(prev => prev + '\n已取消。\n');
+    }
+
+    // Final done
+    if (event.done === true) {
+      /*
+       * `=== true`，不是真值判断：翻译进度事件里的 `done` 是"已译条数"
+       * （数字），真值判断会让每个进度事件都被当成"全部完成" —— 结果是
+       * 跑到一半就打印 All Processing Complete、把 isTranscribing 关掉、
+       * 并把状态条的 active 置为 false（状态条中途消失）。
+       *
+       * 管线到合成为止，导出是用户的单独动作 —— 这里不再有关联的导出状态
+       * 要收尾（isExporting 只由 handleExport 自己管）。
+       */
+      if (event.cancelled) {
+        /*
+         * 用户叫停的收尾。要说清两件事：东西还在、怎么继续 —— "停了"本身
+         * 不足以让人放心关掉页面。（不断说"停在哪一步"：见 utils/projectState
+         * 里 resumeOfferNote 的说明。）
+         */
+        setRawLog(
+          prev =>
+            prev +
+            '\n=== 已取消 ===\n' +
+            '已完成的产物都已保存在这个工程里，随时可以继续。\n'
+        );
+        setIsCancelling(false);
+      } else {
+        setRawLog(prev => prev + '\n=== All Processing Complete ===\nClosing in 2 seconds...');
+      }
+      setIsTranscribing(false);
+      setRunState(prev => (prev ? { ...prev, active: false } : prev));
+    }
+
+    /*
+     * Error —— 只对【管线级】失败打 ERROR 行（那种事件没有 `phase`）。
+     * 带 phase 的 error 都是"这一步降级继续"，各自在上面已经有专门的人话说明
+     * （例如 `Smart pick unavailable for X (falling back to rules): ...`）。
+     * 以前一律再补一行 `ERROR: ...`，于是智能选材退回规则这种正常降级会被显示
+     * 成两条红色错误，看起来像整单失败。
+     */
+    if (event.error && !event.phase) {
+      setRawLog(prev => prev + `\nERROR: ${event.error}\n`);
+    }
+  }, [targetLanguage]);
+
   const runPipeline = useCallback(async (
     vid: string,
     file?: File,
@@ -988,295 +1407,16 @@ const App: React.FC = () => {
     try {
       setRawLog(prev => prev + '--- Starting Server-Side Processing ---\n');
 
-      let lastSepPct = -1;
-      let ttsTotal = 0;
+      resetEventScratch();
 
-      await processVideo(vid, targetLanguage, (event) => {
-        /*
-         * 紧凑单行，每条都打：并发时的"交替出现"正是靠这个看出来的。
-         *
-         * 注意 `done` 这个字段是**双关**的：翻译进度事件里它是"已译条数"
-         * （数字），只有整条流的最后一条才是布尔 true。所以判断一律用
-         * `=== true` —— 用真值判断会把每个翻译进度事件都当成"全部完成"。
-         */
-        console.log(
-          '[pipeline] 事件',
-          [
-            event.phase ?? '',
-            event.status ?? '',
-            event.progress != null ? `${event.progress}/${event.total ?? '?'}` : '',
-            // 没有 phase/status 的事件（resume_phase 等）把它的键显出来，
-            // 否则日志里只剩一个 '-'，什么也看不出。
-            !event.phase && !event.status
-              ? Object.keys(event).map(k => `${k}=${event[k]}`).join(' ')
-              : '',
-          ]
-            .filter(Boolean).join(' ') || '-',
-          event.cancelled
-            ? '← CANCELLED'
-            : event.done === true
-            ? '← DONE'
-            : event.error && !event.phase
-            ? `← ERROR ${event.error}`
-            : ''
-        );
+      // 运行归属：只有"当前正在看的工程"才有权写界面（#11）。
+      // 用户跑着 A 就切到 B 时，A 的后续事件仍会流进来（全仓没有 AbortController），
+      // 原来会把 A 的 segments/speakers/配音 URL 写进 B 的界面 —— 看起来就是
+      // "B 工程里莫名其妙多出 A 的音频"。这里用 ref 比对，串台的一律丢弃。
+      currentVideoIdRef.current = vid;
+      ownRunRef.current = vid;   // 本页发起的：接管 effect 不要把它当"别人的运行"
 
-        // Resume info
-        if (event.resume_phase) {
-          const phase = event.resume_phase;
-          if (phase !== 'separation') {
-            setRawLog(prev => prev + `Resuming from phase: ${phase}\n`);
-          }
-        }
-
-        // Separation events
-        if (event.phase === 'separation') {
-          if (event.status === 'started') {
-            setRawLog(prev => prev + 'Separating vocals from background audio...\n');
-          } else if (event.status === 'unavailable') {
-            // The server refused the backend we asked for and carried on
-            // without separation. Remember that so we stop offering it, and
-            // report the actual reason instead of a generic "not available".
-            const failedMode = event.mode as SeparationMode | undefined;
-            if (failedMode && failedMode !== 'off') {
-              setSeparationBackends(prev => ({
-                ...prev,
-                [failedMode]: {
-                  available: false,
-                  reason: event.message || 'unavailable',
-                },
-              }));
-            }
-            setSeparationMode('off');
-            setRawLog(prev => prev + `Vocal separation unavailable: ${event.message || 'backend unavailable'}\n`);
-          } else if (event.status === 'failed') {
-            setRawLog(prev => prev + `Vocal separation failed: ${event.error || 'unknown error'} (continuing without it)\n`);
-          } else if (event.status === 'skipped') {
-            // `skipped` means separation did NOT run — the backend reworked this
-            // event from "already done, nothing to do" into "no isolated vocals,
-            // continuing with the original mixed audio". The old wording here
-            // said the exact opposite of what had happened.
-            const why =
-              event.message ||
-              (event.mode === 'off'
-                ? 'separation is off'
-                : 'using the original mixed audio');
-            const label = event.mode ? ` [${event.mode}]` : '';
-            setRawLog(prev => prev + `Vocal separation skipped${label} — ${why}\n`);
-          } else if (event.progress !== undefined) {
-            const pct = event.progress;
-            if (pct !== lastSepPct) {
-              lastSepPct = pct;
-              setRawLog(prev => {
-                const lines = prev.split('\n');
-                const lastIdx = lines.length - 1;
-                if (lines[lastIdx].startsWith('Separation progress:')) {
-                  lines[lastIdx] = `Separation progress: ${pct}%`;
-                } else {
-                  lines.push(`Separation progress: ${pct}%`);
-                }
-                return lines.join('\n');
-              });
-            }
-          } else if (event.status === 'done') {
-            if (event.background_url) {
-              setBackgroundAudioUrl(event.background_url);
-            }
-            setRawLog(prev => prev + '\nVocal separation complete.\n');
-          }
-        }
-
-        // ASR events
-        if (event.phase === 'asr') {
-          if (event.status === 'started') {
-            setRawLog(prev => prev + '\nStarting ASR transcription...\n');
-          } else if (event.status === 'skipped') {
-            const segs = event.segments || [];
-            const spks = event.speakers || [];
-            setSpeakers(mapServerSpeakers(spks));
-            setSegments(segs.map(mapServerSegment));
-            setRawLog(prev => prev + `ASR: already done (${segs.length} segments), skipping.\n`);
-          } else if (event.status === 'done') {
-            const segs = event.segments || [];
-            const spks = event.speakers || [];
-
-            setSpeakers(mapServerSpeakers(spks));
-            setSegments(segs.map(mapServerSegment));
-            setRawLog(prev => prev + `Transcription complete. Found ${segs.length} segments.\n`);
-          }
-        }
-
-        /*
-         * Multimodal enhancement (omni listens to the audio and corrects /
-         * annotates the ASR lines). These events existed since the feature was
-         * written but were never rendered — so enabling 多模态增强 looked like
-         * nothing happened, and the multi-second (or, with an unreachable audio
-         * URL, multi-minute) omni call looked like a hang right after ASR.
-         */
-        if (event.phase === 'mm_enhance') {
-          if (event.status === 'started') {
-            setRawLog(prev => prev + `\n--- Multimodal Enhancement (${event.count} segments) ---\n`);
-          } else if (event.status === 'listening') {
-            setRawLog(prev => prev + 'omni is listening to the audio (correcting + tagging)...\n');
-          } else if (event.status === 'done') {
-            setRawLog(
-              prev =>
-                prev +
-                (event.adjusted > 0
-                  ? `Enhancement done: ${event.adjusted} line(s) corrected or tagged.\n`
-                  : 'Enhancement done: no line needed changing.\n')
-            );
-          } else if (event.status === 'failed') {
-            setRawLog(
-              prev =>
-                prev +
-                `Enhancement failed (continuing with the raw ASR text): ${event.error}\n`
-            );
-          }
-        }
-
-        // Voice cloning events (progress, and what 智能选材 picked)
-        if (event.phase === 'voice_clone') {
-          if (event.status === 'picking') {
-            setRawLog(prev => prev + `Picking reference segments for ${event.speaker_id} (omni)...\n`);
-          } else if (event.status === 'pick_failed') {
-            setRawLog(
-              prev =>
-                prev +
-                `Smart pick unavailable for ${event.speaker_id} (falling back to rules): ${event.error}\n`
-            );
-          } else if (event.status === 'picked' && Array.isArray(event.picked)) {
-            setRawLog(
-              prev => prev + `  picked ${event.picked.length} segment(s): ${event.picked.join(', ')}\n`
-            );
-          }
-        }
-
-        // Translation events
-        if (event.phase === 'translation') {
-          if (event.status === 'started') {
-            setRawLog(prev => prev + `\n--- Starting Translation (${targetLanguage}) ---\n`);
-            setRawLog(prev => prev + `Sending ${event.count} segments with full context...\n`);
-          } else if (event.status === 'skipped') {
-            const translations = event.translations || [];
-            setSegments(prev => prev.map(seg => {
-              const match = translations.find((r: any) => r.id === seg.id);
-              return match ? { ...seg, translatedText: match.translated_text } : seg;
-            }));
-            setRawLog(prev => prev + `Translation: already done (${translations.length} segments), skipping.\n`);
-          } else if (event.status === 'progress') {
-            setRawLog(prev => prev + `Translated ${event.done}/${event.total}.\n`);
-          } else if (event.status === 'repairing') {
-            setRawLog(prev => prev + `Retrying ${event.count} dropped segment(s)...\n`);
-          } else if (event.status === 'repair_done') {
-            setRawLog(prev => prev + (
-              event.still_failed > 0
-                ? `Repair recovered ${event.recovered}; ${event.still_failed} segment(s) still failed — those lines will have no dub audio.\n`
-                : `Repair recovered all ${event.recovered} dropped segment(s).\n`
-            ));
-          } else if (event.status === 'done') {
-            const translations = event.translations || [];
-            setSegments(prev => prev.map(seg => {
-              const match = translations.find((r: any) => r.id === seg.id);
-              return match ? { ...seg, translatedText: match.translated_text } : seg;
-            }));
-            setRawLog(prev => prev + `Translation complete. ${translations.length} segments translated.\n`);
-          }
-        }
-
-        // Voice Clone events
-        if (event.phase === 'voice_clone') {
-          if (event.status === 'started') {
-            setRawLog(prev => prev + `\n--- Voice Cloning (${event.total} speakers) ---\n`);
-          } else if (event.status === 'cloning') {
-            setRawLog(prev => prev + `[${event.progress}/${event.total}] Cloning voice for ${event.speaker_id}...\n`);
-          } else if (event.status === 'done' && event.voice_id) {
-            setClonedVoices(prev => ({ ...prev, [event.speaker_id]: event.voice_id }));
-            setRawLog(prev => prev + (
-              event.reused
-                ? `[${event.progress}/${event.total}] ${event.speaker_id}: voice ALREADY EXISTS, reusing (${event.voice_id})\n`
-                : `[${event.progress}/${event.total}] ${event.speaker_id}: new voice cloned (${event.voice_id})\n`
-            ));
-          } else if (event.status === 'failed') {
-            setRawLog(prev => prev + `[${event.progress}/${event.total}] ${event.speaker_id}: FAILED (${event.error})\n`);
-          } else if (event.status === 'complete') {
-            setRawLog(prev => prev + 'Voice cloning complete.\n');
-          }
-        }
-
-        // TTS events
-        if (event.phase === 'tts') {
-          if (event.status === 'started') {
-            ttsTotal = event.total || 0;
-            const alreadyDone = event.already_done || 0;
-            setRawLog(prev => prev + `\n--- Starting Audio Synthesis (${ttsTotal - alreadyDone} remaining of ${ttsTotal} total) ---\n`);
-          } else if (event.progress !== undefined) {
-            const { progress, total, segment_id, audio_url, tts_error } = event;
-            if (tts_error) {
-              setRawLog(prev => prev + `[${progress}/${total}] Segment ${segment_id}: FAILED.\n`);
-            } else {
-              setRawLog(prev => prev + `[${progress}/${total}] Segment ${segment_id}: Done.\n`);
-              if (audio_url) {
-                setSegments(prev => prev.map(s =>
-                  s.id === segment_id ? { ...s, audioUrl: audio_url } : s
-                ));
-              }
-            }
-          } else if (event.status === 'done') {
-            setRawLog(prev => prev + '\n--- Audio Synthesis Complete ---\n');
-          }
-        }
-
-        // 某个阶段被取消（协作式取消，停在该阶段边界）。
-        // 日志里只说"已取消"，不写是哪个阶段 —— 阶段名是内部词汇，用户看它没有
-        // 任何可做的动作；event.phase 仍打在同一行的 console 里供排查。
-        if (event.status === 'cancelled') {
-          console.log('[pipeline] 收到 cancelled 事件:', event);
-          setRawLog(prev => prev + '\n已取消。\n');
-        }
-
-        // Final done
-        if (event.done === true) {
-          /*
-           * `=== true`，不是真值判断：翻译进度事件里的 `done` 是"已译条数"
-           * （数字），真值判断会让每个进度事件都被当成"全部完成" —— 结果是
-           * 跑到一半就打印 All Processing Complete、把 isTranscribing 关掉、
-           * 并把状态条的 active 置为 false（状态条中途消失）。
-           *
-           * 管线到合成为止，导出是用户的单独动作 —— 这里不再有关联的导出状态
-           * 要收尾（isExporting 只由 handleExport 自己管）。
-           */
-          if (event.cancelled) {
-            /*
-             * 用户叫停的收尾。要说清两件事：东西还在、怎么继续 —— "停了"本身
-             * 不足以让人放心关掉页面。（不断说"停在哪一步"：见 utils/projectState
-             * 里 resumeOfferNote 的说明。）
-             */
-            setRawLog(
-              prev =>
-                prev +
-                '\n=== 已取消 ===\n' +
-                '已完成的产物都已保存在这个工程里，随时可以继续。\n'
-            );
-            setIsCancelling(false);
-          } else {
-            setRawLog(prev => prev + '\n=== All Processing Complete ===\nClosing in 2 seconds...');
-          }
-          setIsTranscribing(false);
-          setRunState(prev => (prev ? { ...prev, active: false } : prev));
-        }
-
-        /*
-         * Error —— 只对【管线级】失败打 ERROR 行（那种事件没有 `phase`）。
-         * 带 phase 的 error 都是"这一步降级继续"，各自在上面已经有专门的人话说明
-         * （例如 `Smart pick unavailable for X (falling back to rules): ...`）。
-         * 以前一律再补一行 `ERROR: ...`，于是智能选材退回规则这种正常降级会被显示
-         * 成两条红色错误，看起来像整单失败。
-         */
-        if (event.error && !event.phase) {
-          setRawLog(prev => prev + `\nERROR: ${event.error}\n`);
-        }
-      }, {
+      await processVideo(vid, targetLanguage, (event) => applyPipelineEvent(event, vid), {
         // Always report the backend honestly, including when the browser
         // already produced the stems. Forcing "off" in that case was actively
         // misleading: the backend then logged "separation skipped [off]" for a
@@ -1310,8 +1450,9 @@ const App: React.FC = () => {
       setRawLog(prev => prev + `\nERROR: ${err instanceof Error ? err.message : 'Unknown error'}\n`);
     } finally {
       setIsTranscribing(false);
+      if (ownRunRef.current === vid) ownRunRef.current = '';
     }
-  }, [targetLanguage, targetAccent, enableVoiceClone, separationMode, mmEnhance, cloneSmartPick, customPrompt]);
+  }, [targetLanguage, targetAccent, enableVoiceClone, separationMode, mmEnhance, cloneSmartPick, customPrompt, applyPipelineEvent, resetEventScratch]);
 
   /**
    * Run vocal separation locally in the browser and hand the stems to the
@@ -1599,6 +1740,11 @@ const App: React.FC = () => {
         setBackgroundAudioUrl(null);
         setIsBatchProcessing(false);
         setBatchProgress('');
+        // 切工程必须把这些也清掉（#23）：resumeAfterCancel 指向的是**上一个**
+        // 工程，留着会在新工程页面上弹出"继续跑？"，点下去会去操作旧工程；
+        // clonedVoices 同理（旧工程的说话人音色会显示成新工程的）。
+        setResumeAfterCancel(null);
+        setClonedVoices({});
       } else if (idFromUrl !== videoId) {
         // Forward navigation to a /{md5} page — recover session
         setVideoId(idFromUrl);
@@ -1612,8 +1758,9 @@ const App: React.FC = () => {
         setWaveform([]);
         setDuration(0);
         setCurrentTime(0);
-        setBackgroundAudioUrl(`/api/videos/${idFromUrl}/audio/background`);
-
+        setBackgroundAudioUrl(null);   // 同上：等 recovery 拿到 has_background 再决定
+        setResumeAfterCancel(null);
+        setClonedVoices({});
         void recoverProject(idFromUrl);
       }
     };
@@ -1935,6 +2082,62 @@ const App: React.FC = () => {
   }, []);
 
   /**
+   * 接管"已经在跑"的那条运行的事件流（P3 #9）。
+   *
+   * 本页自己发起的那条走 runPipeline 的 SSE；这里管的是"别处开的 / 刷新前那条"：
+   * 只要 `/status` 报告 run.active 且本页没有自己的流在跑，就订阅
+   * `GET /{id}/events`（后端会先回放有界历史），事件走**同一个**
+   * applyPipelineEvent —— 于是刷新之后日志接着往下滚，而不是只剩一条粗粒度状态条。
+   *
+   * 「只接管一次」的判据是**流的生命周期**，不是 `runState.active` 的抖动：
+   * 这个 effect 的依赖会被 2.5 秒一次的轮询带动，而 `active` 在运行中会来回跳
+   * （结束事件会把它置 false，紧接着的轮询又从 `/status` 读回 true），
+   * 用 active 当守卫会变成"反复重连" —— 实测 15 次 effect 调用里接管了 6 次，
+   * 日志里同一段内容被回放 6 遍。
+   *
+   * 现在的规则：订阅开始 → 标记占用；**流结束**（服务器在运行结束时关流）或
+   * 工程切换 → 释放占用，下一次运行可以再接管。
+   */
+  const attachRef = useRef<{ vid: string; busy: boolean }>({ vid: '', busy: false });
+
+  /**
+   * 本页**自己发起**的那条运行属于哪个工程。
+   *
+   * 为什么需要它：运行结束的瞬间，`isTranscribing` 先被置 false，而
+   * `runState.active` 还是 1~2 秒前轮询到的旧值（true）—— 那一刻的接管 effect
+   * 会把"自己的运行"误判成"别人的运行"，于是又去 `/events` 接管一次，把整段
+   * 日志回放第二遍（实测：点一次「继续跑」后日志里两遍完整流程）。
+   */
+  const ownRunRef = useRef('');
+
+  useEffect(() => {
+    if (!videoId) return;
+    if (isTranscribing) return;                        // 本页自己的流，不重复接
+    if (ownRunRef.current === videoId) return;         // 这条就是本页发起的（见 ownRunRef）
+    if (!runState?.active) return;                     // 没有活跃运行
+    if (attachRef.current.busy && attachRef.current.vid === videoId) return;  // 已在接管
+
+    attachRef.current = { vid: videoId, busy: true };
+    resetEventScratch();
+    setIsLogOpen(true);
+    setRawLog(
+      prev => prev + '\n--- Attached to a run already in progress (recent events replayed) ---\n'
+    );
+    subscribeToRun(videoId, event => applyPipelineEvent(event, videoId))
+      .catch(err => {
+        // 接管失败不该影响界面（粗粒度状态条还在），但要说清，否则看起来
+        // 像"日志就是不动"。
+        console.warn('[run] 接管事件流失败:', err);
+        setRawLog(prev => prev + `接管事件流失败（界面只剩状态条）：${err?.message ?? err}\n`);
+      })
+      .finally(() => {
+        // 流结束 = 这条运行结束（服务器在结尾关流）。释放占用，让下一次运行
+        // 或在另一个标签页新开的运行还能被接管。
+        attachRef.current = { vid: '', busy: false };
+      });
+  }, [videoId, runState?.active, isTranscribing, applyPipelineEvent, resetEventScratch]);
+
+  /**
    * 工作流状态轮询。
    *
    * 只在"可能有事发生"的时候轮询：本页在跑，或服务器报告有活跃运行（比如
@@ -2042,6 +2245,7 @@ const App: React.FC = () => {
   const styleSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleSubtitleStyleChange = useCallback(
     (patch: SubtitleStylePatch) => {
+      styleEditRef.current += 1;   // 见 styleEditRef 的说明
       setSubtitleStyle(prev => ({ ...prev, ...patch }));
       if (!videoId) return;
       if (styleSaveTimer.current) clearTimeout(styleSaveTimer.current);
@@ -2130,7 +2334,13 @@ const App: React.FC = () => {
           );
         }
 
-        const plain = await exportVideo(videoId, { enabled: false, format: 'off' });
+        // persist:false —— 这次要的只是"一份没有字幕的视频"，不能顺手把工程的
+        // 字幕导出偏好永久改成"关闭"（P0 #3：以前烧一次字幕，工程就被改成不导出字幕）。
+        const plain = await exportVideo(
+          videoId,
+          { enabled: false, format: 'off' },
+          { persist: false }
+        );
         const source = plain.url || getExportDownloadUrl(videoId);
 
         setRawLog(
@@ -2250,9 +2460,19 @@ const App: React.FC = () => {
     let status: any = null;
     try {
       status = await getVideoStatus(videoId);
-    } catch {
-      // 状态问不到：不擅自清空，只把设置存下来，交给用户自己点处理。
-      return true;
+    } catch (err) {
+      /*
+       * 状态问不到 —— 不能当成"保存成功"（#22）。
+       * 这里既没法比对设置差异，也没法重跑；返回 true 会让弹窗按成功关闭，
+       * 用户以为设置已经生效，实际上服务器完全不知道。明确失败并说清原因，
+       * 让用户自己决定是重试还是先不动。
+       */
+      setRawLog(
+        prev =>
+          prev +
+          `\n保存设置失败：读不到工程状态（${err instanceof Error ? err.message : err}）。请重试。\n`
+      );
+      return false;
     }
 
     const differing = differFromProject(status, {
@@ -2426,17 +2646,34 @@ const App: React.FC = () => {
 
   const handlePreviewVoice = useCallback(async (speakerId: string) => {
     if (!videoId || previewingSpeaker) return;
+    // 保险：上一段若还在响先停掉（切工程/重试时容易出现两段叠着响）。
+    stopVoicePreview();
     setPreviewingSpeaker(speakerId);
     try {
       const audioUrl = await generateVoicePreview(videoId, speakerId);
       const audio = new Audio(audioUrl + '?t=' + Date.now());
-      audio.play().catch(e => console.warn("Preview play blocked:", e));
-      audio.onended = () => setPreviewingSpeaker('');
+      previewAudioRef.current = audio;
+      const finish = () => {
+        stopVoicePreview();
+        setPreviewingSpeaker('');
+      };
+      audio.onended = finish;
+      // onerror 也要收尾：否则按钮永远停在"试听中"（previewingSpeaker 不为空，
+      // 那次点击之后再也点不动）。
+      audio.onerror = finish;
+      audio.play().catch(e => {
+        console.warn('Preview play blocked:', e);
+        finish();
+      });
     } catch (e) {
       console.error("Voice preview failed:", e);
       setPreviewingSpeaker('');
     }
-  }, [videoId, previewingSpeaker]);
+  }, [videoId, previewingSpeaker, stopVoicePreview]);
+
+  // 卸载（或切工程）时停掉试听：Audio 不释放会继续下载并播放，
+  // 而界面已经切到别的工程了。
+  useEffect(() => () => stopVoicePreview(), [stopVoicePreview]);
 
   const handleSeek = useCallback((time: number) => {
     if (videoRef.current) {

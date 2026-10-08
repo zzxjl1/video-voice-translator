@@ -29,6 +29,7 @@ from openai import AsyncOpenAI
 
 from app import config
 from app.models import get_video_dir
+from app.models import _atomic_write_json
 from app.services import speech_timing, usage_service
 
 logger = logging.getLogger(__name__)
@@ -110,23 +111,22 @@ def _parse_json_array(raw: str) -> list[dict]:
                     return value
 
     raise ValueError(f"No translation objects found in response: {raw[:200]}")
-    """Extract a JSON array from a model response, tolerating fences/preamble."""
-    clean = raw.replace("```json", "").replace("```", "").strip()
-    start = clean.find("[")
-    end = clean.rfind("]")
-    if start == -1 or end == -1 or end < start:
-        raise ValueError(f"No JSON array found in response: {raw[:200]}")
-    return json.loads(clean[start : end + 1])
 
 
 def _dump(path: str, payload: Any, label: str) -> None:
+    """
+    落盘 JSON。**原子写**（.part + os.replace）：这些文件是"这一步做完了"的唯一
+    凭据，写到一半被杀会留下坏 JSON，下次续跑读不出来（甚至整个工程打不开）。
+    """
     try:
         if isinstance(payload, (dict, list)):
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2)
+            models_atomic = _atomic_write_json
+            models_atomic(path, payload)
         else:
-            with open(path, "w", encoding="utf-8") as f:
+            tmp = f"{path}.part"
+            with open(tmp, "w", encoding="utf-8") as f:
                 f.write(str(payload))
+            os.replace(tmp, path)
     except Exception as e:
         logger.warning(f"Failed to save {label} to {path}: {e}")
 
@@ -594,7 +594,7 @@ async def translate_script(
     text_overrides: dict[str, str] | None = None,
     custom_prompt: str = "",
     length_hint: str | None = None,
-) -> list[dict]:
+) -> tuple[list[dict], list[str]]:
     """
     Translate an entire script in chunks, with glossary consistency and a
     per-segment length budget.
@@ -855,4 +855,6 @@ async def translate_script(
     _dump(latest_path, ordered, "translation result")
     logger.info(f"[{video_id}] Saved {len(ordered)} translations to {latest_path}")
 
-    return ordered
+    # 失败清单一起返回：调用方必须知道"哪些行没有译文" —— 以前只有一句
+    # logger.warning，管线照旧走到 COMPLETED，用户是在成片里才发现的。
+    return ordered, sorted(failed_ids)

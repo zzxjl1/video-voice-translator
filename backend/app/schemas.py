@@ -214,6 +214,10 @@ class ExportRequest(BaseModel):
     """Body of POST /videos/{id}/export. The whole body is optional."""
 
     subtitles: Optional[SubtitleExportRequest] = None
+    # 是否把这次的计划写回工程（默认写回：用户在导出面板上做的选择就该被记住）。
+    # 浏览器烧字幕那条路径要发 persist=false —— 它只是"要一份没有字幕的视频"，
+    # 不该顺手把工程的字幕导出偏好永久改成"关闭"（P0 #3）。
+    persist: bool = True
 
 
 class ExportResponse(BaseModel):

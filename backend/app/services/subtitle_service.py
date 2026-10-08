@@ -385,7 +385,15 @@ def probe_duration(path: str) -> Optional[float]:
     """
     if not path:
         return None
-    cached = _duration_cache.get(path)
+    # 缓存 key 含 mtime 与大小：TTS 会**覆盖同一个路径**（tts/seg-x.mp3），
+    # 只按路径做永久 key 的话，改了译文重合成之后，字幕时间轴用的还是旧时长
+    # （P2 #24）。
+    try:
+        st = os.stat(path)
+        key = f"{path}:{st.st_mtime_ns}:{st.st_size}"
+    except OSError:
+        return None
+    cached = _duration_cache.get(key)
     if cached is not None:
         return cached
 
@@ -408,7 +416,7 @@ def probe_duration(path: str) -> Optional[float]:
         logger.debug("Could not probe duration of %s: %s", path, e)
         return None
 
-    _duration_cache[path] = duration
+    _duration_cache[key] = duration
     return duration
 
 
@@ -597,6 +605,11 @@ def _srt_time(seconds: float) -> str:
         if whole == 60:
             whole = 0
             minutes += 1
+    # 秒的进位可能继续把分钟顶到 60（59:59.9996 → 60:00.000），分钟也要进位，
+    # 否则会写出 "00:60:00" 这种非法时间戳（子代理报的可能，已核实）。
+    if minutes == 60:
+        minutes = 0
+        hours += 1
     return f"{int(hours):02d}:{int(minutes):02d}:{whole:02d},{millis:03d}"
 
 
@@ -793,7 +806,10 @@ def capabilities(force: bool = False) -> dict:
             else "this ffmpeg cannot mux ASS subtitles",
             "description": "MKV with a fully styled ASS track. The video stream is still copied.",
         },
-        "burn_server": {
+        # 键名是给前端的契约：改用 `burn`（前端 SubtitleDeliveryOption 里的名字）。
+        # 以前叫 burn_server，而前端类型是 burn —— 于是 capabilities.burn 永远是
+        # undefined，"能力探测"对这一个选项其实是失效的。
+        "burn": {
             "available": has_ffmpeg and has_burn_filter,
             "reason": None
             if (has_ffmpeg and has_burn_filter)

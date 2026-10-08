@@ -355,12 +355,22 @@ async def _synthesize_with_retries(
     last_error: Exception | None = None
     for attempt in range(1, config.TTS_MAX_RETRIES + 2):
         try:
-            audio = await loop.run_in_executor(
-                None, _synthesize_blocking, text, voice, speech_rate, instruction, video_id
+            # 超时保护：卡住的调用必须变成"这一次失败"，而不是"整条管线永久卡住"。
+            # 线程里的阻塞调用没法真正取消（SDK 不提供），但至少这一批能往下走，
+            # 用户能看到失败原因并重试。
+            audio = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None, _synthesize_blocking, text, voice, speech_rate, instruction, video_id
+                ),
+                timeout=config.TTS_CALL_TIMEOUT,
             )
             if audio:
                 return audio
             last_error = RuntimeError("TTS returned empty audio")
+        except asyncio.TimeoutError as e:
+            last_error = RuntimeError(
+                f"合成超时（>{config.TTS_CALL_TIMEOUT}s，网络或服务端无响应）"
+            )
         except TypeError as e:
             # 参数/签名错是**确定性**的：重试改变不了 SDK 的签名，只会把同一条
             # 日志刷 TTS_MAX_RETRIES+1 遍并拖慢整批（实测线上就是这个现象）。
@@ -569,27 +579,34 @@ async def synthesize_speech(
     os.makedirs(tts_dir, exist_ok=True)
     audio_path = os.path.join(tts_dir, f"{segment_id}.mp3")
 
-    try:
-        actual, applied = await _write_fitted_audio(
-            loop,
-            audio_path,
-            audio,
-            text,
-            voice,
-            speech_rate,
-            target_duration,
-            segment_id,
-            video_id,
-            instruction,
-        )
-        detail = f", {actual:.2f}s" if actual else ""
-        detail += f" @ rate {applied:.2f}" if applied else ""
-        logger.info(f"Saved synthesized audio to {audio_path}{detail}")
+    # 写盘失败必须**抛**：以前这里把异常吞成一行 warning 然后照旧 return 路径，
+    # 调用方据此把这一行计为成功 —— 磁盘满/权限错时界面显示"已配音"、实际没有
+    # 文件，导出时又被静默跳过，成片少一句而无人知晓（P0 #5）。
+    actual, applied = await _write_fitted_audio(
+        loop,
+        audio_path,
+        audio,
+        text,
+        voice,
+        speech_rate,
+        target_duration,
+        segment_id,
+        video_id,
+        instruction,
+    )
+    if not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
+        raise RuntimeError(f"合成结果没有落盘：{audio_path}")
+    detail = f", {actual:.2f}s" if actual else ""
+    detail += f" @ rate {applied:.2f}" if applied else ""
+    logger.info(f"Saved synthesized audio to {audio_path}{detail}")
 
-        if write_registry:
+    if write_registry:
+        # 登记表损坏只影响"续跑是否会重做这一行"，音频文件本身是好的 ——
+        # 所以这里保持降级（记 warning），不能因为登记失败而丢掉已经合成好的音频。
+        try:
             _register_segment_audio(video_dir, segment_id, f"tts/{segment_id}.mp3")
-    except Exception as e:
-        logger.warning(f"Failed to save synthesized audio or update registry: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to update the resume registry for {segment_id}: {e}")
 
     return audio_path
 

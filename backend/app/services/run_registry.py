@@ -9,6 +9,9 @@
 
 * 一条运行只有一个消费者。客户端断开时清掉队列，管线继续跑（磁盘上逐阶段
   落盘），但不再往没人消费的队列里塞东西。
+* **断开后可以重连**：`GET /{video_id}/events` 会接管消费，并先回放有界历史
+  （`HISTORY_LIMIT` 条），所以刷新页面不会失去进度视图。注意接管是"换队列"，
+  同一时刻仍然只有一个活跃消费者。
 * 重复请求是 **拒绝**（409），不是接管别人的运行：一条管线的设置（语言、口音、
   增强开关）属于发起它的那个人，后来者拿到的应该是"现在不能开始"。
 * 结束即注销。工程跑完后的状态在它自己的文件里（status / cancelled_step）。
@@ -21,6 +24,9 @@ from datetime import datetime, timedelta, timezone
 # 服务器时区而偏移。
 RUN_TZ = timezone(timedelta(hours=8))
 
+# 历史回放的上限。够覆盖一个阶段的状态行，又不会随长视频无限增长。
+HISTORY_LIMIT = 300
+
 
 class PipelineRun:
     """
@@ -32,6 +38,10 @@ class PipelineRun:
 
     def __init__(self) -> None:
         self.queue: asyncio.Queue | None = None
+        # 有界历史（P3 #9）：新订阅者先拿到已经发生的事件，否则"刷新页面重连"
+        # 之后界面上是一片空白，用户会以为管线没在跑。只留最近 N 条：状态行是
+        # 增量的，几十条足够还原现场，无限留会随长视频吃内存。
+        self.history: list[dict] = []
         # ── 步骤状态 ──
         self.step: str | None = None          # separation / asr / mm_enhance / …
         self.step_status: str | None = None   # started / listening / done / failed
@@ -54,8 +64,29 @@ class PipelineRun:
             self.cancelled = True
         if event.get("error") and not phase:
             self.error = str(event["error"])
+        self.history.append(event)
+        if len(self.history) > HISTORY_LIMIT:
+            del self.history[:-HISTORY_LIMIT]
         if self.queue is not None:
             self.queue.put_nowait(event)
+
+    def subscribe(self) -> asyncio.Queue:
+        """
+        接管事件消费：队列先灌入历史，之后接着收新事件。
+
+        仍然是"一条运行一个消费者"（旧队列被替换掉，它的读取端会一直等下去，
+        但连接已经断了）—— 区别只在于新来的人能立刻看到已经发生的事。
+        """
+        queue: asyncio.Queue = asyncio.Queue()
+        for event in self.history:
+            queue.put_nowait(event)
+        self.queue = queue
+        return queue
+
+    def unsubscribe(self, queue: asyncio.Queue) -> None:
+        """断线清理；只在"这个队列仍是我在消费"时清空引用。"""
+        if self.queue is queue:
+            self.queue = None
 
     def request_cancel(self) -> None:
         """请求停止。真正的停止发生在下一个步骤边界（见 run_pipeline）。"""

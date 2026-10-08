@@ -369,12 +369,22 @@ EMOTION_MAX_RICH_PER_LINE = 2
 # CLONE_OMNI_PICKER 环境开关，效果是用户打开界面开关、以为生效了、实际每次
 # 都在走规则选材，且界面上没有任何提示 —— 一个看不见的第二控制权不该存在。
 CLONE_OMNI_MAX_TURNS = _env_int("CLONE_OMNI_MAX_TURNS", 5)
+# 克隆链路三处阻塞调用的上限（P1 #12）：本地 ffmpeg 拼接、DashScope create_voice、
+# 每次 query_voice 轮询。三者以前都是裸调用 —— 一个卡住的请求就永久占住整条管线
+# 与 run 注册表（/process 与 DELETE 从此都是 409，用户无法自救）。
+CLONE_SAMPLE_TIMEOUT = _env_int("CLONE_SAMPLE_TIMEOUT", 120)
+CLONE_ENROLL_TIMEOUT = _env_int("CLONE_ENROLL_TIMEOUT", 180)
+CLONE_POLL_CALL_TIMEOUT = _env_int("CLONE_POLL_CALL_TIMEOUT", 30)
 
 # Number of concurrent synthesis calls. This is I/O bound (blocking SDK call
 # runs in a thread pool) so it does not increase CPU usage. Raise it only if
 # the provider does not rate-limit you.
 TTS_CONCURRENCY = _env_int("TTS_CONCURRENCY", 4)
 TTS_MAX_RETRIES = _env_int("TTS_MAX_RETRIES", 2)
+# 单次合成的墙钟上限：SDK 的 call() 是阻塞的网络调用，以前完全没有超时 ——
+# 一个卡住的 websocket 就能让整条管线永久停在 TTS 阶段（run 也永远占位，
+# 连 DELETE 都是 409）。超时按"可重试的失败"处理，最坏 3 次尝试 × 这个值。
+TTS_CALL_TIMEOUT = _env_int("TTS_CALL_TIMEOUT", 60)
 
 # Audio format used for the synthesized files and the export timeline.
 # The SDK binds the sample rate to its `format` enum (default mp3 22.05 kHz);
@@ -802,6 +812,19 @@ SUBTITLE_EXPORT_TRACKS = [
 
 DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
+
+# ---- 上传限制 ----
+# 以前上传既不限大小也不查类型：任意客户端可以写满磁盘，或塞非视频文件让
+# ffmpeg 去啃。白名单按扩展名判定，拷贝时按字节数实时中止。
+UPLOAD_MAX_BYTES = _env_int("UPLOAD_MAX_BYTES", 2 * 1024 * 1024 * 1024)  # 2 GiB
+UPLOAD_ALLOWED_EXTENSIONS = {
+    e.strip().lower()
+    for e in _env(
+        "UPLOAD_ALLOWED_EXTENSIONS",
+        ".mp4,.m4v,.mov,.mkv,.webm,.avi,.flv,.ts",
+    ).split(",")
+    if e.strip()
+}
 
 CORS_ORIGINS = [o.strip() for o in _env("CORS_ORIGINS", "*").split(",") if o.strip()]
 

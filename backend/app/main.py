@@ -57,7 +57,10 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=config.CORS_ORIGINS,
-    allow_credentials=True,
+    # allow_credentials 与通配来源不能同时成立：浏览器会拒绝这种组合，而且
+    # CORS_ORIGINS 默认就是 "*"，等于开着"任意站点都能带凭据驱动这个后端"。
+    # 本服务没有 cookie/登录态（路径令牌才是凭据），所以通配时关掉它。
+    allow_credentials="*" not in config.CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )

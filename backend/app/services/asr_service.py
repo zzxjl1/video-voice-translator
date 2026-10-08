@@ -39,6 +39,7 @@ from app.services import usage_service
 # 复用时长的探测（ffprobe）：subtitle_service 只依赖 config，不会成环。
 from app.services.subtitle_service import probe_duration
 from app.models import Segment
+from app.models import _atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -321,8 +322,9 @@ async def transcribe_video(video_id: str, video_path: str, audio_path: str, file
             for s in segments
         ]
             
-        with open(result_path, "w", encoding="utf-8") as f:
-            json.dump(asr_only_segments, f, ensure_ascii=False, indent=2)
+        # 原子写：asr_result.json 是"分段已就绪"的凭据，写一半被杀会让工程
+        # 下次打开时分段全部消失（load_state 只能降级）。
+        _atomic_write_json(result_path, asr_only_segments)
         logger.info(f"Saved processed ASR segments to {result_path}")
     except Exception as e:
         logger.warning(f"Failed to save processed ASR segments: {e}")

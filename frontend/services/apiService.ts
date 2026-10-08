@@ -216,6 +216,53 @@ export async function getVideoStatus(videoId: string) {
   return response.json();
 }
 
+/**
+ * 接管一个**正在跑**的工程的进度事件（SSE，P3 #9）。
+ *
+ * 后端一直支持 `GET /{video_id}/events`，接管时先回放有界历史
+ * （run_registry.HISTORY_LIMIT）。在此之前 SSE 只能从 `POST /process` 那一次
+ * 拿到 —— 刷新页面就永久失去进度视图，而服务器还在跑。
+ *
+ * 读法约定与 `processVideo` 里的那条流一致：只认 `data: ` 行，分片不完整的
+ * 尾部留在 buffer 里等下一块。这里没有再抽公共函数，是因为那条路径已经被真机
+ * 验证过，动它需要同时验证两条链；两处都只依赖"data: 行"这一个约定，很小。
+ */
+export async function subscribeToRun(
+  videoId: string,
+  onEvent: (event: any) => void,
+): Promise<void> {
+  const response = await fetch(`${API_BASE}/videos/${videoId}/events`);
+  if (!response.ok) {
+    throw new Error(`subscribe to run failed (${response.status})`);
+  }
+
+  console.log(`[pipeline ${__stamp()}] 已接管 /events（HTTP ${response.status}），开始回放+接收`);
+
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error('ReadableStream not supported');
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let received = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      try {
+        received += 1;
+        onEvent(JSON.parse(line.slice(6)));
+      } catch {
+        // 分片边界：这半行留给下一块（与 processVideo 的处理一致）
+      }
+    }
+  }
+  console.log(`[pipeline ${__stamp()}] 接管的 /events 流结束，共收到 ${received} 条事件`);
+}
+
 
 export interface ExportResult {
   video_id: string;
@@ -247,12 +294,22 @@ export interface SubtitleTrackInfo {
 export async function exportVideo(
   videoId: string,
   subtitles?: SubtitleExportOptions,
+  /**
+   * `persist: false` = "just give me the file, do not rewrite this project's
+   * saved subtitle plan". The browser burn needs that: it asks for a plain
+   * video (no subtitles) and would otherwise permanently set the project's
+   * export preference to off.
+   */
+  opts?: { persist?: boolean },
 ): Promise<ExportResult> {
   const response = await fetch(`${API_BASE}/videos/${videoId}/export`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     // Always send a body: an empty object is treated as "use the saved plan".
-    body: JSON.stringify(subtitles ? { subtitles } : {}),
+    body: JSON.stringify({
+      ...(subtitles ? { subtitles } : {}),
+      ...(opts?.persist === false ? { persist: false } : {}),
+    }),
   });
 
   if (!response.ok) {
@@ -403,8 +460,9 @@ export async function uploadStems(
  *
  * 这里刻意不做"并发探测"（计数在飞请求、发现 >1 就警告）—— 那是给一个已经
  * 修掉的 bug 配的哨兵：重复发起是 StrictMode 把恢复 effect 跑了两遍，前端已
- * 用 ref 守卫堵住，后端也有"同工程重复请求=订阅"的守卫。多一层会误报的探测
- * 只是额外的复杂度，出问题时把这几行按时间顺序看一遍就明白了。
+ * 用 ref 守卫堵住；后端对同工程的重复 /process 是 **409 拒绝**（不是订阅，见
+ * routers/video.py）。多一层会误报的探测只是额外的复杂度，出问题时把这几行按
+ * 时间顺序看一遍就明白了。
  *
  * 谁发起的、发出了几次：看 `[pipeline] POST` 的行数与相邻 `[startPipeline]
  * 来源=` 标签。
@@ -466,7 +524,7 @@ export async function processVideo(
     throw new Error(err.detail || 'Processing failed');
   }
 
-  console.log(`[pipeline ${__stamp()}] 已连接，开始接收事件流（服务器可能先回放历史事件）`);
+  console.log(`[pipeline ${__stamp()}] 已连接，开始接收事件流（这条流不含历史；断线后可用 subscribeToRun 接管并回放）`);
 
   const reader = response.body?.getReader();
   if (!reader) {
@@ -789,7 +847,14 @@ export interface SubtitleCapability {
   description: string;
 }
 
-export type SubtitleCapabilities = Partial<Record<SubtitleExportFormat, SubtitleCapability>>;
+/**
+ * 能力探测的键：**与导出计划的 `format` 不是同一组**。
+ *   srt = 单独下载的字幕文件；soft/styled/burn = 三种内嵌/烧录方式。
+ * 后端 subtitle_service.capabilities() 返回的就是这组键（曾叫 burn_server，
+ * 与前端对不上，导致 capabilities.burn 恒为 undefined）。
+ */
+export type SubtitleDeliveryOption = 'srt' | 'soft' | 'styled' | 'burn';
+export type SubtitleCapabilities = Partial<Record<SubtitleDeliveryOption, SubtitleCapability>>;
 
 /** A display cue with the server's adapted timing. */
 export interface SubtitleCue {

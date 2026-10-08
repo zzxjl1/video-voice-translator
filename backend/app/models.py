@@ -109,6 +109,14 @@ class VideoState:
      # voice_clone/tts）。持久化是为了重开页面还能说清"上次取消在哪一步、能不能
      # 跑" —— 内存里的运行状态随进程消失，这个不会。跑起来时清空。
     cancelled_step: Optional[str] = None
+    # "该有而没有"的清单：翻译失败的行 / 没有配音的行。落盘是为了让界面和
+    # 下一次运行都能看到缺口，而不是只活在这一次的日志里。
+    failed_translation_ids: list[str] = field(default_factory=list)
+    failed_audio_ids: list[str] = field(default_factory=list)
+    # 产物是用哪套设置做出来的（见 pipeline_service._fingerprint）：换语言/口音/
+    # 增强开关后，靠它判断该作废译文还是只作废配音。
+    translation_fingerprint: str = ""
+    tts_fingerprint: str = ""
     # Free-form instructions the requester injected into the translation step.
     # Persisted so a reprocess (which re-translates from scratch) and a session
     # recovery both replay the SAME translation behaviour the dub was made
@@ -157,25 +165,58 @@ class VideoState:
 
 # State persistence functions
 
+def video_dir_path(video_id: str) -> str:
+    """
+    工程的目录路径，**不创建任何东西**。
+
+    只读路径（播放音频、看状态、下载导出）必须用它：以前它们调 get_video_dir，
+    而那个函数无条件 makedirs —— 于是任意一个 GET 就能在磁盘上创建一个目录
+    （配合未校验的 video_id 就是"任意目录创建"）。
+    """
+    return os.path.join(config.DATA_DIR, video_id)
+
+
 def get_video_dir(video_id: str) -> str:
-    """Get the directory path for a specific video."""
-    video_dir = os.path.join(config.DATA_DIR, video_id)
+    """工程的目录路径，并确保它存在（写方用）。"""
+    video_dir = video_dir_path(video_id)
     os.makedirs(video_dir, exist_ok=True)
     return video_dir
 
 
+def _atomic_write_json(path: str, data) -> None:
+    """
+    写 JSON：先写同目录的 `.part`，再 `os.replace` 覆盖目标。
+
+    `os.replace` 在同一文件系统内是原子的，所以任何时刻读者看到的要么是旧文件、
+    要么是新文件，不会是"写了一半"的半个 JSON。
+
+    代价说清楚：进程在 `json.dump` 中途被杀时，会留下一个 `<name>.part`（本次
+    写入没走到 replace）。它是纯残留 —— 没有任何代码读它，下一次写入会覆盖同名
+    的它；最多每个产物一个，不会累积。以前这里直接以 "w" 覆盖：
+    进程在写的中途被杀（部署重启、OOM、Ctrl-C）→ info.json 变成坏 JSON →
+    `get_state()` 返回 None → 整个工程变成 404，用户看到"工程没了"（P1 #6）。
+    stems 上传与 voice map 早就用了这个手法，最要紧的 info.json 反而没有。
+    """
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp_path = f"{path}.part"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, path)
+
+
 def save_state(state: VideoState):
-    """Save video state to the filesystem."""
+    """Save video state to the filesystem (atomically)."""
     video_id = state.video_id
     video_dir = get_video_dir(video_id)
     state_path = os.path.join(video_dir, "info.json")
-    
+
     # Save root info (metadata only, no segments to avoid redundancy)
     data = state.to_dict()
     data.pop("segments", None)
-    
-    with open(state_path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+
+    _atomic_write_json(state_path, data)
     logger.info(f"Saved metadata to {state_path}")
 
 
@@ -228,26 +269,49 @@ def load_state(video_id: str) -> Optional[VideoState]:
     if not os.path.exists(info_path):
             return None
     
+    # 1. info.json —— 只有它坏掉才算"这个工程读不出来"（返回 None＝404）。
+    #    其余四个衍生文件坏了只降级：丢掉那一部分信息，工程本身照常打开。
+    #    以前整段共用一个 try/except：任何一个衍生 JSON 坏掉，状态直接变 None，
+    #    用户看到的是"工程没了"，连从断点续跑的机会都没有（P1 #6）。
     try:
-        # 1. Load basic info
         with open(info_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-            
+    except Exception as e:
+        logger.error(
+            f"[{video_id}] info.json is unreadable ({e}) — the project cannot be "
+            f"opened. The file is still on disk: {info_path}"
+        )
+        return None
+
+    try:
         # 2. Load ASR segments if they exist
         segments = []
         if os.path.exists(asr_path):
-            with open(asr_path, "r", encoding="utf-8") as f:
-                asr_data = json.load(f)
-                segments = [Segment.from_dict(s) for s in asr_data]
-                
+            try:
+                with open(asr_path, "r", encoding="utf-8") as f:
+                    asr_data = json.load(f)
+                    segments = [Segment.from_dict(s) for s in asr_data]
+            except Exception as e:
+                # 只是"分段读不出来"，工程本身还在：不要让它变成 404。
+                logger.warning(
+                    f"[{video_id}] asr_result.json is unreadable ({e}); "
+                    f"opening the project without its segments"
+                )
+
         # 3. Load Translations and merge
         if segments and os.path.exists(trans_path):
-            with open(trans_path, "r", encoding="utf-8") as f:
-                trans_data = json.load(f)
-                trans_map = {item["id"]: item["translatedText"] for item in trans_data}
-                for s in segments:
-                    if s.id in trans_map:
-                        s.translated_text = trans_map[s.id]
+            try:
+                with open(trans_path, "r", encoding="utf-8") as f:
+                    trans_data = json.load(f)
+                    trans_map = {item["id"]: item["translatedText"] for item in trans_data}
+                    for s in segments:
+                        if s.id in trans_map:
+                            s.translated_text = trans_map[s.id]
+            except Exception as e:
+                logger.warning(
+                    f"[{video_id}] translation_result.json is unreadable ({e}); "
+                    f"the lines will show without translations"
+                )
 
         # 4. Load Synthesis result mapping
         tts_map = {}
@@ -300,8 +364,18 @@ def load_state(video_id: str) -> Optional[VideoState]:
         return VideoState.from_dict(data)
         
     except Exception as e:
-        logger.error(f"Failed to load state for {video_id}: {e}")
-        return None
+        # 走到这里说明是上面没预料到的异常。**仍然不要把工程判成不存在** ——
+        # info.json 完好就说明工程在，只是衍生数据没读全（P1 #6）。
+        logger.error(
+            f"[{video_id}] failed to merge derived artifacts ({e}); "
+            f"opening the project with metadata only"
+        )
+        try:
+            data["segments"] = []
+            return VideoState.from_dict(data)
+        except Exception as e2:
+            logger.error(f"[{video_id}] even the metadata could not be parsed: {e2}")
+            return None
 
 
 def get_or_create_state(video_id: str, filename: str = "", file_path: str = "") -> VideoState:

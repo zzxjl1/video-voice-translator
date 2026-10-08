@@ -16,6 +16,7 @@ Designed for a small host (2 GB / single core / no GPU):
 * Export copies the video stream instead of re-encoding it.
 """
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -42,6 +43,21 @@ from app.services import (
 logger = logging.getLogger(__name__)
 
 
+def _fingerprint(*parts: str) -> str:
+    """设置指纹：只用于"这批产物还是用当前设置做的吗"这一件事。"""
+    return hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
+def _remove_artifact(video_dir: str, name: str) -> None:
+    """删掉一个阶段产物（不存在就忽略）。"""
+    try:
+        os.remove(os.path.join(video_dir, name))
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        logger.warning(f"[pipeline] could not remove {name}: {e}")
+
+
 def _detect_resume_phase(video_dir: str, state: VideoState) -> str:
     """
     Detect which phase to resume from based on existing files.
@@ -52,6 +68,14 @@ def _detect_resume_phase(video_dir: str, state: VideoState) -> str:
     has_asr = os.path.exists(os.path.join(video_dir, "asr_result.json"))
     has_translation = os.path.exists(os.path.join(video_dir, "translation_result.json"))
     has_tts = os.path.exists(os.path.join(video_dir, "tts_results.json"))
+
+    # 有行还没译文（上一次翻译部分失败）→ 必须回到翻译阶段。
+    # 否则"部分失败"会永久固化：文件在 → 判为已翻译 → 那些行再也没人补。
+    if has_asr and state.segments and any(
+        (seg.text or "").strip() and not seg.muted and not seg.translated_text
+        for seg in state.segments
+    ):
+        return "translation"
 
     # Check from the end backwards
     if has_tts and state.segments and all(
@@ -238,6 +262,40 @@ async def run_pipeline(
     # 新的一次运行开始了：上一次的"取消在哪一步"到此为止。
     state.cancelled_step = None
 
+    # ---- 设置指纹：换了设置就作废受影响的产物 ----
+    #
+    # `_detect_resume_phase` 只看"文件在不在"，所以改了目标语言/口音/增强开关后
+    # 再跑，它仍然认为"译文已做完、音频已合成" —— 于是产出还是旧语言，且报成功。
+    # 前端用 resetVideo 兜住了自己那条路，但任何别的调用方（脚本、重试逻辑、以后
+    # 的 API）都会踩。指纹比对把这件事交给服务端自己判断。
+    new_translation_fp = _fingerprint(target_language, str(bool(mm_enhance)), custom_prompt)
+    new_tts_fp = _fingerprint(target_language, accent or "", str(bool(enable_voice_clone)))
+    if state.translation_fingerprint and state.translation_fingerprint != new_translation_fp:
+        logger.warning(
+            "[%s] 设置变了（语言/增强/自定义要求）：旧译文与旧配音作废，回到翻译阶段",
+            video_id,
+        )
+        for seg in state.segments:
+            seg.translated_text = ""
+            seg.audio_path = None
+        _remove_artifact(video_dir, "translation_result.json")
+        _remove_artifact(video_dir, "tts_results.json")
+        state.failed_translation_ids = []
+        await emit({"phase": "translation", "status": "invalidated",
+                    "reason": "settings changed"})
+    elif state.tts_fingerprint and state.tts_fingerprint != new_tts_fp:
+        logger.warning(
+            "[%s] 配音设置变了（口音/克隆）：译文保留，旧配音作废", video_id
+        )
+        for seg in state.segments:
+            seg.audio_path = None
+        _remove_artifact(video_dir, "tts_results.json")
+        await emit({"phase": "tts", "status": "invalidated",
+                    "reason": "dubbing settings changed"})
+    state.translation_fingerprint = new_translation_fp
+    state.tts_fingerprint = new_tts_fp
+    save_state(state)
+
     resume_phase = _detect_resume_phase(video_dir, state)
     logger.info(f"[{video_id}] Pipeline starting. Resume phase: {resume_phase}")
     await emit({"resume_phase": resume_phase})
@@ -331,6 +389,9 @@ async def run_pipeline(
             save_state(state)
 
             # Send segments to frontend
+            # muted/hidden 必须一起发：它们是独立文件 segment_flags.json 里的
+            # 事实，而前端 mapServerSegment 对缺失字段默认 false —— 只发基础字段
+            # 会让"恢复/续跑后界面显示未静音、导出却按静音处理"（P0 #8）。
             segments_data = [
                 {
                     "id": seg.id,
@@ -339,6 +400,8 @@ async def run_pipeline(
                     "start_time": seg.start_time,
                     "end_time": seg.end_time,
                     "text": seg.text,
+                    "muted": seg.muted,
+                    "hidden": seg.hidden,
                 }
                 for seg in segments
             ]
@@ -361,6 +424,8 @@ async def run_pipeline(
                     "end_time": seg.end_time,
                     "text": seg.text,
                     "translated_text": seg.translated_text,
+                    "muted": seg.muted,
+                    "hidden": seg.hidden,
                 }
                 for seg in state.segments
             ]
@@ -472,7 +537,7 @@ async def run_pipeline(
                 for seg in state.segments
             ]
 
-            results = await llm_service.translate_script(
+            results, failed_ids = await llm_service.translate_script(
                 video_id, context, target_language, emit=emit,
                 text_overrides=text_overrides or None,
                 custom_prompt=custom_prompt,
@@ -480,9 +545,32 @@ async def run_pipeline(
 
             # Update state with translations
             result_map = {r["id"]: r["translatedText"] for r in results}
+            changed = 0
             for seg in state.segments:
-                if seg.id in result_map:
-                    seg.translated_text = result_map[seg.id]
+                new_text = result_map.get(seg.id)
+                if not new_text or new_text == seg.translated_text:
+                    continue
+                seg.translated_text = new_text
+                # 译文变了 → 这一行的旧配音作废。以前只在 resume_phase=="tts"
+                # 时才过滤已有音频，于是"从翻译跑下来"会把每一行重做一遍；
+                # 真正危险的是反面：改了语言/文本却留着旧音频（成片还是旧语言）。
+                if seg.audio_path:
+                    seg.audio_path = None
+                    changed += 1
+            state.failed_translation_ids = failed_ids
+            if changed:
+                logger.info(f"[{video_id}] {changed} line(s) changed text — their audio is invalidated")
+            if failed_ids:
+                logger.warning(
+                    f"[{video_id}] {len(failed_ids)} segment(s) have NO translation: "
+                    f"{failed_ids[:8]}"
+                )
+                await emit({
+                    "phase": "translation",
+                    "status": "incomplete",
+                    "failed": failed_ids,
+                    "count": len(failed_ids),
+                })
 
             state.status = VideoStatus.TRANSLATED
             save_state(state)
@@ -589,13 +677,15 @@ async def run_pipeline(
         # Phase 3: TTS Synthesis (concurrent — network bound, not CPU bound)
         # =====================================================
         # 静音行跳过合成：它们本来就不该有配音音频。
+        # 恒按"还没有音频"过滤：译文变动的行在上一步已经把 audio_path 清掉了，
+        # 所以"有音频"就等于"这一行的当前译文已经配过音"。以前这段过滤只在
+        # resume_phase=="tts" 时生效，而 "done"（已完成的工程被再处理一次）会
+        # 落到"全部重做"—— 覆盖已有 mp3、重复计费。
         to_synthesize = [
-            seg for seg in state.segments if seg.translated_text and not seg.muted
+            seg
+            for seg in state.segments
+            if seg.translated_text and not seg.muted and not seg.audio_path
         ]
-
-        if resume_phase == "tts":
-            # Only synthesize segments that don't have audio yet
-            to_synthesize = [seg for seg in to_synthesize if not seg.audio_path]
 
         total_tts = len(to_synthesize)
         already_done = len([seg for seg in state.segments if seg.translated_text and seg.audio_path])
@@ -701,15 +791,36 @@ async def run_pipeline(
         if succeeded_segments:
             tts_service.sync_registry(video_id, succeeded_segments)
 
-        if to_synthesize and not succeeded_segments:
-            # 一句都没合成成功 —— 这不是"完成"。旧行为会把状态写成 COMPLETED，
-            # 于是一个没有任何配音的工程在界面上显示为"已完成"（实测事故：TTS
-            # 全部失败后工程仍是 completed，用户以为片子做好了）。这种"全都失败"
-            # 必须是 ERROR，让用户知道要处理。
-            detail = last_tts_error[-1] if last_tts_error else "unknown error"
+        # 先判取消，再判缺口：用户主动叫停时，状态该是"已取消"而不是"有缺口"——
+        # 被中断的运行本来就会缺东西，那不是"产物有问题"。
+        if await _stop_if_cancelled("tts"):
+            return
+
+        # ---- 缺口检查：任何"该有而没有"的东西都不允许以"完成"收尾 ----
+        #
+        # 两类缺口都要拦：没有译文（翻译部分失败）与没有配音（合成失败）。
+        # 旧行为两者都只写一行 warning 然后照旧 COMPLETED，用户是在成片里才发现
+        # 某几句没声 —— 而且没有任何地方告诉他缺的是哪几句。
+        no_translation = [
+            seg.id
+            for seg in state.segments
+            if (seg.text or "").strip() and not seg.muted and not seg.translated_text
+        ]
+        no_audio = [seg.id for seg in (to_synthesize or []) if seg.id not in succeeded_segments]
+        if no_translation or no_audio:
+            parts: list[str] = []
+            if no_translation:
+                parts.append(f"{len(no_translation)} 段没有译文")
+            if no_audio:
+                parts.append(f"{len(no_audio)} 段没有配音")
+            detail = last_tts_error[-1] if last_tts_error else ""
+            gap = "，".join((no_translation + no_audio)[:6])
             state.status = VideoStatus.ERROR
+            state.failed_audio_ids = no_audio
             state.error_message = (
-                f"语音合成全部失败（{len(to_synthesize)} 段）：{detail[:300]}"
+                "；".join(parts)
+                + f"：{gap}"
+                + (f"（最后错误：{detail[:200]}）" if detail else "")
             )
             save_state(state)
             logger.error(f"[{video_id}] {state.error_message}")
@@ -717,6 +828,13 @@ async def run_pipeline(
             await emit({"error": state.error_message})
             return
 
+        # 缺口补齐了：清掉上一次运行留下的清单，免得界面上一直挂着旧缺口。
+        state.failed_translation_ids = []
+        state.failed_audio_ids = []
+
+        # 先判取消，再宣布完成（P0 #4）。原顺序是"写 COMPLETED → 广播 tts done
+        # → 再翻回 CANCELLED"：磁盘上会短暂出现"已完成"，前端已经打过
+        # "Audio Synthesis Complete"，任何此刻轮询 /status 的客户端都会读到它。
         state.status = VideoStatus.COMPLETED
         save_state(state)
 
