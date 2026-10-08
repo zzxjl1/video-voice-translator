@@ -2696,12 +2696,21 @@ const App: React.FC = () => {
         // 返回值必须给弹窗：false = 用户取消，弹窗据此回滚设置并留在原地，
         // 而不是关掉、留下一个"改了但没重跑"的状态。
         onSave={handleSettingsSave}
+        // 与落地页同一组设置（弹窗内部用的是同一个 ProcessingSettings 组件）：
+        // 这里少传一项，那一项在工程里就改不了 —— 而 handleSettingsSave 的
+        // differFromProject 本来就把这五项都算作"会改变结果"。
         enableVoiceClone={enableVoiceClone}
         onVoiceCloneChange={handleVoiceCloneChange}
         separationMode={separationMode}
         onSeparationModeChange={handleSeparationModeChange}
         separationBackends={effectiveBackends}
         bgmSeparationLocked={enableVoiceClone}
+        mmEnhance={mmEnhance}
+        onMmEnhanceChange={setMmEnhance}
+        cloneSmartPick={cloneSmartPick}
+        onCloneSmartPickChange={setCloneSmartPick}
+        customPrompt={customPrompt}
+        onCustomPromptChange={setCustomPrompt}
       />
 
       <StreamingLog

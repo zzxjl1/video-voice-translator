@@ -1,6 +1,5 @@
-
 import React, { useEffect, useState } from 'react';
-import SeparationModeSelector from './SeparationModeSelector';
+import ProcessingSettings from './ProcessingSettings';
 import type { SeparationMode, SeparationBackends } from '../services/apiService';
 
 interface SettingsModalProps {
@@ -8,56 +7,82 @@ interface SettingsModalProps {
     onClose: () => void;
     /**
      * 有改动时的「保存」：调用方负责触发重新处理。
-     * 这两个设置都改变管线的做法（分离后端 / 是否克隆），改了就必须重跑，
-     * 光更新前端状态是不够的。
+     * 这些设置都改变管线的做法（分离后端 / 是否克隆 / 是否多模态增强 / 智能选材 /
+     * 翻译要求），改了就必须重跑，光更新前端状态是不够的。
      *
      * 返回值表示用户在最外层确认里是否点了「继续」：false 代表放弃 ——
      * 弹窗会把设置撤回打开时的快照并留在原地，不能让「取消」留下一个
      * 已改设置但没重跑的状态。
      */
     onSave?: () => boolean | Promise<boolean | void> | void;
-    enableVoiceClone: boolean;
-    onVoiceCloneChange: (v: boolean) => void;
+
     separationMode: SeparationMode;
     onSeparationModeChange: (mode: SeparationMode) => void;
     separationBackends: SeparationBackends;
     bgmSeparationLocked?: boolean;
+
+    enableVoiceClone: boolean;
+    onVoiceCloneChange: (v: boolean) => void;
+    /** 智能选材（克隆的子选项）。 */
+    cloneSmartPick: boolean;
+    onCloneSmartPickChange: (v: boolean) => void;
+
+    /** 多模态增强识别。 */
+    mmEnhance: boolean;
+    onMmEnhanceChange: (v: boolean) => void;
+
+    /** 自定义翻译要求。 */
+    customPrompt: string;
+    onCustomPromptChange: (v: string) => void;
 }
 
-const InfoTooltip: React.FC<{ text: string }> = ({ text }) => {
-    const [show, setShow] = useState(false);
-    return (
-        <span className="relative inline-flex items-center ml-1.5">
-            <span
-                className="w-4 h-4 rounded-full border border-gray-300 text-gray-400 text-[10px] font-bold flex items-center justify-center cursor-help hover:border-claude-accent hover:text-claude-accent transition-colors"
-                onMouseEnter={() => setShow(true)}
-                onMouseLeave={() => setShow(false)}
-            >
-                i
-            </span>
-            {show && (
-                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 z-50 pointer-events-none">
-                    <div className="bg-gray-800 text-white text-[11px] leading-relaxed rounded-lg px-3 py-2 shadow-lg whitespace-normal w-52 text-center">
-                        {text}
-                        <div className="absolute left-1/2 -translate-x-1/2 top-full w-0 h-0 border-l-[5px] border-l-transparent border-r-[5px] border-r-transparent border-t-[5px] border-t-gray-800"></div>
-                    </div>
-                </div>
-            )}
-        </span>
-    );
-};
+/**
+ * 打开那一刻的设置值，用来判断「有没有改动」。
+ *
+ * 快照只在打开时拍（deps 只有 isOpen）：改了之后再快照就没有比较基准了。
+ * 这些设置都是即时生效的（一改就写进父状态），所以这里的 dirty 只用于决定
+ * 「保存」是否点亮与是否触发重新处理，不是暂存草稿。
+ *
+ * **必须覆盖弹窗里的每一项**：少一项的表现是"改了那一项，保存按钮却是灰的"，
+ * 用户于是以为它已经生效（实际上既没保存也没重跑）。这也是把这块 UI 收敛成
+ * 一个共享组件（ProcessingSettings）的原因之一 —— 列表只有一个定义。
+ */
+interface Snapshot {
+    separationMode: SeparationMode;
+    enableVoiceClone: boolean;
+    cloneSmartPick: boolean;
+    mmEnhance: boolean;
+    customPrompt: string;
+}
 
-const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, onSave, enableVoiceClone, onVoiceCloneChange, separationMode, onSeparationModeChange, separationBackends, bgmSeparationLocked }) => {
-    /*
-     * 打开那一刻的两个设置值，用来判断「有没有改动」。
-     *
-     * 快照只在打开时拍（deps 只有 isOpen）：改了之后再快照就没有比较基准了。
-     * 两个设置都是即时生效的（切换即更新父状态），所以这里的 dirty 只用于
-     * 决定「保存」是否点亮与是否触发重新处理，不是暂存草稿。
-     */
-    const [snapshot, setSnapshot] = useState<{ mode: SeparationMode; clone: boolean } | null>(null);
+const SettingsModal: React.FC<SettingsModalProps> = ({
+    isOpen,
+    onClose,
+    onSave,
+    separationMode,
+    onSeparationModeChange,
+    separationBackends,
+    bgmSeparationLocked,
+    enableVoiceClone,
+    onVoiceCloneChange,
+    cloneSmartPick,
+    onCloneSmartPickChange,
+    mmEnhance,
+    onMmEnhanceChange,
+    customPrompt,
+    onCustomPromptChange,
+}) => {
+    const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
     useEffect(() => {
-        if (isOpen) setSnapshot({ mode: separationMode, clone: enableVoiceClone });
+        if (isOpen) {
+            setSnapshot({
+                separationMode,
+                enableVoiceClone,
+                cloneSmartPick,
+                mmEnhance,
+                customPrompt,
+            });
+        }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [isOpen]);
 
@@ -65,19 +90,35 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, onSave, 
 
     const dirty =
         !!snapshot &&
-        (separationMode !== snapshot.mode || enableVoiceClone !== snapshot.clone);
+        (separationMode !== snapshot.separationMode ||
+            enableVoiceClone !== snapshot.enableVoiceClone ||
+            cloneSmartPick !== snapshot.cloneSmartPick ||
+            mmEnhance !== snapshot.mmEnhance ||
+            customPrompt !== snapshot.customPrompt);
 
     /**
-     * 放弃本次改动：把两个设置拨回打开时的值。
+     * 放弃本次改动：把所有设置拨回打开时的值。
      *
-     * 这两个开关是即时生效的（一拨就写进父状态），所以「取消」必须显式
-     * 回滚 —— 否则会留下「设置显示为新值、配音仍是旧值」的状态，正是保存
-     * 机制要防的那种不一致。
+     * 这些开关是即时生效的（一拨就写进父状态），所以「取消」必须显式回滚 ——
+     * 否则会留下「设置显示为新值、配音仍是旧值」的状态，正是保存机制要防的
+     * 那种不一致。顺序上先恢复分离方式再恢复克隆：App 里克隆开着时分离被锁，
+     * 反过来会被它挡回。
      */
     const revertToSnapshot = () => {
         if (!snapshot) return;
-        if (separationMode !== snapshot.mode) onSeparationModeChange(snapshot.mode);
-        if (enableVoiceClone !== snapshot.clone) onVoiceCloneChange(snapshot.clone);
+        if (separationMode !== snapshot.separationMode) {
+            onSeparationModeChange(snapshot.separationMode);
+        }
+        if (enableVoiceClone !== snapshot.enableVoiceClone) {
+            onVoiceCloneChange(snapshot.enableVoiceClone);
+        }
+        if (cloneSmartPick !== snapshot.cloneSmartPick) {
+            onCloneSmartPickChange(snapshot.cloneSmartPick);
+        }
+        if (mmEnhance !== snapshot.mmEnhance) onMmEnhanceChange(snapshot.mmEnhance);
+        if (customPrompt !== snapshot.customPrompt) {
+            onCustomPromptChange(snapshot.customPrompt);
+        }
     };
 
     /** 保存：先问外层要不要真跑（确认对话框在那边），被拒则回滚并留在弹窗。 */
@@ -115,39 +156,32 @@ const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, onSave, 
                     </button>
                 </div>
 
-                <div className="px-8 py-6 space-y-4">
-                    <p className="text-xs text-gray-400 uppercase tracking-widest font-bold mb-2">Audio Processing</p>
-
-                    <div className="py-3 px-4 bg-gray-50 rounded-xl">
-                        <div className="flex items-center mb-2">
-                            <span className={`text-sm font-medium ${bgmSeparationLocked ? 'text-gray-400' : 'text-gray-700'}`}>BGM Separation</span>
-                            <InfoTooltip text="Splits vocals from background music for cleaner transcription and voice cloning. Pick which backend does the work, or turn it off." />
-                        </div>
-                        <SeparationModeSelector
-                            value={separationMode}
-                            onChange={onSeparationModeChange}
-                            backends={separationBackends}
-                            locked={bgmSeparationLocked}
-                        />
-                    </div>
-
-                    <div className="flex items-center justify-between py-3 px-4 bg-gray-50 rounded-xl">
-                        <div className="flex items-center">
-                            <span className="text-sm font-medium text-gray-700">Voice Cloning</span>
-                            <InfoTooltip text="Clone the original speaker's voice for synthesis. The translated audio will sound like the original speaker. Requires more processing time." />
-                        </div>
-                        <button
-                            onClick={() => onVoiceCloneChange(!enableVoiceClone)}
-                            className={`relative w-10 h-[22px] rounded-full transition-colors duration-200 ${enableVoiceClone ? 'bg-claude-accent' : 'bg-gray-300'}`}
-                        >
-                            <span className={`absolute top-[2px] left-[2px] w-[18px] h-[18px] bg-white rounded-full shadow transition-transform duration-200 ${enableVoiceClone ? 'translate-x-[18px]' : ''}`} />
-                        </button>
-                    </div>
+                {/* 与落地页同一个组件（ProcessingSettings）：那边加了开关这里自动有。
+                    max-h + overflow：设置变多之后，矮窗口里要能滚到「保存」，而不是
+                    被裁掉。 */}
+                <div className="px-6 py-5 max-h-[65vh] overflow-y-auto">
+                    <p className="text-xs text-gray-400 uppercase tracking-widest font-bold mb-3 px-1">
+                        Audio Processing
+                    </p>
+                    <ProcessingSettings
+                        separationMode={separationMode}
+                        onSeparationModeChange={onSeparationModeChange}
+                        separationBackends={separationBackends}
+                        bgmSeparationLocked={bgmSeparationLocked}
+                        mmEnhance={mmEnhance}
+                        onMmEnhanceChange={onMmEnhanceChange}
+                        enableVoiceClone={enableVoiceClone}
+                        onVoiceCloneChange={onVoiceCloneChange}
+                        cloneSmartPick={cloneSmartPick}
+                        onCloneSmartPickChange={onCloneSmartPickChange}
+                        customPrompt={customPrompt}
+                        onCustomPromptChange={onCustomPromptChange}
+                    />
                 </div>
 
                 <div className="px-8 py-5 border-t border-gray-100 bg-claude-bg/50 flex justify-end">
                     {/* 没改动就灰置禁用（关闭走右上角的 X）；一旦改动就点亮 ——
-                        它现在是一次「保存并重做」：这两个设置改了，旧的配音
+                        它现在是一次「保存并重做」：这些设置改了，旧的配音
                         结果就不再对应当前设置，必须重新处理。 */}
                     <button
                         onClick={handleSave}
