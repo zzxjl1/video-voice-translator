@@ -9,7 +9,16 @@ import {
 
 interface HeaderProps {
   onOpenSettings: () => void;
+  /**
+   * 重译 + 重做全部音频（**不**重跑语音识别）。换语言 / 改翻译要求 / 重做配音用它：
+   * 不必重听音频，省时间也省钱。
+   */
   onReprocess: () => void;
+  /**
+   * 从头开始：清空已有进度，重跑识别 / 增强 / 翻译 / 配音。
+   * 与 `onReprocess` 是两个作用域，所以摆在同一个菜单里而不是塞进一个按钮。
+   */
+  onRestartFromScratch: () => void;
   targetLanguage: string;
   onLanguageChange: (lang: string) => void;
   /** Chinese dialect for the dub; '' is Mandarin. Ignored for other languages. */
@@ -26,6 +35,7 @@ interface HeaderProps {
 const Header: React.FC<HeaderProps> = ({
   onOpenSettings,
   onReprocess,
+  onRestartFromScratch,
   targetLanguage,
   onLanguageChange,
   targetAccent,
@@ -38,6 +48,56 @@ const Header: React.FC<HeaderProps> = ({
 }) => {
   const [isVisible, setIsVisible] = useState(true);
   const [isHovered, setIsHovered] = useState(false);
+  /** Reprocess 的下拉菜单。两件事（重译+重配音 / 从头开始）作用域不同，见 props。 */
+  const [menuOpen, setMenuOpen] = useState(false);
+  /**
+   * 菜单的视口坐标。
+   *
+   * 菜单**不能**留在 `<header>` 里：那个元素有 `overflow-hidden`（收起动画要裁住
+   * 自己的内容），而菜单必须伸到按钮下方 —— 于是整块被剪掉，表现就是"点开箭头
+   * 什么也看不到"。header 上还有 `translate-y` 变换，所以直接改成 `position: fixed`
+   * 也不行（变换祖先会成为 fixed 的参照物，照样被裁）。
+   *
+   * 所以菜单渲染在 `<header>` **之外**（外层那个 fixed 包装里，无裁剪、无变换），
+   * 位置在这里量出来。坐标是视口坐标，配 `position: fixed` 用。
+   */
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number } | null>(null);
+  const triggerRef = useRef<HTMLDivElement>(null);
+  const menuPanelRef = useRef<HTMLDivElement>(null);
+
+  const openMenu = () => {
+    const r = triggerRef.current?.getBoundingClientRect();
+    if (r) setMenuPos({ top: r.bottom + 8, left: r.left });
+    setMenuOpen(true);
+  };
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDocClick = (e: MouseEvent) => {
+      const t = e.target as Node;
+      // 菜单已经不在触发器里了，两处都要查，否则点菜单项会被当成"点外面"。
+      if (triggerRef.current?.contains(t) || menuPanelRef.current?.contains(t)) return;
+      setMenuOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMenuOpen(false);
+    };
+    // 头部收起/隐藏时锚点没了，位置也就不再有意义。
+    const onResize = () => setMenuOpen(false);
+    document.addEventListener('mousedown', onDocClick);
+    document.addEventListener('keydown', onKey);
+    window.addEventListener('resize', onResize);
+    return () => {
+      document.removeEventListener('mousedown', onDocClick);
+      document.removeEventListener('keydown', onKey);
+      window.removeEventListener('resize', onResize);
+    };
+  }, [menuOpen]);
+
+  // 头部整体隐藏（向下滚动时 -translate-y-full）→ 菜单跟着收掉。
+  useEffect(() => {
+    if (!isVisible) setMenuOpen(false);
+  }, [isVisible]);
   /*
    * 上次滚动位置与悬停态放 ref：它们只是判断依据，放进 state 会让 effect 依赖
    * 它们 → 每滚动一像素就解绑/重绑监听并重渲染一次（P2 #28）。现在监听只绑一次，
@@ -188,22 +248,54 @@ const Header: React.FC<HeaderProps> = ({
             </div>
           </div>
 
-          {/* Reprocess Button */}
-          <button
-            onClick={onReprocess}
-            disabled={isProcessing || !hasSegments}
-            className="flex flex-col items-start gap-1 p-4 bg-claude-accent hover:bg-claude-accentHover shadow-xl shadow-claude-accent/20 hover:shadow-2xl hover:shadow-claude-accent/30 hover:-translate-y-0.5 transition-all duration-300 rounded-2xl w-52 group/btn text-white disabled:opacity-40 active:scale-[0.98] active:translate-y-0"
+          {/* Reprocess —— **分体按钮**。
+              左（主区）：点它就是那件事本身 —— 重译 + 重做全部音频，**不跑语音
+              识别**（换语言 / 改翻译要求 / 重做配音都不必重听音频）。
+              右（竖线隔开的小块）：另一个作用域 —— "从头开始（含语音识别）"。
+              两块分开是因为它们不是"同一个动作的两个选项"，而是两种代价不同的
+              操作：主区免费得快，右侧那条要重听音频、重新花钱。 */}
+          <div
+            className="relative flex items-stretch w-60 rounded-2xl overflow-hidden shadow-xl shadow-claude-accent/20 hover:shadow-2xl hover:shadow-claude-accent/30 hover:-translate-y-0.5 transition-all duration-300"
+            ref={triggerRef}
           >
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-lg bg-white/20 flex items-center justify-center">
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                </svg>
+            <button
+              onClick={onReprocess}
+              disabled={isProcessing || !hasSegments}
+              title="重新翻译并重做全部音频（不重跑语音识别）"
+              className="flex-1 flex flex-col items-start gap-1 p-4 text-left bg-claude-accent hover:bg-claude-accentHover text-white transition-colors duration-300 disabled:opacity-40 disabled:cursor-not-allowed active:scale-[0.99]"
+            >
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-white/20 flex items-center justify-center">
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                </div>
+                <span className="text-[10px] font-black uppercase tracking-[0.15em] text-white/70">Reprocess</span>
               </div>
-              <span className="text-[10px] font-black uppercase tracking-[0.15em] text-white/70">Reprocess</span>
-            </div>
-            <span className="text-sm font-bold mt-1 ml-1 text-white">Translate & Synthesize</span>
-          </button>
+              <span className="text-sm font-bold mt-1 ml-1 text-white whitespace-nowrap">Translate &amp; Synthesize</span>
+            </button>
+
+            {/* 竖线隔开的一小块：只负责开菜单。它在没有分段时仍然可用 ——
+                菜单里的「从头开始」正是"识别什么都没出来、想再跑一遍"的出路。 */}
+            <button
+              type="button"
+              onClick={() => (menuOpen ? setMenuOpen(false) : openMenu())}
+              disabled={isProcessing}
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              aria-label="更多重新处理方式"
+              title="更多重新处理方式"
+              className="w-9 shrink-0 flex items-center justify-center bg-claude-accent hover:bg-claude-accentHover border-l border-white/25 text-white transition-colors duration-300 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <svg
+                className={`w-3.5 h-3.5 transition-transform duration-200 ${menuOpen ? 'rotate-180' : ''}`}
+                fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+              </svg>
+            </button>
+
+          </div>
 
           {/* Export Button.
               One button, one label, one meaning: open the export dialog. It used
@@ -271,6 +363,43 @@ const Header: React.FC<HeaderProps> = ({
           </button>
         </div>
       </header>
+      {/*
+        下拉菜单渲染在 <header> 之外：header 有 overflow-hidden（收起动画需要），
+        菜单又必须伸到按钮下方，留在里面会被整块剪掉。位置由按钮 rect 量出，
+        用 position: fixed；外层这个包装是 fixed 且无 transform，所以坐标就是视口坐标。
+      */}
+      {menuOpen && menuPos && (
+        <div
+          ref={menuPanelRef}
+          role="menu"
+          style={{ top: menuPos.top, left: menuPos.left }}
+          className="fixed w-72 z-[60] bg-white border border-gray-200 rounded-xl shadow-2xl shadow-gray-900/10 overflow-hidden"
+        >
+          <button
+            role="menuitem"
+            onClick={() => { setMenuOpen(false); onReprocess(); }}
+            disabled={isProcessing || !hasSegments}
+            className="w-full text-left px-4 py-3 hover:bg-gray-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <span className="block text-xs font-bold text-gray-800">重新翻译并重做配音</span>
+            <span className="mt-0.5 block text-[10px] leading-snug text-gray-400">
+              不重跑语音识别。换语言、改翻译要求、重做音频用它 —— 更快也更省。
+            </span>
+          </button>
+          <div className="h-px bg-gray-100" />
+          <button
+            role="menuitem"
+            onClick={() => { setMenuOpen(false); onRestartFromScratch(); }}
+            disabled={isProcessing}
+            className="w-full text-left px-4 py-3 hover:bg-gray-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <span className="block text-xs font-bold text-gray-800">从头开始（含语音识别）</span>
+            <span className="mt-0.5 block text-[10px] leading-snug text-gray-400">
+              清空已有进度，重跑识别 / 增强 / 翻译 / 配音。会重新产生 API 费用。
+            </span>
+          </button>
+        </div>
+      )}
     </div>
   );
 };

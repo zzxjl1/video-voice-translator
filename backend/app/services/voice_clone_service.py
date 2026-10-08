@@ -785,51 +785,63 @@ async def clone_voice_for_speaker(
     if voice_id is None:
         raise RuntimeError(f"Failed to create voice for {speaker_id} after retries")
 
-    # Step 4: Poll until voice is ready
-    max_attempts = 30
-    poll_interval = 10
+    # Step 4: Poll until voice is ready.
+    #
+    # ⚠️ 上限必须落在**单次调用**上，不是整个轮询窗口。
+    # 曾经我把 CLONE_POLL_CALL_TIMEOUT（本意是单次 query_voice 的天花板）套在
+    # 整个循环外面，等于把 30×10s 的等待压成 30s：enrollment 稍慢的说话人就整段
+    # 判死并报"查询音色状态超时（>30s）"，而同一批里快的说话人正常 —— 看起来
+    # 像"失败了一个、没有重试"。现在每次调用各自有上限，挂住的那次放弃、继续等。
+    max_attempts = config.CLONE_POLL_MAX_ATTEMPTS
+    poll_interval = config.CLONE_POLL_INTERVAL_S
     logger.info(
-        f"[Clone] Step 4: Polling voice status (max {max_attempts} attempts, "
-        f"interval {poll_interval}s, timeout {max_attempts * poll_interval}s)"
+        f"[Clone] Step 4: Polling voice status (max {max_attempts} polls, "
+        f"interval {poll_interval}s, per-call timeout {config.CLONE_POLL_CALL_TIMEOUT}s)"
     )
 
-    def _poll_voice():
-        service = VoiceEnrollmentService()
-        for attempt in range(max_attempts):
-            try:
-                info = service.query_voice(voice_id=voice_id)
-                status = info.get("status", "UNKNOWN")
-                logger.info(
-                    f"[Clone] Poll {attempt+1}/{max_attempts}: voice={voice_id}, status={status}"
-                )
-                if status == "OK":
-                    return True
-                if status == "UNDEPLOYED":
-                    raise RuntimeError(
-                        f"Voice clone failed (UNDEPLOYED) for {speaker_id}. "
-                        "Audio quality may be insufficient."
-                    )
-                time.sleep(poll_interval)
-            except RuntimeError:
-                raise
-            except Exception as e:
-                logger.warning(f"[Clone] Poll error: {e}")
-                time.sleep(poll_interval)
-        raise RuntimeError(
-            f"Voice clone timed out for {speaker_id} after {max_attempts * poll_interval}s"
-        )
+    service = VoiceEnrollmentService()
+    last_status = "UNKNOWN"
 
-    # 每次轮询也套上限：整个轮询窗口是 30×10s，但单次调用挂住的话，
-    # 预算再大也救不了（协作式取消同样进不来）。
-    try:
-        await asyncio.wait_for(
-            loop.run_in_executor(None, _poll_voice),
-            timeout=config.CLONE_POLL_CALL_TIMEOUT,
+    def _query_once():
+        return service.query_voice(voice_id=voice_id)
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            info = await asyncio.wait_for(
+                loop.run_in_executor(None, _query_once),
+                timeout=config.CLONE_POLL_CALL_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            # 单次挂住：只放弃这一次。线程里那个请求会自己跑完（结果被丢弃）。
+            logger.warning(
+                f"[Clone] Poll {attempt}/{max_attempts}: query_voice timed out "
+                f"(>{config.CLONE_POLL_CALL_TIMEOUT}s); retrying"
+            )
+            await asyncio.sleep(poll_interval)
+            continue
+        except Exception as e:
+            # 网络/接口抖动：记一行继续等（与旧行为一致）。
+            logger.warning(f"[Clone] Poll {attempt}/{max_attempts} error: {e}")
+            await asyncio.sleep(poll_interval)
+            continue
+
+        last_status = (info or {}).get("status", "UNKNOWN")
+        logger.info(
+            f"[Clone] Poll {attempt}/{max_attempts}: voice={voice_id}, status={last_status}"
         )
-    except asyncio.TimeoutError:
+        if last_status == "OK":
+            break
+        if last_status == "UNDEPLOYED":
+            raise RuntimeError(
+                f"Voice clone failed (UNDEPLOYED) for {speaker_id}. "
+                "Audio quality may be insufficient."
+            )
+        await asyncio.sleep(poll_interval)
+    else:
         raise RuntimeError(
-            f"查询音色状态超时（>{config.CLONE_POLL_CALL_TIMEOUT}s）"
-        ) from None
+            f"Voice clone timed out for {speaker_id}: still {last_status} after "
+            f"{max_attempts} polls (~{max_attempts * poll_interval}s)"
+        )
     logger.info(f"[Clone] Step 4 done: voice ready! voice_id={voice_id}")
 
     # Step 5: Cache and persist, tagged with the model it was created for

@@ -190,6 +190,11 @@ class ProcessRequest(BaseModel):
     # video is user-triggered (POST /videos/{id}/export), never a pipeline
     # stage; a request field for it only invited silent auto-export.
 
+    # 从哪一步开始。目前只有 "translation"：跳过分离/识别/增强，用磁盘上现成的
+    # 结果，重做翻译与配音（前端的 Reprocess 用它走**同一条管线**，而不是自己
+    # 再实现一遍"重译 + 逐段重合成"）。None = 按磁盘内容自动判定（默认续跑）。
+    start_from: Optional[str] = None
+
 
 # ----- Export -----
 

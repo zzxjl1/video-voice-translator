@@ -486,6 +486,11 @@ export async function processVideo(
     cloneSmartPick?: boolean;
     /** 注入 DS 翻译的自定义要求。空串 = 默认行为。 */
     customPrompt?: string;
+    /**
+     * 从哪一步开始重做。`'translation'` = 跳过分离/识别/增强，用磁盘上现成的产物
+     * 重做翻译与配音（Reprocess 用它，这样"重做"只有管线一处实现）。
+     */
+    startFrom?: 'translation';
     // 这里刻意没有 export 开关：出片是用户按 Export 触发的独立请求
     // （POST /videos/{id}/export），不属于处理流程。
   },
@@ -516,6 +521,7 @@ export async function processVideo(
       mm_enhance: options?.mmEnhance ?? false,
       clone_smart_pick: options?.cloneSmartPick ?? false,
       custom_prompt: options?.customPrompt ?? '',
+      ...(options?.startFrom ? { start_from: options.startFrom } : {}),
     }),
   });
 

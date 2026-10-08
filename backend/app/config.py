@@ -406,6 +406,11 @@ CLONE_OMNI_MAX_TURNS = _env_int("CLONE_OMNI_MAX_TURNS", 5)
 CLONE_SAMPLE_TIMEOUT = _env_int("CLONE_SAMPLE_TIMEOUT", 120)
 CLONE_ENROLL_TIMEOUT = _env_int("CLONE_ENROLL_TIMEOUT", 180)
 CLONE_POLL_CALL_TIMEOUT = _env_int("CLONE_POLL_CALL_TIMEOUT", 30)
+# 轮询音色状态：最多几次、每次间隔多久。窗口 = 两者相乘（默认 30×10s）。
+# 注意这只是"最长等待"，不是"每次调用的上限" —— 后者是 CLONE_POLL_CALL_TIMEOUT，
+# 两者曾被我混为一谈，后果见 voice_clone_service Step 4 的注释。
+CLONE_POLL_MAX_ATTEMPTS = _env_int("CLONE_POLL_MAX_ATTEMPTS", 30)
+CLONE_POLL_INTERVAL_S = _env_int("CLONE_POLL_INTERVAL_S", 10)
 
 # Number of concurrent synthesis calls. This is I/O bound (blocking SDK call
 # runs in a thread pool) so it does not increase CPU usage. Raise it only if

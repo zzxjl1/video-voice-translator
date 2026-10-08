@@ -122,6 +122,35 @@ async def voices_for_language(language: Optional[str] = None):
     }
 
 
+def _reviewed_text(video_id: str) -> dict[str, str]:
+    """
+    读回 omni 的审听版（纠错 + 语气标签）—— 管线跑多模态增强时落盘的那份。
+
+    为什么这个端点也要读：Reprocess（重译 + 重做全部音频）与菜单里的单行重译都
+    直接走 `/translate`，而前端手上只有 ASR 原文。不把审听版读回来的话，每次重译
+    都会**丢掉 omni 的纠错与标签**：译文按未纠错的原文重翻，侧栏的标签色块随之
+    消失。这份文件以前是"只写不读"的诊断产物（pipeline_service 写、全仓无人读）。
+
+    读不出来（没有/坏掉）就返回空 —— 退回按原文翻译，与旧行为一致。
+    """
+    path = os.path.join(video_dir_path(video_id), "enhanced_transcript.json")
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        logger.warning(
+            f"[{video_id}] enhanced_transcript.json unreadable ({e}); "
+            f"re-translating from the raw transcript"
+        )
+        return {}
+    lines = data.get("lines") if isinstance(data, dict) else None
+    if not isinstance(lines, dict):
+        return {}
+    return {str(k): str(v) for k, v in lines.items()}
+
+
 def _reject_if_running(video_id: str) -> None:
     """
     管线正在跑这个工程时，别的写端点一律 409（P1 #10）。
@@ -413,6 +442,38 @@ async def translate_video(video_id: str, req: TranslateRequest):
         # fall back to the persisted segment, so the length budget is still
         # available for single-line re-translation.
         stored = {seg.id: seg for seg in state.segments}
+
+        # 审听版作为翻译基底（omni 的纠错 + 语气标签）。两个前提，缺一个都不该套用：
+        #
+        # ① **当前**开着多模态增强。关掉之后磁盘上那份 enhanced_transcript.json 是
+        #    上一次开启时留下的；照用会让"关掉 omni"之后的行级重译仍带着旧纠错与旧
+        #    标签 —— 用户明明在界面上关了它。所以这里看 state.mm_enhance，不看文件在不在。
+        # ② 请求里的文本与该段存着的 ASR 原文逐字相同：侧栏的 Original 栏是可编辑的，
+        #    用户手改过就以他的文本为准，不能被旧的审听版顶掉。
+        reviewed: dict[str, str] = {}
+        if state.mm_enhance:
+            reviewed = _reviewed_text(video_id)
+        elif os.path.exists(os.path.join(video_dir_path(video_id), "enhanced_transcript.json")):
+            logger.info(
+                f"[{video_id}] /translate: multimodal enhancement is OFF — ignoring the "
+                f"enhanced_transcript.json left over from an earlier run"
+            )
+        text_overrides: dict[str, str] = {}
+        for seg in req.segments:
+            base = reviewed.get(seg.id)
+            if not base:
+                continue
+            original = (stored[seg.id].text if seg.id in stored else None) or ""
+            if seg.text.strip() != original.strip():
+                continue          # 用户改过 → 尊重用户的
+            if base.strip() and base.strip() != seg.text.strip():
+                text_overrides[seg.id] = base
+        if text_overrides:
+            logger.info(
+                f"[{video_id}] /translate: using the reviewed (omni) text as the "
+                f"translation base for {len(text_overrides)}/{len(req.segments)} line(s)"
+            )
+
         context = [
             {
                 "id": seg.id,
@@ -436,6 +497,9 @@ async def translate_video(video_id: str, req: TranslateRequest):
         results, _failed = await llm_service.translate_script(
             video_id, context, req.target_language,
             custom_prompt=custom_prompt, length_hint=length_hint,
+            # 审听版：translate_script 会把它当"reviewed text"发给模型，并把
+            # ASR 原文作为 asr_original 一起给（供仲裁），与原管线一致。
+            text_overrides=text_overrides or None,
         )
 
         # Update state with translations
@@ -779,6 +843,8 @@ async def process_video(video_id: str, req: ProcessRequest):
                 # 协作式取消：管线在每个步骤边界（以及每个 TTS/克隆请求之前）
                 # 询问一次，允许当前正在进行的那个请求跑完。
                 should_cancel=lambda: run.cancel_event.is_set(),
+                # "从翻译重做"（Reprocess）：见 schemas.ProcessRequest.start_from。
+                start_phase=req.start_from if req.start_from == "translation" else None,
             )
         except Exception as e:
             logger.error(f"[{video_id}] Pipeline error: {e}", exc_info=True)

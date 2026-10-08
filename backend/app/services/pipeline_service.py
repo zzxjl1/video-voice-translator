@@ -91,6 +91,41 @@ def _detect_resume_phase(video_dir: str, state: VideoState) -> str:
     return "separation"
 
 
+def _invalidate_from_translation(video_dir: str, state: VideoState) -> None:
+    """
+    "从翻译重做"之前，把要重做的产物作废掉。
+
+    两件事缺一不可：
+      1. 清掉内存里的译文与配音路径（`save_state` 不存 segments，所以磁盘上的依据
+         是下面两个文件）；
+      2. 删掉 translation_result.json / tts_results.json 与该批 mp3 —— 它们是
+         `_detect_resume_phase` 与 `load_state` 判断"做过了"的唯一依据。留着 mp3
+         更糟：`load_state` 在 tts_results.json 缺失时会**扫描 tts/ 目录**把
+         audio_path 找回来，TTS 阶段于是整批跳过。
+    """
+    for seg in state.segments:
+        seg.translated_text = ""
+        seg.audio_path = None
+        mp3 = os.path.join(video_dir, "tts", f"{seg.id}.mp3")
+        if os.path.exists(mp3):
+            try:
+                os.remove(mp3)
+            except OSError as e:
+                logger.warning(f"could not remove {mp3}: {e}")
+
+    for name in ("translation_result.json", "tts_results.json"):
+        path = os.path.join(video_dir, name)
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError as e:
+                logger.warning(f"could not remove {path}: {e}")
+
+    # 上一轮留下的缺口清单对新的一轮没有意义。
+    state.failed_translation_ids = []
+    state.failed_audio_ids = []
+
+
 async def run_pipeline(
     video_id: str,
     target_language: str,
@@ -103,6 +138,9 @@ async def run_pipeline(
     mm_enhance: bool = False,
     clone_smart_pick: bool = False,
     should_cancel: Optional[Callable[[], bool]] = None,
+
+    # "从哪一步开始重做"，见 schemas.ProcessRequest.start_from。None = 按磁盘自动判定。
+    start_phase: str | None = None,
 ):
     """
     Execute the full processing pipeline for a video.
@@ -297,6 +335,24 @@ async def run_pipeline(
     save_state(state)
 
     resume_phase = _detect_resume_phase(video_dir, state)
+
+    if start_phase == "translation":
+        # 调用方要求"从翻译开始重做"（Reprocess）。前面几步用磁盘上的现成产物，
+        # 翻译与配音重做 —— 关键是**真的重做**：
+        #   · 只改 resume_phase 不够：翻译阶段"作废旧配音"只在译文真的变了时触发，
+        #     同样的设置重跑往往一字不差 → 旧音频还在 audio_path 上 → TTS 阶段因为
+        #     "已有音频"而整批跳过，用户点了 Reprocess 却什么都没发生；
+        #   · tts_results.json 也必须删：它和 tts/*.mp3 是 _detect_resume_phase 与
+        #     load_state 判断"配音做过了"的依据，留着会让中途崩掉的这次运行在下次
+        #     被当成"已完成"。
+        resume_phase = "translation"
+        _invalidate_from_translation(video_dir, state)
+        logger.info(
+            f"[{video_id}] start_from=translation: skipping separation/ASR/enhance, "
+            f"re-doing translation + synthesis for {len(state.segments)} segment(s)"
+        )
+        await emit({"start_from": "translation"})
+
     logger.info(f"[{video_id}] Pipeline starting. Resume phase: {resume_phase}")
     await emit({"resume_phase": resume_phase})
 

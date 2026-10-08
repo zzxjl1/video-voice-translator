@@ -20,7 +20,6 @@ import {
 } from './utils/projectState';
 import {
   uploadVideo,
-  translateScript,
   processVideo,
   getVideoStatus,
   subscribeToRun,
@@ -241,7 +240,6 @@ const App: React.FC = () => {
 
   // Batch processing state
   const [isBatchProcessing, setIsBatchProcessing] = useState<boolean>(false);
-  const [batchProgress, setBatchProgress] = useState<string>('');
 
   // Voice clone state
   const [clonedVoices, setClonedVoices] = useState<Record<string, string>>({});
@@ -1067,6 +1065,13 @@ const App: React.FC = () => {
    * 原来是 runPipeline 里的局部变量（闭包），处理器抽成组件级函数之后没有
    * "每次运行一份"的闭包了，所以换成 ref。
    */
+  /**
+   * `start_from=translation` 已经解释过起点了，紧接着那条 `resume_phase` 就不必
+   * 再打一句 "Resuming from phase: …" —— 两次说明同一件事，读起来像两回事。
+   * 两个事件是先后到达的，所以用一个 ref 把上一条的意思传下去。
+   */
+  const startFromExplainedRef = useRef(false);
+
   const lastSepPctRef = useRef(-1);
   const ttsTotalRef = useRef(0);
 
@@ -1127,10 +1132,27 @@ const App: React.FC = () => {
         : ''
     );
 
+    /*
+     * Reprocess 的起点：管线用 start_from='translation' 跑（跳过识别/增强）。
+     * 这一句必须在日志里说清楚 —— 否则面板从「--- Starting Translation ---」开始，
+     * 用户会以为自己漏看了一段识别过程。
+     */
+    if (event.start_from === 'translation') {
+      startFromExplainedRef.current = true;
+      setRawLog(
+        prev =>
+          prev +
+          '\n=== Reprocess: re-translating and re-doing all audio ===\n' +
+          '(recognition + enhancement are kept \u2014 this run starts at translation)\n'
+      );
+    }
+
     // Resume info
     if (event.resume_phase) {
       const phase = event.resume_phase;
-      if (phase !== 'separation') {
+      if (startFromExplainedRef.current) {
+        startFromExplainedRef.current = false;   // 上面那条已经说过起点
+      } else if (phase !== 'separation') {
         setRawLog(prev => prev + `Resuming from phase: ${phase}\n`);
       }
     }
@@ -1415,7 +1437,7 @@ const App: React.FC = () => {
   const runPipeline = useCallback(async (
     vid: string,
     file?: File,
-    opts: { separationMode?: SeparationMode } = {},
+    opts: { separationMode?: SeparationMode; startFrom?: 'translation' } = {},
   ) => {
     setIsTranscribing(true);
     setRawLog('');
@@ -1460,6 +1482,8 @@ const App: React.FC = () => {
         // state update is not rendered yet, so the closure still holds the
         // initial value and the job would be sent as "off".
         separationMode: opts.separationMode ?? separationMode,
+        // 只有 Reprocess 会传：让管线把起点挪到翻译（见 handleReprocess）。
+        startFrom: opts.startFrom,
         enableVoiceClone,
         mmEnhance,
         cloneSmartPick,
@@ -1713,6 +1737,8 @@ const App: React.FC = () => {
        * 发起"，看控制台里这一行 + apiService 里的 `[pipeline #n]` 就够了。
        */
       source = 'unknown',
+      /** 额外选项，目前只有"从翻译重做"（Reprocess）。 */
+      extras: { startFrom?: 'translation' } = {},
     ): Promise<void> => {
       console.log(
         `[startPipeline] 来源=${source} video=${vid.slice(0, 8)} ` +
@@ -1732,14 +1758,15 @@ const App: React.FC = () => {
       // full separation pass plus a re-upload, and the result would just
       // overwrite identical files. The retry routes hit this every time they
       // resume a job whose separation had already succeeded.
-      if (mode === 'client' && !stemsAlreadyPresent) {
+      // 从翻译重做时连分离也不必碰：stems 早就躺在服务端了。
+      if (mode === 'client' && !stemsAlreadyPresent && extras.startFrom !== 'translation') {
         await runClientSeparation(vid, file);
       }
 
       // Always report the honest mode. The backend checks the files on disk and
       // reports separation as "done" or "not performed" itself, so there is no
       // flag here for the client to get wrong.
-      await runPipeline(vid, file, { separationMode: mode });
+      await runPipeline(vid, file, { separationMode: mode, startFrom: extras.startFrom });
     },
     [separationMode, runClientSeparation, runPipeline, ensureProjectFree]
   );
@@ -1766,7 +1793,6 @@ const App: React.FC = () => {
         setRawLog('');
         setBackgroundAudioUrl(null);
         setIsBatchProcessing(false);
-        setBatchProgress('');
         // 切工程必须把这些也清掉（#23）：resumeAfterCancel 指向的是**上一个**
         // 工程，留着会在新工程页面上弹出"继续跑？"，点下去会去操作旧工程；
         // clonedVoices 同理（旧工程的说话人音色会显示成新工程的）。
@@ -2560,85 +2586,76 @@ const App: React.FC = () => {
     startPipeline,
   ]);
 
+  /**
+   * 从头开始：清空已有进度（保留原视频），重跑识别 / 增强 / 翻译 / 配音。
+   *
+   * 与 `handleReprocess` 的区别是**作用域**，不是"更彻底"：
+   *   · Reprocess 走 `/translate` + 逐段重合成，不重听音频（快、不产生 ASR 费用）；
+   *   · 这个走完整管线，所以它会重新做语音识别 —— 换过素材、改过语言且怀疑识别
+   *     本身有问题、或想让多模态增强重新听一遍时，这才是你要的那一个。
+   * 代价是重跑 ASR/增强/合成都要再花 API 费，所以二次确认里写明。
+   */
+  const handleFullRestart = useCallback(async () => {
+    if (!videoId) return;
+    // 与跑管线同一种占用：先解决冲突，再让用户确认这件做得了的事。
+    if (!(await ensureProjectFree(videoId, '从头开始（含语音识别）'))) return;
+
+    const ok = window.confirm(
+      '从头开始会清空已有进度（原始视频保留），重新做语音识别、翻译与配音。\n\n' +
+        '这会重新产生语音识别 / 多模态增强 / 合成的 API 费用。继续？'
+    );
+    if (!ok) return;
+
+    setIsLogOpen(true);
+    setIsTranscribing(true);
+    setSegments([]);
+    setSpeakers([]);
+    // 这里不写自己的日志行：runPipeline 开头会 setRawLog('')，写了也会被清掉
+    // （可见的进度从管线自己的 --- Starting Server-Side Processing --- 起）。
+    // 这条路径的"用户反馈"是菜单里的选项名 + 二次确认框。
+    try {
+      await resetVideo(videoId);
+      await startPipeline(videoId, undefined, separationMode, false, 'user:restart-from-scratch');
+    } catch (err) {
+      setRawLog(
+        prev => prev + `\n从头开始失败：${err instanceof Error ? err.message : err}\n`
+      );
+    } finally {
+      setIsTranscribing(false);
+    }
+  }, [videoId, separationMode, ensureProjectFree, startPipeline]);
+
   const handleReprocess = useCallback(async (): Promise<boolean> => {
     if (!videoId || segments.length === 0) return true;
-
-    // 重做会重写同一批音频文件，所以它和"跑管线"是同一种占用：先解决冲突，
-    // 再让用户确认这件事本身（顺序反了的话，用户会先确认一个做不了的操作）。
-    if (!(await ensureProjectFree(videoId, '重新翻译并重做全部音频'))) return false;
 
     const confirmReprocess = window.confirm(
       'This will re-translate the entire script and re-generate all audio. Continue?'
     );
     if (!confirmReprocess) return false;
 
+    /*
+     * 走**同一条管线**，只把起点挪到翻译（start_from='translation'）。
+     *
+     * 这里以前自己实现了一遍"调 /translate + 逐段重合成"，代价是第二份会漂移的
+     * 逻辑：缺口检查、标签校验、用量记账、取消、断点续跑、进度事件它全都没有；
+     * 而且它发的是 ASR 原文，把 omni 的纠错与标签一起丢掉了。现在前端只负责说
+     * **从哪一步开始**，其余交给管线（那也是"从头开始"走的那条）。
+     *
+     * stemsAlreadyPresent=true：分离产物已在服务端，别因为 mode==='client' 再跑
+     * 一遍浏览器分离。
+     */
+    // 旧音频的 URL 立刻作废：服务端那份马上会被重写，别让播放器还挂着旧文件。
+    setSegments(prev => prev.map(seg => ({ ...seg, audioUrl: undefined })));
     setIsBatchProcessing(true);
-    setIsLogOpen(true);
-    setRawLog('');
-    setBatchProgress('Translating...');
-
     try {
-      // Phase 1: Re-translate all
-      setRawLog('=== Re-translating Full Script ===\n');
-      const contextPayload = segments.map(s => ({
-        id: s.id,
-        text: s.originalText,
-        speaker_id: s.speakerId,
-        start_time: s.startTime,
-        end_time: s.endTime,
-      }));
-
-      setRawLog(prev => prev + `Sending ${segments.length} segments with full context...\n`);
-      const results = await translateScript(
-        videoId, contextPayload, targetLanguage, customPrompt.trim().slice(0, 500)
-      );
-
-      setSegments(prev => prev.map(seg => {
-        const match = results.find(r => r.id === seg.id);
-        return match ? { ...seg, translatedText: match.translated_text, audioUrl: undefined } : seg;
-      }));
-
-      setRawLog(prev => prev + `Translation complete. ${results.length} segments translated.\n`);
-
-      // Phase 2: Re-synthesize all
-      setRawLog(prev => prev + '\n=== Re-synthesizing All Audio ===\n');
-      const toSynthesize = results.map(r => r.id);
-      let count = 0;
-
-      for (const segId of toSynthesize) {
-        count++;
-        const label = `[${count}/${toSynthesize.length}] Segment ${segId}`;
-        setRawLog(prev => prev + `${label}: Synthesizing...`);
-        setBatchProgress(`Synthesizing ${count}/${toSynthesize.length}`);
-        await handleSynthesizeSegment(segId);
-        setRawLog(prev => prev + ` Done.\n`);
-        await new Promise(r => setTimeout(r, 200));
-      }
-
-      // 导出不在这里做 —— 那是 Export 按钮的事。Reprocess 只负责把翻译和
-      // 音频重做到最新；出片交给用户主动触发，和首次处理完的行为一致。
-      // 注意此时服务端此前的导出文件（如有）已基于旧音频：提示一句，
-      // 免得用户拿着旧文件当成重做的成果。
-      setRawLog(
-        prev =>
-          prev +
-          '\n=== Reprocess Complete ===\n' +
-          'Translation and audio are up to date. Use Export to produce the video' +
-          ' — any previously exported file was built from the old audio.\n' +
-          'Closing in 1.5 seconds...'
-      );
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      setIsLogOpen(false);
-      return true;
-    } catch (error) {
-      console.error("Reprocess failed:", error);
-      setRawLog(prev => prev + `\n\nERROR: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      return true;
+      await startPipeline(videoId, undefined, separationMode, true, 'user:reprocess', {
+        startFrom: 'translation',
+      });
     } finally {
-      setBatchProgress('');
       setIsBatchProcessing(false);
     }
-  }, [segments, videoId, targetLanguage, customPrompt, handleSynthesizeSegment, ensureProjectFree]);
+    return true;
+  }, [segments.length, videoId, separationMode, startPipeline]);
 
   /**
    * The cue to show right now, straight from the server's list.
@@ -2786,11 +2803,12 @@ const App: React.FC = () => {
           <Header
             onOpenSettings={() => setIsSettingsOpen(true)}
             onReprocess={handleReprocess}
+            onRestartFromScratch={handleFullRestart}
             targetLanguage={targetLanguage}
             onLanguageChange={setTargetLanguage}
             targetAccent={targetAccent}
             onAccentChange={setTargetAccent}
-            isProcessing={isBatchProcessing}
+            isProcessing={isBatchProcessing || isTranscribing}
             hasSegments={segments.length > 0}
             onExport={() => setShowExportModal(true)}
             isExporting={isExporting}
@@ -2904,18 +2922,6 @@ const App: React.FC = () => {
                     继续处理
                   </button>
                 )}
-              </div>
-            )}
-
-            {isBatchProcessing && batchProgress && (
-              <div className="mb-4 bg-claude-accent/10 border border-claude-accent/20 rounded-xl px-4 py-2 flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="w-2 h-2 bg-claude-accent rounded-full animate-pulse"></div>
-                  <span className="text-xs font-bold uppercase tracking-wider text-claude-accent">{batchProgress}</span>
-                </div>
-                <div className="h-1 bg-claude-accent/20 flex-grow mx-8 rounded-full overflow-hidden">
-                  <div className="h-full bg-claude-accent" style={{ width: '60%' }}></div>
-                </div>
               </div>
             )}
 
