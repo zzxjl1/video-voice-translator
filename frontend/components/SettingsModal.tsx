@@ -101,16 +101,19 @@ const SettingsModal: React.FC<SettingsModalProps> = ({
      *
      * 这些开关是即时生效的（一拨就写进父状态），所以「取消」必须显式回滚 ——
      * 否则会留下「设置显示为新值、配音仍是旧值」的状态，正是保存机制要防的
-     * 那种不一致。顺序上先恢复分离方式再恢复克隆：App 里克隆开着时分离被锁，
-     * 反过来会被它挡回。
+     * 那种不一致。
+     *
+     * **顺序：先克隆、后分离方式。** App 里克隆开着时 `handleSeparationModeChange('off')`
+     * 会被挡掉，所以"先恢复分离方式"在快照是 Off、而用户刚打开克隆的那种组合下
+     * 会被静默丢弃 —— 取消之后分离停在 In-browser，回不到原样。
      */
     const revertToSnapshot = () => {
         if (!snapshot) return;
-        if (separationMode !== snapshot.separationMode) {
-            onSeparationModeChange(snapshot.separationMode);
-        }
         if (enableVoiceClone !== snapshot.enableVoiceClone) {
             onVoiceCloneChange(snapshot.enableVoiceClone);
+        }
+        if (separationMode !== snapshot.separationMode) {
+            onSeparationModeChange(snapshot.separationMode);
         }
         if (cloneSmartPick !== snapshot.cloneSmartPick) {
             onCloneSmartPickChange(snapshot.cloneSmartPick);

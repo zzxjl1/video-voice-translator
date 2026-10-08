@@ -471,6 +471,33 @@ const App: React.FC = () => {
     setSeparationMode(mode);
   };
 
+  /**
+   * 不变量：**声音复刻开着 ⇒ 分离落在一个能跑的后端上**（跑不了就保持原样，
+   * 由选择器说明）。
+   *
+   * `handleVoiceCloneChange` 只管"用户此刻打开克隆"这一条路。这一对还能从别处
+   * 进来：管线报「分离后端不可用」时会把 mode 直接置成 'off'（不管克隆是否
+   * 开着），工程把这一对写进 info.json，下次恢复出来就是"克隆开着 + Off 被选中"
+   * —— 界面上表现为禁用的 Off 被高亮，配一句解释，用户以为自己选错了什么。
+   *
+   * 这里做兜底：等能力探测回来（/models/separator 是异步的）再决定，能切就自动
+   * 切到可用后端，日志与开关那条路一致；切不了就什么都不做。
+   */
+  useEffect(() => {
+    if (!enableVoiceClone || separationMode !== 'off') return;
+    const best = pickAvailableSeparationMode();
+    if (!best) return;
+    setSeparationMode(best);
+    setRawLog(
+      prev =>
+        prev +
+        `Vocal separation enabled automatically (${SEPARATION_MODE_LABEL[best]}) — Voice Cloning needs isolated vocals.\n`
+    );
+    // effectiveBackends / pickAvailableSeparationMode 每次渲染都会重建，
+    // 依赖它们的"可用性"这一个布尔量即可，否则 effect 会每帧重跑。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enableVoiceClone, separationMode, effectiveBackends.client?.available]);
+
   // Streaming Log State
   const [isLogOpen, setIsLogOpen] = useState(false);
   const [rawLog, setRawLog] = useState('');

@@ -43,8 +43,16 @@ const SeparationModeSelector: React.FC<SeparationModeSelectorProps> = ({
   backends,
   locked,
 }) => {
+  /**
+   * 为什么这个选项不能选。
+   *
+   * 关于 Off 的那句：说的是**"Off 不可用"，不是"Off 被要求"**。原文案是
+   * `Required while Voice Cloning is enabled`，而它会以 `Off: …` 的形式显示在
+   * 当前选中项那一行上 —— 于是整句读成"要求关闭分离"，与它想表达的意思正好相反
+   * （克隆需要人声轨，所以不能关）。改成直接说原因，放哪个位置读起来都对。
+   */
   const reasonFor = (mode: SeparationMode): string | null => {
-    if (locked && mode === 'off') return 'Required while Voice Cloning is enabled';
+    if (locked && mode === 'off') return 'Voice Cloning needs isolated vocals';
     const info = backends[mode];
     if (mode !== 'off' && info && !info.available) {
       return info.reason ?? 'Not available on this server';
@@ -89,7 +97,14 @@ const SeparationModeSelector: React.FC<SeparationModeSelectorProps> = ({
         })}
       </div>
 
-      {selectedReason ? (
+      {/* 「克隆开着、却停在 Off」这一种要单独说：它不是"当前选择的原因"，而是
+          "没有可用后端、只能这样"。落到 `{label}: {reason}` 那种形式会被读反。 */}
+      {locked && value === 'off' ? (
+        <p className="text-[10px] leading-snug mt-1.5 px-0.5 text-amber-600">
+          Off is selected because no separation backend can run right now — Voice
+          Cloning will use the original mixed audio.
+        </p>
+      ) : selectedReason ? (
         <p className="text-[10px] leading-snug mt-1.5 px-0.5 text-amber-600">
           {OPTIONS.find(o => o.mode === value)?.label}: {selectedReason}
         </p>
