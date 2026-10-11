@@ -93,6 +93,9 @@ class VideoState:
     # was deliberately run with separation off.
     separation_mode: str = ""
     enable_voice_clone: bool = False
+    # 生成配音总开关（处理前选择，随工程持久化）。False = 仅字幕模式：管线跳过
+    # 分离/克隆/合成，导出时原声比特级直通。旧工程没有该字段 → True（向后兼容）。
+    enable_dubbing: bool = True
     # Subtitle look, as a plain dict so it round-trips through JSON untouched.
     # Empty means "use config defaults" — see subtitle_service.SubtitleStyle.
     # Persisted per video so a resumed run (and the pipeline's own export step)

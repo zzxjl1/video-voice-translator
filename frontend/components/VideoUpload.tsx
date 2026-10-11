@@ -45,6 +45,9 @@ interface VideoUploadProps {
   /** 智能选材：omni 通过 tool call 挑克隆参考段（依赖克隆开关）。 */
   cloneSmartPick: boolean;
   onCloneSmartPickChange: (v: boolean) => void;
+  /** 生成配音总开关（仅字幕模式：跳过分离/克隆/合成，原声直通）。 */
+  enableDubbing: boolean;
+  onDubbingChange: (v: boolean) => void;
   /** 注入 DS 翻译的自定义要求。默认空 = 标准行为。 */
   customPrompt: string;
   onCustomPromptChange: (v: string) => void;
@@ -98,7 +101,7 @@ const FEATURES: { label: string; sub: string; icon: React.ReactNode }[] = [
   },
 ];
 
-const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName, onStart, isLoading, targetLanguage, onLanguageChange, targetAccent, onAccentChange, enableVoiceClone, onVoiceCloneChange, mmEnhance, onMmEnhanceChange, cloneSmartPick, onCloneSmartPickChange, customPrompt, onCustomPromptChange, separationMode, onSeparationModeChange, separationBackends, bgmSeparationLocked, recentProjects, onOpenProject, onDeleteProject }) => {
+const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName, onStart, isLoading, targetLanguage, onLanguageChange, targetAccent, onAccentChange, enableVoiceClone, onVoiceCloneChange, mmEnhance, onMmEnhanceChange, enableDubbing, onDubbingChange, cloneSmartPick, onCloneSmartPickChange, customPrompt, onCustomPromptChange, separationMode, onSeparationModeChange, separationBackends, bgmSeparationLocked, recentProjects, onOpenProject, onDeleteProject }) => {
   /**
    * Whether the second column exists yet.
    *
@@ -741,11 +744,13 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
               language selector moved to the left column, beside the file it
               translates, so this card is purely about how the job runs. */}
           <div className="p-6 pb-5">
-          <h2 className="text-sm font-serif font-bold text-gray-900 mb-4">系统设置</h2>
+          <h2 className="text-sm font-serif font-bold text-gray-900 mb-4">处理设置</h2>
           {/* Processing Options. The old `mb-6` is gone: the footer's own rule
               and padding now do that job, and keeping both would waste the
               height this merge exists to save. */}
           <ProcessingSettings
+            enableDubbing={enableDubbing}
+            onDubbingChange={onDubbingChange}
             separationMode={separationMode}
             onSeparationModeChange={onSeparationModeChange}
             separationBackends={separationBackends}

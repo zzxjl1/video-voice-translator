@@ -228,6 +228,20 @@ def build_mix_plan(state: VideoState) -> dict:
     - 没有垫底来源（既无分离产物、原片又没音轨）→ RuntimeError —— 这条链路
       本来就走不到（没音轨过不了 ASR），真出现说明有别的 bug，响亮失败。
     """
+    # 仅字幕模式：用户明确不要配音。这不是"没有配音的缺口"，而是选择 ——
+    # 导出时原声比特级直通（export_service 的 dubbed=False 分支）。
+    # 之前这里会对"没有配音"一律报错，仅字幕工程永远导不出来。
+    if not getattr(state, "enable_dubbing", True):
+        # master 留空：直通分支不做任何响度处理，没有要下发的目标。
+        plan = {
+            "policyVersion": POLICY_VERSION,
+            "dubbed": False,
+            "segments": [],
+            "master": {},
+        }
+        plan["version"] = plan_version(plan)
+        return plan
+
     entries = _segment_entries(state)
     if not entries:
         raise RuntimeError("没有任何可混音的配音 —— 先完成合成")
@@ -261,6 +275,7 @@ def build_mix_plan(state: VideoState) -> dict:
 
     plan = {
         "policyVersion": POLICY_VERSION,
+        "dubbed": True,
         "bed": bed,
         "segments": entries,
         "voiceFadeS": VOICE_FADE_S,

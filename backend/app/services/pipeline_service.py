@@ -135,6 +135,8 @@ async def run_pipeline(
     emit: Callable,
     separation_mode: Optional[str] = None,
     enable_voice_clone: bool = False,
+    # 生成配音总开关。False = 仅字幕模式：跳过分离/克隆/合成，原声导出时直通。
+    enable_dubbing: bool = True,
     accent: Optional[str] = None,
     custom_prompt: str = "",
     mm_enhance: bool = False,
@@ -266,6 +268,11 @@ async def run_pipeline(
             separation_mode = "off"
 
     # Persist settings into state
+    state.enable_dubbing = enable_dubbing
+    if not enable_dubbing and separation_mode != "off":
+        # 仅字幕模式：原声要比特级保留，分离出的 stems 没有用途，跳过。
+        logger.info("[%s] dubbing off: skipping vocal separation", video_id)
+        separation_mode = "off"
     state.separation_mode = separation_mode
     state.enable_voice_clone = enable_voice_clone
     # A pinned voice belongs to a LANGUAGE. Voice ids are language-specific, so
@@ -681,7 +688,7 @@ async def run_pipeline(
         # =====================================================
         # Phase 2.5: Voice Cloning (if enabled)
         # =====================================================
-        if enable_voice_clone:
+        if enable_dubbing and enable_voice_clone:
             unique_speakers = sorted(set(seg.speaker_id for seg in state.segments))
             await emit({"phase": "voice_clone", "status": "started", "total": len(unique_speakers)})
 
@@ -730,131 +737,141 @@ async def run_pipeline(
 
             await emit({"phase": "voice_clone", "status": "complete"})
 
-        if await _stop_if_cancelled("tts"):
-            return
+        # 仅字幕模式下的占位：缺口检查与登记同步引用它们。
+        succeeded_segments: list = []
+        last_tts_error: list[str] = []
+        to_synthesize: list = []
 
-        # =====================================================
-        # Phase 3: TTS Synthesis (concurrent — network bound, not CPU bound)
-        # =====================================================
-        # 静音行跳过合成：它们本来就不该有配音音频。
-        # 恒按"还没有音频"过滤：译文变动的行在上一步已经把 audio_path 清掉了，
-        # 所以"有音频"就等于"这一行的当前译文已经配过音"。以前这段过滤只在
-        # resume_phase=="tts" 时生效，而 "done"（已完成的工程被再处理一次）会
-        # 落到"全部重做"—— 覆盖已有 mp3、重复计费。
-        to_synthesize = [
-            seg
-            for seg in state.segments
-            if seg.translated_text and not seg.muted and not seg.audio_path
-        ]
+        if enable_dubbing:
+            if await _stop_if_cancelled("tts"):
+                return
 
-        total_tts = len(to_synthesize)
-        already_done = len([seg for seg in state.segments if seg.translated_text and seg.audio_path])
+            # =====================================================
+            # Phase 3: TTS Synthesis (concurrent — network bound, not CPU bound)
+            # =====================================================
+            # 静音行跳过合成：它们本来就不该有配音音频。
+            # 恒按"还没有音频"过滤：译文变动的行在上一步已经把 audio_path 清掉了，
+            # 所以"有音频"就等于"这一行的当前译文已经配过音"。以前这段过滤只在
+            # resume_phase=="tts" 时生效，而 "done"（已完成的工程被再处理一次）会
+            # 落到"全部重做"—— 覆盖已有 mp3、重复计费。
+            to_synthesize = [
+                seg
+                for seg in state.segments
+                if seg.translated_text and not seg.muted and not seg.audio_path
+            ]
 
-        await emit({
-            "phase": "tts",
-            "status": "started",
-            "total": total_tts + already_done,
-            "already_done": already_done,
-            "concurrency": config.TTS_CONCURRENCY,
-        })
+            total_tts = len(to_synthesize)
+            already_done = len([seg for seg in state.segments if seg.translated_text and seg.audio_path])
 
-        state.status = VideoStatus.SYNTHESIZING
-        save_state(state)
+            await emit({
+                "phase": "tts",
+                "status": "started",
+                "total": total_tts + already_done,
+                "already_done": already_done,
+                "concurrency": config.TTS_CONCURRENCY,
+            })
 
-        # Pre-assign voices to all speakers so each speaker gets a unique voice.
-        # If voice cloning is enabled, cloned voices take precedence.
-        # The target language matters: system voice IDs are language-specific,
-        # so the pool must match the language being synthesized.
-        for seg in state.segments:
-            if enable_voice_clone and voice_clone_service.get_cloned_voice(video_id, seg.speaker_id):
-                continue
-            tts_service.assign_voice_for_speaker(video_id, seg.speaker_id, target_language)
+            state.status = VideoStatus.SYNTHESIZING
+            save_state(state)
 
-        voice_map = tts_service.get_speaker_voice_map(video_id)
-        logger.info(f"[{video_id}] Speaker-voice mapping: {voice_map}")
+            # Pre-assign voices to all speakers so each speaker gets a unique voice.
+            # If voice cloning is enabled, cloned voices take precedence.
+            # The target language matters: system voice IDs are language-specific,
+            # so the pool must match the language being synthesized.
+            for seg in state.segments:
+                if enable_voice_clone and voice_clone_service.get_cloned_voice(video_id, seg.speaker_id):
+                    continue
+                tts_service.assign_voice_for_speaker(video_id, seg.speaker_id, target_language)
 
-        semaphore = asyncio.Semaphore(max(1, config.TTS_CONCURRENCY))
-        counter_lock = asyncio.Lock()
-        counters = {"done": already_done}
-        succeeded_segments: list[tuple[str, float | None]] = []   # (segment_id, actual_duration)
-        last_tts_error: list[str] = []   # 收尾时用它说明"为什么整批都失败"
+            voice_map = tts_service.get_speaker_voice_map(video_id)
+            logger.info(f"[{video_id}] Speaker-voice mapping: {voice_map}")
 
-        async def synthesize_segment(seg: Segment) -> None:
-            async with semaphore:
-                # 每次 TTS 请求之前的检查点。已经在跑的请求会跑完（provider 已
-                # 经计费，中断还可能留下半个文件），但停下之后不再发新的 ——
-                # "每次请求"就是最细的安全粒度。
-                if _cancelled():
-                    return
-                voice = None
-                if enable_voice_clone:
-                    voice = voice_clone_service.get_cloned_voice(video_id, seg.speaker_id)
-                if not voice:
-                    voice = tts_service.assign_voice_for_speaker(
-                        video_id, seg.speaker_id, target_language
-                    )
+            semaphore = asyncio.Semaphore(max(1, config.TTS_CONCURRENCY))
+            counter_lock = asyncio.Lock()
+            counters = {"done": already_done}
+            succeeded_segments: list[tuple[str, float | None]] = []   # (segment_id, actual_duration)
+            last_tts_error: list[str] = []   # 收尾时用它说明"为什么整批都失败"
 
-                try:
-                    # Aim this line at its own time slot. `plan_speech_rate` is a
-                    # prediction (measured ~11% average error) but it is free —
-                    # no extra TTS call — and it stops the residual from
-                    # depending on how badly the translation overshot.
-                    # `synthesize_speech` then measures the result and corrects
-                    # it once if it is off by more than the tolerance.
-                    slot = max(
-                        0.5, (seg.end_time or 0.0) - (seg.start_time or 0.0)
-                    )
-                    planned_rate = speech_timing.plan_speech_rate(
-                        seg.translated_text, target_language, slot
-                    )
-                    audio_file_path, actual_duration = await tts_service.synthesize_speech(
-                        video_id,
-                        seg.id,
-                        seg.translated_text,
-                        voice=voice,
-                        write_registry=False,
-                        speech_rate=planned_rate,
-                        target_duration=slot,
-                        instruction=instruction,
-                    )
-                    seg.audio_path = audio_file_path
-                    # 实际时长必须落在 state 里：混音计划（mix_service）用它算
-                    # 每段的 atempo。以前它只出现在日志里，前端那个
-                    # actualDuration 要等用户展开该行的播放器才被填上 —— 于是
-                    # 播放器的速率自适应只在"恰好展开过"时生效，其余时候恒 1.0。
-                    seg.actual_duration = actual_duration
-                    succeeded_segments.append((seg.id, seg.actual_duration))
-                    # Flush periodically so an interrupted run can still resume
-                    # from tts_results.json without redoing everything.
-                    if len(succeeded_segments) % 10 == 0:
-                        tts_service.sync_registry(video_id, succeeded_segments)
-                    event = {
-                        "phase": "tts",
-                        "segment_id": seg.id,
-                        "audio_url": f"/api/videos/{video_id}/tts/{seg.id}",
-                    }
-                except Exception as e:
-                    logger.error(f"[{video_id}] TTS failed for segment {seg.id}: {e}")
-                    last_tts_error.append(str(e))
-                    event = {
-                        "phase": "tts",
-                        "segment_id": seg.id,
-                        "tts_error": str(e),
-                    }
+            async def synthesize_segment(seg: Segment) -> None:
+                async with semaphore:
+                    # 每次 TTS 请求之前的检查点。已经在跑的请求会跑完（provider 已
+                    # 经计费，中断还可能留下半个文件），但停下之后不再发新的 ——
+                    # "每次请求"就是最细的安全粒度。
+                    if _cancelled():
+                        return
+                    voice = None
+                    if enable_voice_clone:
+                        voice = voice_clone_service.get_cloned_voice(video_id, seg.speaker_id)
+                    if not voice:
+                        voice = tts_service.assign_voice_for_speaker(
+                            video_id, seg.speaker_id, target_language
+                        )
 
-                async with counter_lock:
-                    counters["done"] += 1
-                    event["progress"] = counters["done"]
-                    event["total"] = total_tts + already_done
+                    try:
+                        # Aim this line at its own time slot. `plan_speech_rate` is a
+                        # prediction (measured ~11% average error) but it is free —
+                        # no extra TTS call — and it stops the residual from
+                        # depending on how badly the translation overshot.
+                        # `synthesize_speech` then measures the result and corrects
+                        # it once if it is off by more than the tolerance.
+                        slot = max(
+                            0.5, (seg.end_time or 0.0) - (seg.start_time or 0.0)
+                        )
+                        planned_rate = speech_timing.plan_speech_rate(
+                            seg.translated_text, target_language, slot
+                        )
+                        audio_file_path, actual_duration = await tts_service.synthesize_speech(
+                            video_id,
+                            seg.id,
+                            seg.translated_text,
+                            voice=voice,
+                            write_registry=False,
+                            speech_rate=planned_rate,
+                            target_duration=slot,
+                            instruction=instruction,
+                        )
+                        seg.audio_path = audio_file_path
+                        # 实际时长必须落在 state 里：混音计划（mix_service）用它算
+                        # 每段的 atempo。以前它只出现在日志里，前端那个
+                        # actualDuration 要等用户展开该行的播放器才被填上 —— 于是
+                        # 播放器的速率自适应只在"恰好展开过"时生效，其余时候恒 1.0。
+                        seg.actual_duration = actual_duration
+                        succeeded_segments.append((seg.id, seg.actual_duration))
+                        # Flush periodically so an interrupted run can still resume
+                        # from tts_results.json without redoing everything.
+                        if len(succeeded_segments) % 10 == 0:
+                            tts_service.sync_registry(video_id, succeeded_segments)
+                        event = {
+                            "phase": "tts",
+                            "segment_id": seg.id,
+                            "audio_url": f"/api/videos/{video_id}/tts/{seg.id}",
+                        }
+                    except Exception as e:
+                        logger.error(f"[{video_id}] TTS failed for segment {seg.id}: {e}")
+                        last_tts_error.append(str(e))
+                        event = {
+                            "phase": "tts",
+                            "segment_id": seg.id,
+                            "tts_error": str(e),
+                        }
 
-                await emit(event)
+                    async with counter_lock:
+                        counters["done"] += 1
+                        event["progress"] = counters["done"]
+                        event["total"] = total_tts + already_done
 
-        if to_synthesize:
-            await asyncio.gather(*(synthesize_segment(seg) for seg in to_synthesize))
+                    await emit(event)
 
-        # Persist the audio registry once, after the concurrent fan-out.
-        if succeeded_segments:
-            tts_service.sync_registry(video_id, succeeded_segments)
+            if to_synthesize:
+                await asyncio.gather(*(synthesize_segment(seg) for seg in to_synthesize))
+
+            # Persist the audio registry once, after the concurrent fan-out.
+            if succeeded_segments:
+                tts_service.sync_registry(video_id, succeeded_segments)
+        else:
+            await emit({"phase": "tts", "status": "skipped", "reason": "dubbing_off"})
+            if await _stop_if_cancelled("tts"):
+                return
 
         # 先判取消，再判缺口：用户主动叫停时，状态该是"已取消"而不是"有缺口"——
         # 被中断的运行本来就会缺东西，那不是"产物有问题"。
@@ -874,7 +891,10 @@ async def run_pipeline(
         # succeeded_segments 里是 (id, duration) 元组：必须先取出 id 再比较，
         # 否则 `seg.id not in [...]` 恒为真，每次合成成功也会被报成"没配音"。
         succeeded_ids = {sid for sid, _ in succeeded_segments}
-        no_audio = [seg.id for seg in to_synthesize if seg.id not in succeeded_ids]
+        # 仅字幕模式没有"该有而没有"的配音 —— 那是选择，不是缺口。
+        no_audio = [
+            seg.id for seg in to_synthesize if seg.id not in succeeded_ids
+        ] if enable_dubbing else []
         if no_translation or no_audio:
             parts: list[str] = []
             if no_translation:
@@ -906,7 +926,7 @@ async def run_pipeline(
         state.status = VideoStatus.COMPLETED
         save_state(state)
 
-        await emit({"phase": "tts", "status": "done"})
+        await emit({"phase": "tts", "status": "done", "skipped": not enable_dubbing})
 
         if _cancelled():
             # 批次里剩下的请求已经跳过了；把状态收成 CANCELLED 再结束。

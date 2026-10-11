@@ -382,6 +382,7 @@ def get_video_status(video_id: str, mix_version: Optional[str] = None):
         # 页面重载 / 换标签页后靠它判断"是接管还是新起一单"。
         run=run_registry.snapshot(video_id),
         mix=mix_payload,
+        enable_dubbing=getattr(state, "enable_dubbing", True),
         cancelled_step=state.cancelled_step,
         # 缺口清单：哪些行没有译文 / 没有配音。界面上要能直接指出来，
         # 否则用户只能从成片里"少了一句声音"倒推。
@@ -965,6 +966,7 @@ async def process_video(video_id: str, req: ProcessRequest):
                 emit=run.emit,
                 separation_mode=req.separation_mode,
                 enable_voice_clone=req.enable_voice_clone,
+                enable_dubbing=req.enable_dubbing,
                 accent=req.accent,
                 custom_prompt=(req.custom_prompt or "").strip()[:500],
                 mm_enhance=req.mm_enhance,

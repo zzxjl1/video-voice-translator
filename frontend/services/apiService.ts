@@ -521,6 +521,8 @@ export async function processVideo(
   options?: {
     separationMode?: SeparationMode;
     enableVoiceClone?: boolean;
+    /** 生成配音总开关。false = 仅字幕模式（跳过分离/克隆/合成，原声直通）。 */
+    enableDubbing?: boolean;
     /** Chinese dialect for the dub, e.g. "广东话". Empty means Mandarin. */
     accent?: string;
     /** 语气模仿：TTS 前由 omni 听原声给译文注入情感/拟声标签。 */
@@ -544,6 +546,7 @@ export async function processVideo(
     {
       separation_mode: options?.separationMode ?? 'client',
       enable_voice_clone: options?.enableVoiceClone ?? false,
+      enable_dubbing: options?.enableDubbing ?? true,
       mm_enhance: options?.mmEnhance ?? false,
       clone_smart_pick: options?.cloneSmartPick ?? false,
       custom_prompt: (options?.customPrompt ?? '') || '(空)',
@@ -561,6 +564,7 @@ export async function processVideo(
       // run and degrades to "off" if the choice is unusable.
       separation_mode: options?.separationMode ?? 'client',
       enable_voice_clone: options?.enableVoiceClone ?? false,
+      enable_dubbing: options?.enableDubbing ?? true,
       mm_enhance: options?.mmEnhance ?? false,
       clone_smart_pick: options?.cloneSmartPick ?? false,
       custom_prompt: options?.customPrompt ?? '',

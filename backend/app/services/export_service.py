@@ -617,16 +617,21 @@ def master_filter(video_id: str, lufs: Optional[float], peak_dbfs: float, master
 def _mux(
     video_id: str,
     video_path: str,
-    timeline_path: str,
+    timeline_path: Optional[str],
     bed_path: Optional[str],
     output_path: str,
     duration: float,
     subtitle_inputs: Optional[list[SubtitleInput]] = None,
     default_subtitle: int = 0,
     master: Optional[dict] = None,
+    dubbed: bool = True,
 ) -> None:
     """
     Combine the original video stream + dubbed timeline (+ ducked bed + subtitles).
+
+    仅字幕模式（dubbed=False）走最底部的直通分支：音频从源视频 `-c:a copy`，
+    比特级不动 —— 不解码、不混音、不响度处理。"保留原本声音不动"就是字面意思。
+    
 
     音频链：amix（normalize=0；duration=first —— 以前对背景用 longest，垫底比
     视频长时成片音轨会长出尾巴）→ 母带：量一次响度、整条加同一个静态增益、
@@ -637,8 +642,51 @@ def _mux(
     libass and a CJK font, none of which this host has. Burn-in runs in the
     browser instead.
     """
-    master = master or {}
     inputs = subtitle_inputs or []
+
+    if not dubbed:
+        # 字幕输入从 1 开始（没有音轨输入占位）。
+        first_subtitle_input = 1
+        cmd = ["ffmpeg", "-y", "-v", "warning", "-i", video_path]
+        for subtitle_input in inputs:
+            cmd += ["-i", subtitle_input.path]
+        cmd += [
+            "-map", "0:v:0",
+            # "?": 个别容器声称有音轨却解不出来 —— 那样宁可没声也别让整个
+            # 导出失败；字幕照常内嵌。
+            "-map", "0:a:0?",
+            "-c:v", "copy",
+            "-c:a", "copy",
+        ]
+        for index in range(len(inputs)):
+            cmd += ["-map", f"{first_subtitle_input + index}:s"]
+        if inputs:
+            cmd += ["-c:s", inputs[0].codec]
+            for index, subtitle_input in enumerate(inputs):
+                cmd += [
+                    f"-metadata:s:s:{index}", f"language={subtitle_input.lang}",
+                    f"-metadata:s:s:{index}", f"title={subtitle_input.title}",
+                    f"-metadata:s:s:{index}", f"handler_name={subtitle_input.title}",
+                ]
+                cmd += [
+                    f"-disposition:s:{index}",
+                    "default" if index == default_subtitle else "0",
+                ]
+        cmd += ["-t", f"{duration:.3f}"]
+        if output_path.endswith(".mp4"):
+            cmd += ["-movflags", "+faststart"]
+        cmd.append(output_path)
+
+        logger.info(f"[{video_id}] Muxing (original audio passthrough): {' '.join(cmd)}")
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"ffmpeg mux failed: "
+                f"{result.stderr[-800:] if result.stderr else 'unknown error'}"
+            )
+        return
+
+    master = master or {}
 
     base_cmd = ["ffmpeg", "-y", "-v", "warning", "-i", video_path, "-i", timeline_path]
     if bed_path:
@@ -786,31 +834,40 @@ async def _export_video_locked(
     def on_progress(current: int, total: int) -> None:
         loop.call_soon_threadsafe(progress_queue.put_nowait, (current, total))
 
-    timeline_task = asyncio.ensure_future(
-        loop.run_in_executor(
-            None,
-            lambda: build_dubbed_timeline(
-                video_id, state, duration, mix_plan, progress=on_progress
-            ),
+    dubbed = mix_plan.get("dubbed", True)
+    timeline_path = None
+    bed_path = None
+
+    if dubbed:
+        timeline_task = asyncio.ensure_future(
+            loop.run_in_executor(
+                None,
+                lambda: build_dubbed_timeline(
+                    video_id, state, duration, mix_plan, progress=on_progress
+                ),
+            )
         )
-    )
 
-    while not timeline_task.done():
-        try:
-            current, total = await asyncio.wait_for(progress_queue.get(), timeout=0.5)
-            await _emit({"phase": "export", "status": "mixing", "current": current, "total": total})
-        except asyncio.TimeoutError:
-            continue
+        while not timeline_task.done():
+            try:
+                current, total = await asyncio.wait_for(progress_queue.get(), timeout=0.5)
+                await _emit({"phase": "export", "status": "mixing", "current": current, "total": total})
+            except asyncio.TimeoutError:
+                continue
 
-    timeline_path = timeline_task.result()
-    if not timeline_path:
-        raise RuntimeError("No synthesized audio to export — run TTS first")
+        timeline_path = timeline_task.result()
+        if not timeline_path:
+            raise RuntimeError("No synthesized audio to export — run TTS first")
 
-    await _emit({"phase": "export", "status": "bed"})
+        await _emit({"phase": "export", "status": "bed"})
 
-    bed_path = await asyncio.get_running_loop().run_in_executor(
-        None, lambda: build_ducked_bed(video_id, state, mix_plan, duration)
-    )
+        bed_path = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: build_ducked_bed(video_id, state, mix_plan, duration)
+        )
+    else:
+        # 仅字幕模式：没有配音轨也没有垫底 —— 音频在 _mux 里从源视频比特级
+        # 直通（-c:a copy），连响度处理都不做。"原声不动"就是真不动。
+        await _emit({"phase": "export", "status": "original_audio"})
 
     await _emit({"phase": "export", "status": "muxing"})
 
@@ -841,6 +898,7 @@ async def _export_video_locked(
             subtitle_inputs,
             default_index,
             master=mix_plan["master"],
+            dubbed=dubbed,
         ),
     )
 

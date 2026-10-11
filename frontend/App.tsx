@@ -320,6 +320,11 @@ const App: React.FC = () => {
    */
   const [targetAccent, setTargetAccent] = useState<string>('');
   const [enableVoiceClone, setEnableVoiceClone] = useState(false);
+  /**
+   * 「生成配音」总开关（落地页选择，随工程持久化）。关 = 仅字幕模式：
+   * 管线跳过分离/克隆/合成，导出时原声比特级直通。
+   */
+  const [enableDubbing, setEnableDubbing] = useState(true);
   // 语气模仿 / 智能选材 —— 后者依赖克隆开关，随工程持久化并在恢复时还原
   const [mmEnhance, setMmEnhance] = useState(false);
   const [cloneSmartPick, setCloneSmartPick] = useState(false);
@@ -811,6 +816,7 @@ const App: React.FC = () => {
     const restoredMode = restoreSeparationMode(data, data.separation_backends);
     setSeparationMode(restoredMode);
     if (data.enable_voice_clone !== undefined) setEnableVoiceClone(data.enable_voice_clone);
+    if (data.enable_dubbing !== undefined) setEnableDubbing(data.enable_dubbing);
     if (data.mm_enhance !== undefined) setMmEnhance(data.mm_enhance);
     if (data.clone_smart_pick !== undefined) setCloneSmartPick(data.clone_smart_pick);
 
@@ -1440,7 +1446,12 @@ const App: React.FC = () => {
           }
         }
       } else if (event.status === 'done') {
-        setRawLog(prev => prev + '\n--- Audio Synthesis Complete ---\n');
+        setRawLog(prev =>
+          prev +
+          (event.skipped
+            ? '\n--- 仅字幕模式：已跳过配音合成（原声将原样保留）---\n'
+            : '\n--- Audio Synthesis Complete ---\n')
+        );
       }
     }
 
@@ -1542,6 +1553,7 @@ const App: React.FC = () => {
         // immediately. Relying on `setSeparationMode` there does not work: the
         // state update is not rendered yet, so the closure still holds the
         // initial value and the job would be sent as "off".
+        enableDubbing,
         separationMode: opts.separationMode ?? separationMode,
         // 只有 Reprocess 会传：让管线把起点挪到翻译（见 handleReprocess）。
         startFrom: opts.startFrom,
@@ -2866,6 +2878,8 @@ const App: React.FC = () => {
 
       {isIndexPage ? (
         <VideoUpload
+                    enableDubbing={enableDubbing}
+                    onDubbingChange={setEnableDubbing}
           onFilePicked={handleFilePicked}
           pendingFileName={pendingVideoFile?.name}
           onStart={handleStartProcessing}

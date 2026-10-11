@@ -85,6 +85,14 @@ export interface ProcessingSettingsProps {
      * 克隆**关闭**时，克隆卡片里的附加内容。落地页塞「预制音色池 / 该语言必须
      * 开启克隆」的提示；弹窗不需要（工程里音色已经定了）。
      */
+    /**
+     * 「生成配音」总开关。不传 = 该宿主不渲染这张卡（本轮只在落地页提供，
+     * 工程内的弹窗随后接）。关 = 仅字幕模式：跳过分离/克隆/合成（省大头
+     * API 费），导出时原声比特级直通，只加翻译字幕。
+     */
+    enableDubbing?: boolean;
+    onDubbingChange?: (v: boolean) => void;
+
     cloneOffExtra?: React.ReactNode;
 }
 
@@ -102,6 +110,8 @@ const ProcessingSettings: React.FC<ProcessingSettingsProps> = ({
     customPrompt,
     onCustomPromptChange,
     cloneOffExtra,
+    enableDubbing,
+    onDubbingChange,
 }) => {
     /*
      * 高级项（自定义翻译要求）默认折叠：低频项不能常驻占高度。折叠状态属于
@@ -109,9 +119,29 @@ const ProcessingSettings: React.FC<ProcessingSettingsProps> = ({
      */
     const [showAdvanced, setShowAdvanced] = useState(false);
 
+    const dubbingOn = enableDubbing ?? true;
+
     return (
         <div className="w-full space-y-3 text-left">
-            <div className="py-2.5 px-3 bg-gray-50 rounded-xl">
+            {/* 生成配音：总开关，压住下面所有"产出声音"的选项。关 = 仅字幕。
+                不传该 prop 的宿主不渲染这张卡（弹窗随后接）。 */}
+            {enableDubbing !== undefined && (
+                <div className={`py-2.5 px-3 rounded-xl border ${dubbingOn ? 'bg-gray-50 border-transparent' : 'bg-amber-50/60 border-amber-200/70'}`}>
+                    <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center">
+                            <span className={`text-sm font-bold ${dubbingOn ? 'text-gray-700' : 'text-amber-700'}`}>生成配音</span>
+                            <InfoTooltip text="打开：翻译后合成配音音轨（产生 TTS 费用）。关闭：只翻译字幕，视频原声比特级保留，不产生任何合成费用。" />
+                        </div>
+                        <Switch on={dubbingOn} onClick={() => onDubbingChange?.(!dubbingOn)} />
+                    </div>
+                    <p className="mt-1 text-[10px] leading-relaxed text-gray-400">
+                        {dubbingOn
+                            ? '翻译后合成配音音轨，导出时替换原声。'
+                            : '仅翻译字幕：原声原样保留，不合成配音、不产生 TTS 费用。'}
+                    </p>
+                </div>
+            )}
+            <div className={`py-2.5 px-3 bg-gray-50 rounded-xl ${dubbingOn ? '' : 'opacity-50 pointer-events-none'}`}>
                 <div className="flex items-center mb-2">
                     <span className={`text-sm font-medium ${bgmSeparationLocked ? 'text-gray-400' : 'text-gray-700'}`}>BGM Separation</span>
                     <InfoTooltip text="Splits vocals from background music for cleaner transcription and voice cloning. Pick which backend does the work, or turn it off." />
@@ -139,7 +169,7 @@ const ProcessingSettings: React.FC<ProcessingSettingsProps> = ({
                 音色池（或克隆说明/警告）不再分成三块各自带底色 —— 它们是
                 同一个决策的开关与结果，视觉上就该是一体。内部以细分割线
                 分隔，子行不再自带灰底。 */}
-            <div className="px-3 py-1.5 bg-gray-50 rounded-xl">
+            <div className={`px-3 py-1.5 bg-gray-50 rounded-xl ${dubbingOn ? '' : 'opacity-50 pointer-events-none'}`}>
                 <div className="flex items-center justify-between gap-3 py-1.5">
                     <div className="flex items-center">
                         <span className="text-sm font-medium text-gray-700">Voice Cloning</span>

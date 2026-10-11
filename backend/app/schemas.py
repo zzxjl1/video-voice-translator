@@ -138,6 +138,8 @@ class VideoStatusResponse(BaseModel):
     # version 命中客户端缓存时 plan 为 null，不重复下发（长片几十 KB）。
     # null 本身 = 还没有可混的内容（未合成），前端走降级预览。
     mix: Optional[dict] = None
+    # 该工程是否生成配音（仅字幕模式下导出走原声直通）。旧工程无此字段 → True。
+    enable_dubbing: bool = True
     segments: list[SegmentOut] = []
     speakers: list[SpeakerOut] = []
     has_vocals: bool = False
@@ -200,6 +202,9 @@ class ProcessRequest(BaseModel):
     # already produced the stems is answered by the files on disk, not by a flag
     # from the client, and `separation_mode` is the single source of truth.
     enable_voice_clone: bool = False
+    # 生成配音总开关。False = 仅字幕模式：跳过分离/克隆/合成（省大头 API 费），
+    # 原声在导出时比特级直通；ASR/增强/翻译照跑（字幕需要文本）。
+    enable_dubbing: bool = True
     # 语气模仿：TTS 前由 omni 听原声给译文注入情感/拟声标签（见 config）。
     mm_enhance: bool = False
     # 智能选材：克隆参考素材由 omni 通过 tool call 挑选，失败回退规则。
