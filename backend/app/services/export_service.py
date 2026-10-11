@@ -14,18 +14,19 @@ cheap:
 * numpy is used for the mixing when present; a stdlib fallback keeps the
   module working without it.
 """
-import array
+import json
 import logging
 import os
 import shutil
 import subprocess
+import tempfile
 import wave
 from dataclasses import dataclass
 from typing import Callable, Optional
 
 from app import config
 from app.models import VideoState, get_state, get_video_dir
-from app.services import subtitle_service
+from app.services import mix_service, subtitle_service
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +112,7 @@ def container_for(plan: subtitle_service.ExportPlan) -> str:
 # ffmpeg helpers
 # ---------------------------------------------------------------------------
 
-def _probe_duration(path: str) -> float:
+def probe_duration(path: str) -> float:
     result = subprocess.run(
         [
             "ffprobe", "-v", "error",
@@ -128,35 +129,25 @@ def _probe_duration(path: str) -> float:
         return 0.0
 
 
-def _has_audio_stream(path: str) -> bool:
-    result = subprocess.run(
-        [
-            "ffprobe", "-v", "error",
-            "-select_streams", "a",
-            "-show_entries", "stream=index",
-            "-of", "csv=p=0",
-            path,
-        ],
-        capture_output=True,
-        text=True,
-    )
-    return bool(result.stdout.strip())
 
 
-def _decode_to_pcm(path: str, sample_rate: int) -> bytes:
-    """Decode any audio file to raw mono s16le PCM."""
-    result = subprocess.run(
-        [
-            "ffmpeg", "-v", "error",
-            "-i", path,
-            "-f", "s16le",
-            "-acodec", "pcm_s16le",
-            "-ac", "1",
-            "-ar", str(sample_rate),
-            "-",
-        ],
-        capture_output=True,
-    )
+def _decode_to_pcm(path: str, sample_rate: int, atempo: float = 1.0) -> bytes:
+    """Decode any audio file to raw mono s16le PCM, optionally time-stretched.
+
+    `atempo` 来自 mix plan，与播放侧的 playbackRate 是**同一条规则**的两种执行
+    （同一组夹取界）：预览把这句放到多少倍速，导出就放到多少倍速。
+    """
+    cmd = ["ffmpeg", "-v", "error", "-i", path]
+    if atempo and abs(atempo - 1.0) > 1e-4:
+        cmd += ["-filter:a", f"atempo={atempo:.4f}"]
+    cmd += [
+        "-f", "s16le",
+        "-acodec", "pcm_s16le",
+        "-ac", "1",
+        "-ar", str(sample_rate),
+        "-",
+    ]
+    result = subprocess.run(cmd, capture_output=True)
     if result.returncode != 0:
         raise RuntimeError(
             f"ffmpeg failed to decode {path}: "
@@ -169,60 +160,30 @@ def _decode_to_pcm(path: str, sample_rate: int) -> bytes:
 # Timeline assembly
 # ---------------------------------------------------------------------------
 
-def _mix_into_timeline_numpy(
-    timeline, pcm_bytes: bytes, start_sample: int
-) -> None:
-    import numpy as np  # local import: only needed when available
-
-    samples = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.int32)
-    total = len(timeline)
-    end = min(total, start_sample + len(samples))
-    if end <= start_sample:
-        return
-    timeline[start_sample:end] += samples[: end - start_sample]
-
-
-def _mix_into_timeline_stdlib(
-    timeline: array.array, pcm_bytes: bytes, start_sample: int
-) -> None:
-    samples = array.array("h")
-    samples.frombytes(pcm_bytes[: len(pcm_bytes) // SAMPLE_WIDTH * SAMPLE_WIDTH])
-
-    total = len(timeline)
-    for index, value in enumerate(samples):
-        position = start_sample + index
-        if position >= total:
-            break
-        mixed = timeline[position] + value
-        timeline[position] = (
-            MAX_SAMPLE if mixed > MAX_SAMPLE else MIN_SAMPLE if mixed < MIN_SAMPLE else mixed
-        )
-
-
 def build_dubbed_timeline(
     video_id: str,
     state: VideoState,
     duration: float,
+    plan: dict,
     progress: Optional[Callable[[int, int], None]] = None,
 ) -> Optional[str]:
     """
-    Write every synthesized segment at its original timestamp into a single
-    WAV file. Returns the WAV path, or None when nothing could be placed.
+    按 mix plan 把每段配音写进一条 WAV。返回 WAV 路径，一段都放不进去时 None。
 
-    Rebuilt every time. Caching it would mean recording each clip's identity to
-    know when to invalidate — bookkeeping that costs more than the few seconds
-    it saves for something the user triggers deliberately rather than in a loop.
+    每段怎么摆全部来自 plan（mix_service 生成，与播放同源）：atempo 先把这句
+    变速到与预览一致，`trim` 只在"夹到上限仍装不下"时出现，首尾淡出消掉 TTS
+    边缘的咔哒声。以前这里是无脑按原始速度摆位相加 —— 超槽的句子会和下一句
+    叠着响，而且与预览的速率规则完全是两套。
+
+    每次重建。缓存它意味着要记录每个 clip 的身份才知道何时失效 —— 记账成本
+    高于它省下的几秒钟，而且这是用户主动触发的操作，不在循环里。
     """
+    import numpy as np
+
     sample_rate = config.EXPORT_SAMPLE_RATE
-    segments = [
-        seg
-        for seg in state.segments
-        if seg.translated_text
-        and seg.audio_path
-        and os.path.exists(seg.audio_path)
-        and not getattr(seg, "muted", False)
-    ]
-    if not segments:
+    path_by_id = {seg.id: seg.audio_path for seg in state.segments}
+    entries = plan["segments"]
+    if not entries:
         logger.warning(f"[{video_id}] No synthesized segments available for export")
         return None
 
@@ -230,45 +191,51 @@ def build_dubbed_timeline(
     if total_samples <= 0:
         raise RuntimeError("Cannot determine video duration for export")
 
-    try:
-        import numpy as np
-    except ImportError:
-        np = None  # type: ignore[assignment]
-        logger.warning("numpy not available, using slower stdlib audio mixing")
-
-    use_numpy = np is not None
-
     timeline_path = os.path.join(get_video_dir(video_id), "dubbed_timeline.wav")
     raw_path = f"{timeline_path}.raw"
+    # 时间轴用**磁盘映射**（memmap）而不是内存数组（P2 #26）：2 小时 @24kHz 的
+    # int32 缓冲是 ~691MB —— RSS 不与视频时长成正比。
+    timeline = np.memmap(raw_path, dtype=np.int32, mode="w+", shape=(total_samples,))
 
-    if use_numpy:
-        # 时间轴用**磁盘映射**（memmap）而不是内存数组（P2 #26）。
-        # 2 小时 @24kHz 的 int32 缓冲是 ~691MB；旧写法还要再来一次
-        # clip().astype(int16).tobytes()（~345MB 的字节串）—— 两个峰值都只为
-        # "拼完再整体写出去"。memmap 的读写接口与 ndarray 一致（叠加逻辑不用改），
-        # 热数据由页缓存兜着，RSS 不再与视频时长成正比。
-        timeline = np.memmap(raw_path, dtype=np.int32, mode="w+", shape=(total_samples,))
-    else:
-        timeline = array.array("h", bytes(total_samples * SAMPLE_WIDTH))
-
+    fade_samples = max(0, int(plan.get("voiceFadeS", 0.02) * sample_rate))
     placed = 0
-    for index, seg in enumerate(segments):
+    for index, entry in enumerate(entries):
+        audio_path = path_by_id.get(entry["id"])
+        if not audio_path or not os.path.exists(audio_path):
+            logger.warning(
+                f"[{video_id}] plan segment {entry['id']}: audio file missing, skipped"
+            )
+            continue
         try:
-            pcm = _decode_to_pcm(seg.audio_path, sample_rate)
+            pcm = _decode_to_pcm(audio_path, sample_rate, entry.get("atempo") or 1.0)
         except Exception as e:
-            logger.warning(f"[{video_id}] Skipping segment {seg.id}: {e}")
+            logger.warning(f"[{video_id}] Skipping segment {entry['id']}: {e}")
             continue
 
-        start_sample = int(max(0.0, seg.start_time) * sample_rate)
-        if use_numpy:
-            _mix_into_timeline_numpy(timeline, pcm, start_sample)
-        else:
-            _mix_into_timeline_stdlib(timeline, pcm, start_sample)
+        samples = np.frombuffer(pcm, dtype=np.int16).astype(np.int32)
+        slot_samples = int(max(0.0, entry["end"] - entry["start"]) * sample_rate)
+        cap = int(entry["trim"] * sample_rate) if entry.get("trim") else slot_samples
+        samples = samples[: max(0, min(len(samples), cap))]
+        if not len(samples):
+            continue
+
+        # 首尾淡出。plan 不来这边做响度处理 —— 响度归一在 mux 的 loudnorm 里，
+        # 对整条混音做（逐段拉平会毁掉轻重与情绪）。
+        fade = min(fade_samples, len(samples) // 4)
+        if fade > 0:
+            ramp = np.linspace(0.0, 1.0, fade)
+            samples[:fade] = (samples[:fade] * ramp).astype(np.int32)
+            samples[-fade:] = (samples[-fade:] * ramp[::-1]).astype(np.int32)
+
+        start_sample = int(entry["start"] * sample_rate)
+        end = min(total_samples, start_sample + len(samples))
+        if end > start_sample:
+            timeline[start_sample:end] += samples[: end - start_sample]
         placed += 1
 
-        if progress and (index % 5 == 0 or index == len(segments) - 1):
+        if progress and (index % 5 == 0 or index == len(entries) - 1):
             try:
-                progress(index + 1, len(segments))
+                progress(index + 1, len(entries))
             except Exception as e:
                 # 回调是 UI 的进度条。它抛错不该中断导出，但也不能静默 ——
                 # 静默的话现象是"进度条永远卡在同一格"，而服务器日志里什么都
@@ -276,35 +243,34 @@ def build_dubbed_timeline(
                 logger.warning(f"[{video_id}] export progress callback failed: {e}")
 
     if placed == 0:
-        return None
-
-    if use_numpy:
-        with wave.open(timeline_path, "wb") as wav:
-            wav.setnchannels(1)
-            wav.setsampwidth(SAMPLE_WIDTH)
-            wav.setframerate(sample_rate)
-            # 分块 裁剪→int16→写出：不再构造整条时间轴的字节串。
-            chunk_samples = 1 << 20          # 约 4MB int32 / 2MB int16 每块
-            for start in range(0, int(timeline.shape[0]), chunk_samples):
-                block = timeline[start : start + chunk_samples]
-                wav.writeframes(
-                    np.clip(block, MIN_SAMPLE, MAX_SAMPLE).astype(np.int16).tobytes()
-                )
-        del timeline                          # 先解除映射，再删中间文件
+        del timeline
         try:
             os.remove(raw_path)
         except OSError:
-            # 残留一个 .raw 不影响导出结果（下次导出会覆盖同名文件）。
-            logger.warning(f"[{video_id}] could not remove {raw_path}")
-    else:
-        with wave.open(timeline_path, "wb") as wav:
-            wav.setnchannels(1)
-            wav.setsampwidth(SAMPLE_WIDTH)
-            wav.setframerate(sample_rate)
-            wav.writeframes(timeline.tobytes())
+            pass
+        return None
+
+    timeline_path = os.path.join(get_video_dir(video_id), "dubbed_timeline.wav")
+    with wave.open(timeline_path, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(SAMPLE_WIDTH)
+        wav.setframerate(sample_rate)
+        # 分块 裁剪→int16→写出：不构造整条时间轴的字节串。
+        chunk_samples = 1 << 20          # 约 4MB int32 / 2MB int16 每块
+        for start in range(0, int(timeline.shape[0]), chunk_samples):
+            block = timeline[start : start + chunk_samples]
+            wav.writeframes(
+                np.clip(block, MIN_SAMPLE, MAX_SAMPLE).astype(np.int16).tobytes()
+            )
+    del timeline                          # 先解除映射，再删中间文件
+    try:
+        os.remove(raw_path)
+    except OSError:
+        # 残留一个 .raw 不影响导出结果（下次导出会覆盖同名文件）。
+        logger.warning(f"[{video_id}] could not remove {raw_path}")
 
     logger.info(
-        f"[{video_id}] Dubbed timeline built: {placed}/{len(segments)} segments, "
+        f"[{video_id}] Dubbed timeline built: {placed}/{len(entries)} segments, "
         f"{duration:.1f}s @ {sample_rate}Hz -> {timeline_path}"
     )
     return timeline_path
@@ -447,59 +413,215 @@ def _prepare_subtitles(
 
 
 # ---------------------------------------------------------------------------
-# Mux
+# Bed (垫底轨) & loudness
 # ---------------------------------------------------------------------------
+
+def build_ducked_bed(
+    video_id: str,
+    state: VideoState,
+    plan: dict,
+    duration: float,
+) -> Optional[str]:
+    """
+    按 plan 生成垫底轨：解码一次，逐样本乘上包络与基准增益，写成 mono WAV。
+
+    为什么在 python 里做而不用 ffmpeg 的 sidechaincompress：包络必须与播放侧
+    求值的是**同一条**（plan.bed.duck 的分段线性断点）；sidechaincompress 是
+    另一套压缩器模型，深度与快慢都无法和预览逐点一致 —— 那正是这次要消灭的
+    "两套实现"。
+
+    分块处理：解码与写出都是流式的，内存与视频时长无关（2 小时也是常数）。
+    垫底比视频长时在读满时长后停住 —— 以前 amix duration=longest 会让成片
+    音轨长出尾巴。
+    """
+    import numpy as np
+
+    bed = plan.get("bed")
+    if not bed:
+        return None
+
+    sample_rate = config.EXPORT_SAMPLE_RATE
+    if bed["kind"] == "background":
+        source = os.path.join(get_video_dir(video_id), "background.wav")
+    else:
+        source = state.file_path
+    if not source or not os.path.exists(source):
+        raise RuntimeError(f"垫底音源不存在：{source}")
+
+    duck = bed.get("duck") or []
+    xs = [p[0] for p in duck]
+    ys = [p[1] for p in duck]
+    base_gain = float(bed["gain"])
+
+    out_path = os.path.join(get_video_dir(video_id), "bed_ducked.wav")
+    max_samples = int((duration + 0.5) * sample_rate)
+    chunk_bytes = sample_rate * SAMPLE_WIDTH          # 每块 1 秒
+
+    cmd = ["ffmpeg", "-v", "error", "-i", source]
+    if bed["kind"] == "original":
+        cmd += ["-vn"]                                # 只要音轨
+    cmd += ["-f", "s16le", "-ac", "1", "-ar", str(sample_rate), "-"]
+
+    with tempfile.TemporaryFile() as err_file:
+        process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err_file)
+        peak = 0.0
+        written = 0
+        try:
+            with wave.open(out_path, "wb") as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(SAMPLE_WIDTH)
+                wav.setframerate(sample_rate)
+                while written < max_samples:
+                    raw = process.stdout.read(chunk_bytes) if process.stdout else b""
+                    if not raw:
+                        break
+                    block = np.frombuffer(raw, dtype=np.int16).astype(np.float64)
+                    times = (written + np.arange(len(block))) / sample_rate
+                    # np.interp = 分段线性 —— 与前端对 plan 断点的求值方式一致
+                    gain = base_gain * (
+                        np.interp(times, xs, ys) if xs else 1.0
+                    )
+                    block *= gain
+                    if len(block):
+                        peak = max(peak, float(np.max(np.abs(block))))
+                    wav.writeframes(
+                        np.clip(block, MIN_SAMPLE, MAX_SAMPLE).astype(np.int16).tobytes()
+                    )
+                    written += len(block)
+            code = process.wait()
+        finally:
+            if process.poll() is None:
+                process.kill()
+            err_file.seek(0)
+            stderr = err_file.read().decode("utf-8", errors="replace")
+
+    if code != 0:
+        raise RuntimeError(f"ffmpeg bed decode failed: {stderr[-400:]}")
+    if written == 0:
+        raise RuntimeError(f"垫底音源解不出任何音频：{source}")
+    logger.info(
+        f"[{video_id}] Ducked bed built ({bed['kind']}, gain {bed['gain']:.3f}, "
+        f"{'%d duck pts' % len(duck) if duck else 'no ducking'}, "
+        f"peak {20 * __import__('math').log10(max(peak, 1e-9)):.1f} dBFS) -> {out_path}"
+    )
+    return out_path
+
+
+def _measure_loudness(
+    video_id: str, input_args: list[str], pre_filter: str, master: dict
+) -> dict:
+    """
+    loudnorm 第一遍：BS.1770 量混音的输入响度。失败就抛，绝不猜。
+
+    两遍法与单遍的区别：单遍是动态的（随时间调增益，音乐上会"泵"）；两遍在
+    第二遍里用 linear=true 变成一次静态增益 —— 这才是"归一到 -16 LUFS"的本意。
+    """
+    target = (
+        f"loudnorm=I={master['targetLufs']}:TP={master['peakLimitDbfs']}"
+        f":LRA={master['loudnessRange']}:print_format=json"
+    )
+    # 注意 -v info：loudnorm 的 JSON 走的是 **info 级**日志，warning 会把它吞掉。
+    # input_args 里带着 mux 用的 "-v warning"，这里必须覆盖成 info。
+    cmd = ["ffmpeg", "-hide_banner", "-nostats"]
+    it = iter(input_args[1:])     # [0] 是程序名，不能复制（否则它会被当成输出文件）
+    skip = False
+    for arg in it:
+        if skip:
+            skip = False
+            continue
+        if arg == "-v":
+            cmd += ["-v", "info"]
+            skip = True          # 跳过它后面的级别值
+            continue
+        cmd.append(arg)
+    cmd += [
+        "-filter_complex", f"{pre_filter}{target}",
+        "-f", "null", "-",
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"loudnorm 测量失败: {result.stderr[-400:] if result.stderr else 'unknown'}"
+        )
+    stderr = result.stderr or ""
+    start = stderr.rfind("{")
+    end = stderr.rfind("}")
+    if start == -1 or end == -1 or end < start:
+        raise RuntimeError(f"loudnorm 没有产出测量结果: {stderr[-400:]}")
+    try:
+        data = json.loads(stderr[start : end + 1])
+    except json.JSONDecodeError as e:
+        raise RuntimeError(
+            f"loudnorm 测量结果解析失败: {stderr[start : end + 1][:200]}"
+        ) from e
+
+    def _num(key: str) -> float:
+        value = data.get(key)
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            raise RuntimeError(f"loudnorm 测量值不可用: {key}={value!r}") from None
+
+    return {
+        "I": _num("input_i"),
+        "TP": _num("input_tp"),
+        "LRA": _num("input_lra"),
+        "thresh": _num("input_thresh"),
+        "offset": _num("target_offset"),
+    }
+
+
 
 def _mux(
     video_id: str,
     video_path: str,
     timeline_path: str,
-    background_path: Optional[str],
-    has_source_audio: bool,
+    bed_path: Optional[str],
     output_path: str,
     duration: float,
     subtitle_inputs: Optional[list[SubtitleInput]] = None,
     default_subtitle: int = 0,
+    master: Optional[dict] = None,
 ) -> None:
     """
-    Combine the original video stream + dubbed timeline (+ bgm + subtitles).
+    Combine the original video stream + dubbed timeline (+ ducked bed + subtitles).
+
+    音频链：amix（normalize=0；duration=first —— 以前对背景用 longest，垫底比
+    视频长时成片音轨会长出尾巴）→ loudnorm 两遍法归一到 plan.master 的目标。
 
     The video stream is always copied. Subtitles are EMBEDDED, never burned:
     embedding is a remux (~40 ms), burning would need a full re-encode plus
     libass and a CJK font, none of which this host has. Burn-in runs in the
     browser instead.
     """
+    master = master or {}
     inputs = subtitle_inputs or []
 
-    cmd = ["ffmpeg", "-y", "-v", "warning", "-i", video_path, "-i", timeline_path]
-
-    if background_path:
-        cmd += ["-i", background_path]
-        filter_complex = (
-            f"[1:a]volume={config.EXPORT_TTS_GAIN},aresample={config.EXPORT_SAMPLE_RATE}[tts];"
-            f"[2:a]volume={config.EXPORT_BGM_GAIN},aresample={config.EXPORT_SAMPLE_RATE}[bg];"
-            f"[tts][bg]amix=inputs=2:duration=longest:normalize=0,"
-            f"alimiter=limit=0.97[aout]"
-        )
-    elif has_source_audio:
-        # No separated stems: keep the original track but duck it hard.
-        filter_complex = (
-            f"[0:a]volume={config.EXPORT_ORIGINAL_AUDIO_GAIN}[orig];"
-            f"[1:a]volume={config.EXPORT_TTS_GAIN},aresample={config.EXPORT_SAMPLE_RATE}[tts];"
-            f"[orig][tts]amix=inputs=2:duration=first:normalize=0,"
-            f"alimiter=limit=0.97[aout]"
-        )
-    else:
-        filter_complex = f"[1:a]volume={config.EXPORT_TTS_GAIN},alimiter=limit=0.97[aout]"
-
-    # Subtitle inputs are appended LAST. The filter_complex above refers to
-    # inputs 0/1/2 by index, so inserting them earlier would silently remap the
-    # audio to the wrong stream.
-    first_subtitle_input = 3 if background_path else 2
+    base_cmd = ["ffmpeg", "-y", "-v", "warning", "-i", video_path, "-i", timeline_path]
+    if bed_path:
+        base_cmd += ["-i", bed_path]
+    # 字幕输入最后加：filter_complex 按序号引用 0/1/2，提前插入会悄悄把音频
+    # 映射到错的流上。
+    first_subtitle_input = 3 if bed_path else 2
     for subtitle_input in inputs:
-        cmd += ["-i", subtitle_input.path]
+        base_cmd += ["-i", subtitle_input.path]
 
-    cmd += [
+    if bed_path:
+        pre_filter = "[1:a][2:a]amix=inputs=2:duration=first:normalize=0[mix];[mix]"
+    else:
+        pre_filter = "[1:a]"
+
+    measured = _measure_loudness(video_id, base_cmd, pre_filter, master)
+    loudnorm = (
+        f"loudnorm=I={master['targetLufs']}:TP={master['peakLimitDbfs']}"
+        f":LRA={master['loudnessRange']}"
+        f":measured_I={measured['I']}:measured_TP={measured['TP']}"
+        f":measured_LRA={measured['LRA']}:measured_thresh={measured['thresh']}"
+        f":offset={measured['offset']}:linear=true"
+    )
+    filter_complex = f"{pre_filter}{loudnorm}[aout]"
+
+    cmd = base_cmd + [
         "-filter_complex", filter_complex,
         "-map", "0:v:0",
         "-map", "[aout]",
@@ -511,6 +633,8 @@ def _mux(
         "-c:v", "copy",          # never re-encode the video stream
         "-c:a", "aac",
         "-b:a", "160k",
+        # loudnorm 内部把采样率抬到 192k；不显式压回去，AAC 编码器会照单全收
+        "-ar", "48000",
     ]
 
     if inputs:
@@ -567,8 +691,6 @@ async def export_video(
     if not state:
         raise RuntimeError("Video not found")
 
-    video_dir = get_video_dir(video_id)
-
     plan = subtitle_service.ExportPlan.from_dict(
         getattr(state, "subtitle_export", None)
     )
@@ -581,19 +703,17 @@ async def export_video(
     await _emit({"phase": "export", "status": "started"})
 
     duration = await asyncio.get_event_loop().run_in_executor(
-        None, _probe_duration, state.file_path
+        None, probe_duration, state.file_path
     )
     if duration <= 0:
         raise RuntimeError("Failed to probe the video duration")
 
-    has_source_audio = await asyncio.get_event_loop().run_in_executor(
-        None, _has_audio_stream, state.file_path
+    # 混音计划：mix_service 从 state 算出的唯一权威（数值/包络/摆位）。
+    # 执行端**现场**生成 —— 永远新鲜，不存在"用过期 plan"的问题；播放端拿到的
+    # 是同一份生成器的输出（见 /status 的 mix 字段）。
+    mix_plan = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: mix_service.build_mix_plan(state)
     )
-
-    # Background stem is only meaningful if separation actually ran.
-    background_path = os.path.join(video_dir, "background.wav")
-    if not os.path.exists(background_path):
-        background_path = None
 
     loop = asyncio.get_event_loop()
     progress_queue: asyncio.Queue = asyncio.Queue()
@@ -604,7 +724,9 @@ async def export_video(
     timeline_task = asyncio.ensure_future(
         loop.run_in_executor(
             None,
-            lambda: build_dubbed_timeline(video_id, state, duration, progress=on_progress),
+            lambda: build_dubbed_timeline(
+                video_id, state, duration, mix_plan, progress=on_progress
+            ),
         )
     )
 
@@ -618,6 +740,12 @@ async def export_video(
     timeline_path = timeline_task.result()
     if not timeline_path:
         raise RuntimeError("No synthesized audio to export — run TTS first")
+
+    await _emit({"phase": "export", "status": "bed"})
+
+    bed_path = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: build_ducked_bed(video_id, state, mix_plan, duration)
+    )
 
     await _emit({"phase": "export", "status": "muxing"})
 
@@ -642,14 +770,15 @@ async def export_video(
             video_id,
             state.file_path,
             timeline_path,
-            background_path,
-            has_source_audio,
+            bed_path,
             output_path,
             duration,
             subtitle_inputs,
             default_index,
+            master=mix_plan["master"],
         ),
     )
+
 
     # The mux succeeded, so the previous export (a different container) is now
     # stale. Removed after the fact on purpose: a failure above must not destroy

@@ -772,7 +772,7 @@ async def run_pipeline(
         semaphore = asyncio.Semaphore(max(1, config.TTS_CONCURRENCY))
         counter_lock = asyncio.Lock()
         counters = {"done": already_done}
-        succeeded_segments: list[str] = []
+        succeeded_segments: list = []      # (segment_id, actual_duration) 或 str
         last_tts_error: list[str] = []   # 收尾时用它说明"为什么整批都失败"
 
         async def synthesize_segment(seg: Segment) -> None:
@@ -803,7 +803,7 @@ async def run_pipeline(
                     planned_rate = speech_timing.plan_speech_rate(
                         seg.translated_text, target_language, slot
                     )
-                    audio_file_path = await tts_service.synthesize_speech(
+                    audio_file_path, actual_duration = await tts_service.synthesize_speech(
                         video_id,
                         seg.id,
                         seg.translated_text,
@@ -814,7 +814,12 @@ async def run_pipeline(
                         instruction=instruction,
                     )
                     seg.audio_path = audio_file_path
-                    succeeded_segments.append(seg.id)
+                    # 实际时长必须落在 state 里：混音计划（mix_service）用它算
+                    # 每段的 atempo。以前它只出现在日志里，前端那个
+                    # actualDuration 要等用户展开该行的播放器才被填上 —— 于是
+                    # 播放器的速率自适应只在"恰好展开过"时生效，其余时候恒 1.0。
+                    seg.actual_duration = actual_duration
+                    succeeded_segments.append((seg.id, seg.actual_duration))
                     # Flush periodically so an interrupted run can still resume
                     # from tts_results.json without redoing everything.
                     if len(succeeded_segments) % 10 == 0:

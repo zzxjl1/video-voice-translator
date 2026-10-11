@@ -117,6 +117,10 @@ class VideoStatusResponse(BaseModel):
     filename: str
     status: str
     error: Optional[str] = None
+    # 混音计划（mix_service 生成，播放与导出共用的唯一策略产物）。
+    # version 命中客户端缓存时 plan 为 null，不重复下发（长片几十 KB）。
+    # null 本身 = 还没有可混的内容（未合成），前端走降级预览。
+    mix: Optional[dict] = None
     segments: list[SegmentOut] = []
     speakers: list[SpeakerOut] = []
     has_vocals: bool = False

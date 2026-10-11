@@ -783,11 +783,8 @@ SEPARATOR_PARAMS = {
 # （export_service.is_available()）—— 这是真实约束，而不是一个能让用户点下
 # 导出键却得到 "Export is disabled" 的环境开关。
 EXPORT_SAMPLE_RATE = _env_int("EXPORT_SAMPLE_RATE", 24000)
-EXPORT_TTS_GAIN = _env_float("EXPORT_TTS_GAIN", 1.0)
-# Gain applied to the separated background stem (or to the original audio when
-# separation was skipped) so it sits under the dubbed voice.
-EXPORT_BGM_GAIN = _env_float("EXPORT_BGM_GAIN", 0.9)
-EXPORT_ORIGINAL_AUDIO_GAIN = _env_float("EXPORT_ORIGINAL_AUDIO_GAIN", 0.12)
+# 增益/下压/响度目标全部搬去了 services/mix_service.py —— 混音策略只允许有
+# 一个归属地，这里留两个地方就会回到"预览与成片各一套"的老路。
 EXPORT_FILENAME = _env("EXPORT_FILENAME", "translated_video.mp4")
 # Container used when a styled (ASS) subtitle track is requested. MP4 cannot
 # carry ASS styling, so that delivery switches to Matroska.

@@ -56,7 +56,8 @@ import {
 } from './services/apiService';
 import { getAudioWaveform, getAudioWaveformFromUrl } from './utils/audioProcessor';
 import { decodeAudio, separateAndUpload, isModelCached } from './utils/mdx/separatorClient';
-import { computeSyncRates, setPreservesPitch } from './utils/playbackSync';
+import { setPreservesPitch } from './utils/playbackSync';
+import type { MixPlan, MixPlanSegment, MixStatus } from './services/apiService';
 import {
   containRect,
   cueAtTime,
@@ -189,6 +190,30 @@ function restoreSeparationMode(
  * the options rather than in a table that can fall out of step.
  */
 
+/**
+ * 垫底在 t 时刻的增益：对 plan.bed.duck 的分段线性断点插值 —— 与导出端的
+ * np.interp 是同一条包络的同一形式。plan 还没到（首帧/请求失败）返回 null，
+ * 调用方自行退化。
+ */
+function bedGainAt(plan: MixPlan | null, t: number): number | null {
+  const bed = plan?.bed;
+  if (!bed) return null;
+  const duck = bed.duck ?? [];
+  if (!duck.length) return bed.gain;
+  if (t <= duck[0][0]) return bed.gain * duck[0][1];
+  for (let i = 1; i < duck.length; i += 1) {
+    if (t <= duck[i][0]) {
+      const [t0, g0] = duck[i - 1];
+      const [t1, g1] = duck[i];
+      const f = t1 > t0 ? (t - t0) / (t1 - t0) : 1;
+      return bed.gain * (g0 + (g1 - g0) * f);
+    }
+  }
+  return bed.gain * duck[duck.length - 1][1];
+}
+
+const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
+
 const App: React.FC = () => {
   const [videoFile, setVideoFile] = useState<File | null>(null);
   /**
@@ -214,6 +239,31 @@ const App: React.FC = () => {
    * 存在，前端内存里的状态做不到。
    */
   const [runState, setRunState] = useState<RunState | null>(null);
+
+  /**
+   * 混音计划（服务端 mix_service 下发）。播放侧不持有任何策略数值：
+   * 音量 = plan 包络在当前时刻的取值，速率 = plan 里每段的 atempo/videoRate。
+   * plan 缺席（首帧/请求失败/还没合成）时退化为"1.0 速率 + 0.1/1.0 粗 duck"，
+   * 只影响预览，成片永远由服务端按 plan 出。
+   */
+  const [mixPlan, setMixPlan] = useState<MixPlan | null>(null);
+  const mixVersionRef = useRef<string | null>(null);
+  const mixEntries = useMemo(
+    () => new Map<string, MixPlanSegment>((mixPlan?.segments ?? []).map(e => [e.id, e])),
+    [mixPlan],
+  );
+
+  /** 每次 /status 返回后同步混音计划（版本命中时 plan 为 null，不必覆盖）。 */
+  const applyMix = (data: { mix?: MixStatus }) => {
+    if (!data || !('mix' in data)) return;
+    if (data.mix && data.mix.version) {
+      mixVersionRef.current = data.mix.version;
+      if (data.mix.plan) setMixPlan(data.mix.plan);
+    } else {
+      mixVersionRef.current = null;
+      setMixPlan(null);
+    }
+  };
   /** 已发出取消请求，等服务器确认（当前 provider 请求跑完才停）。 */
   const [isCancelling, setIsCancelling] = useState(false);
   const [resumeAfterCancel, setResumeAfterCancel] = useState<
@@ -834,8 +884,11 @@ const App: React.FC = () => {
   const recoverProject = useCallback(
     async (idFromUrl: string): Promise<void> => {
       setIsTranscribing(true);
+      setMixPlan(null);
+      mixVersionRef.current = null;
       try {
-        const data = await getVideoStatus(idFromUrl);
+        const data = await getVideoStatus(idFromUrl, mixVersionRef.current);
+        applyMix(data);
         const restoredMode = applyProjectToView(idFromUrl, data);
         console.log('[recovery] 工程状态已应用:', {
           status: data.status,
@@ -989,14 +1042,14 @@ const App: React.FC = () => {
         if (shouldBePlaying) {
           isAnyTTSPlaying = true;
 
-          // How fast this line must play to fill its slot. The server already
-          // fitted it (speech_rate + ffprobe measurement), so this is normally
-          // within a few percent — and the video rate stays at exactly 1.
-          const { audioRate, videoRate } = computeSyncRates(
-            seg.actualDuration,
-            seg.endTime - seg.startTime,
-          );
-          if (videoRate !== 1) targetVideoRate = videoRate;
+          /*
+           * 速率来自 plan（mix_service 按合成时实测的时长算好）：预览与导出用
+           * 同一组数、同一个夹取界。plan 未到时保持 1.0 —— 不猜，只是这段
+           * 预览暂时不拉伸（成片不受影响）。
+           */
+          const entry = mixEntries.get(seg.id);
+          const audioRate = entry?.atempo ?? 1;
+          if (entry && entry.videoRate !== 1) targetVideoRate = entry.videoRate;
 
           if (!existingAudio) {
             try {
@@ -1008,11 +1061,10 @@ const App: React.FC = () => {
               // Progress-based sync
               const videoDuration = seg.endTime - seg.startTime;
               const progress = (time - seg.startTime) / videoDuration;
-              if (seg.actualDuration) {
-                audio.currentTime = Math.max(0, progress * seg.actualDuration);
-              } else {
-                audio.currentTime = Math.max(0, time - seg.startTime);
-              }
+              // 进度对位按"变速后实际占用"（plan.played）：速率≠1 时按自然
+              // 时长对位会漂移 —— 以前正是这么漂的。
+              const playedLen = entry?.played ?? seg.actualDuration ?? videoDuration;
+              audio.currentTime = Math.max(0, progress * playedLen);
 
               audio.play().catch(e => console.warn("Audio play blocked:", e));
               activeAudiosRef.current.set(seg.id, audio);
@@ -1032,7 +1084,7 @@ const App: React.FC = () => {
             if (existingAudio.paused) {
               const slot = Math.max(0.001, seg.endTime - seg.startTime);
               const progress = Math.max(0, Math.min(1, (time - seg.startTime) / slot));
-              existingAudio.currentTime = progress * (seg.actualDuration || slot);
+              existingAudio.currentTime = progress * (entry?.played ?? seg.actualDuration ?? slot);
               existingAudio.play().catch(e => console.warn('Audio resume blocked:', e));
             }
           }
@@ -1050,13 +1102,22 @@ const App: React.FC = () => {
       if (bgAudio.playbackRate !== targetVideoRate) {
         bgAudio.playbackRate = targetVideoRate;
       }
-      // Keep background audio at constant volume
-      bgAudio.volume = 1.0;
+      /*
+       * 音量 = plan 包络在当前时刻的取值（分离出的背景按策略不下压 → 常数
+       * bed.gain；包络存在时是同一条与导出一致的曲线）。
+       */
+      const gain = bedGainAt(mixPlan, time);
+      bgAudio.volume = gain !== null ? clamp01(gain) : 1.0;
     }
 
-    // If no background audio, use original behavior for video volume
+    /*
+     * 未分离：原声里有原语言人声，按 plan 包络压到台词之下（与导出同一条
+     * 曲线，attack/release 都一致）。plan 缺席时的 0.1/1.0 是降级，只影响
+     * 预览的那几秒，成片仍由服务端按 plan 出。
+     */
     if (!hasBgAudio) {
-      video.volume = isAnyTTSPlaying ? 0.1 : 1.0;
+      const gain = bedGainAt(mixPlan, time);
+      video.volume = gain !== null ? clamp01(gain) : isAnyTTSPlaying ? 0.1 : 1.0;
     }
   };
 
@@ -2208,8 +2269,9 @@ const App: React.FC = () => {
 
     const fetchRun = async () => {
       try {
-        const data = await getVideoStatus(videoId);
+        const data = await getVideoStatus(videoId, mixVersionRef.current);
         if (stopped) return;
+        applyMix(data);
         setRunState(data.run ?? null);
         // 只在变化时打，避免轮询刷屏。
         const stamp = `${data.run?.active}|${data.run?.step}`;
@@ -2724,7 +2786,10 @@ const App: React.FC = () => {
       videoRef.current.currentTime = time;
       activeAudiosRef.current.forEach(a => a.pause());
       activeAudiosRef.current.clear();
-      videoRef.current.volume = backgroundAudioUrl ? 0 : 1.0;
+      // 拖动后的第一帧也按包络给，否则松手瞬间会漏出满音量的原声
+      videoRef.current.volume = backgroundAudioUrl
+        ? 0
+        : clamp01(bedGainAt(mixPlan, videoRef.current.currentTime) ?? 1.0);
       // Sync background audio
       if (backgroundAudioRef.current) {
         backgroundAudioRef.current.currentTime = time;
@@ -3075,6 +3140,7 @@ const App: React.FC = () => {
                   }
                 >
                   <TranscriptionPanel
+                    mixPlan={mixPlan}
                     segments={segments}
                     speakers={speakers}
                     isTranscribing={isTranscribing}

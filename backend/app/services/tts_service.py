@@ -208,8 +208,16 @@ def set_speaker_voice(video_id: str, speaker_id: str, voice: str) -> None:
     logger.info(f"[{video_id}] Speaker '{speaker_id}' pinned to voice '{voice}'")
 
 
-def _register_segment_audio(video_dir: str, segment_id: str, rel_path: str) -> None:
-    """Thread-safe registration of a synthesized segment in tts_results.json."""
+def _register_segment_audio(
+    video_dir: str, segment_id: str, rel_path: str, duration: float | None = None
+) -> None:
+    """
+    Thread-safe registration of a synthesized segment in tts_results.json.
+
+    值是 `{"path": ..., "duration": ...}`：时长必须与路径一起登记 —— 它只有
+    合成时量得到，而混音计划（mix_service）要用它算每段的 atempo。只存路径的
+    旧表依然能读（load_state 兼容两种形状）。
+    """
     results_path = os.path.join(video_dir, "tts_results.json")
     with _registry_lock:
         tts_results = {}
@@ -230,7 +238,10 @@ def _register_segment_audio(video_dir: str, segment_id: str, rel_path: str) -> N
                 )
                 return
 
-        tts_results[segment_id] = rel_path
+        entry: dict = {"path": rel_path}
+        if duration:
+            entry["duration"] = round(float(duration), 4)
+        tts_results[segment_id] = entry
 
         try:
             with open(results_path, "w", encoding="utf-8") as f:
@@ -571,7 +582,9 @@ async def synthesize_speech(
             stayed in the chosen dialect.
 
     Returns:
-        Path to the saved audio file
+        (Path to the saved audio file, 实际时长秒数)。时长必须交给调用方持久化：
+        混音计划要用它算每段的 atempo，而它只有这里量得到 —— 以前只写日志，
+        结果导出与预览都拿不到，各猜各的。
     """
     # 入口净化，先于一切：合成与时长拟合都必须用同一份净化后的文本。
     text = _sanitize_for_tts(text, segment_id)
@@ -622,15 +635,22 @@ async def synthesize_speech(
         # 登记表损坏只影响"续跑是否会重做这一行"，音频文件本身是好的 ——
         # 所以这里保持降级（记 warning），不能因为登记失败而丢掉已经合成好的音频。
         try:
-            _register_segment_audio(video_dir, segment_id, f"tts/{segment_id}.mp3")
+            _register_segment_audio(
+                video_dir, segment_id, f"tts/{segment_id}.mp3", actual
+            )
         except Exception as e:
             logger.warning(f"Failed to update the resume registry for {segment_id}: {e}")
 
-    return audio_path
+    return audio_path, actual
 
 
-def sync_registry(video_id: str, segment_ids: list[str]) -> None:
-    """Write all segment paths to tts_results.json in one shot (concurrent-safe)."""
+def sync_registry(video_id: str, entries: list) -> None:
+    """
+    Write all segment paths (and fitted durations) in one shot (concurrent-safe).
+
+    `entries` 可以是 `["seg-x", ...]`（只有 id，时长从磁盘现量）或
+    `[("seg-x", 2.34), ...]`（管线在合成现场就有时长，优先用后者）。
+    """
     video_dir = get_video_dir(video_id)
     results_path = os.path.join(video_dir, "tts_results.json")
 
@@ -648,8 +668,15 @@ def sync_registry(video_id: str, segment_ids: list[str]) -> None:
                     f"overwrite it during sync."
                 )
                 return
-        for segment_id in segment_ids:
-            tts_results[segment_id] = f"tts/{segment_id}.mp3"
+        for entry in entries:
+            if isinstance(entry, tuple):
+                segment_id, duration = entry
+            else:
+                segment_id, duration = entry, None
+            record: dict = {"path": f"tts/{segment_id}.mp3"}
+            if duration:
+                record["duration"] = round(float(duration), 4)
+            tts_results[segment_id] = record
 
         try:
             with open(results_path, "w", encoding="utf-8") as f:

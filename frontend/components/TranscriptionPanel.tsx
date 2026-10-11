@@ -1,12 +1,8 @@
 
-import React, { memo } from 'react';
+import React, { memo, useMemo } from 'react';
 import { TranscriptionSegment, Speaker } from '../types';
 import { formatTime, getSpeakerColor } from '../utils/helpers';
-import {
-    computeSyncRates,
-    isOutsideFitRange,
-    fitErrorSeconds,
-} from '../utils/playbackSync';
+import type { MixPlan, MixPlanSegment } from '../services/apiService';
 // 标签规则与字幕渲染共用一处：侧边栏把标签画成色块、字幕里去掉它们，
 // 两边的"什么是标签"必须是同一个定义。
 import { splitSubtitleTags, SUBTITLE_TAG_RE } from '../utils/subtitleStyle';
@@ -14,6 +10,8 @@ import SegmentActionsMenu from './SegmentActionsMenu';
 import type { VoiceOption } from '../services/apiService';
 
 interface TranscriptionPanelProps {
+    /** 混音计划：速率/裁剪/匹配告警都从这里读，与播放器同源。 */
+    mixPlan?: MixPlan | null;
     segments: TranscriptionSegment[];
     speakers: Speaker[];
     isTranscribing: boolean;
@@ -195,6 +193,7 @@ const EditableTextArea: React.FC<{
 };
 
 const SegmentCard: React.FC<{
+    mixEntry?: MixPlanSegment;
     segment: TranscriptionSegment;
     speaker?: Speaker;
     isActive?: boolean;
@@ -216,18 +215,18 @@ const SegmentCard: React.FC<{
         segmentId: string,
         opts: { lengthHint?: 'longer' | 'shorter'; customPrompt?: string },
     ) => void;
-}> = memo(({ segment, speaker, isActive, onSegmentUpdate, onSynthesize, onRefit, onSeek, hasClonedVoice, onPreviewVoice, isPreviewingVoice, voices, pinnedVoice, onPickVoice, onToggleMute, onToggleHide, onRetranslate, needsVoiceCloning }) => {
+}> = memo(({ segment, speaker, isActive, mixEntry, onSegmentUpdate, onSynthesize, onRefit, onSeek, hasClonedVoice, onPreviewVoice, isPreviewingVoice, voices, pinnedVoice, onPickVoice, onToggleMute, onToggleHide, onRetranslate, needsVoiceCloning }) => {
     const speakerColor = speaker ? getSpeakerColor(speaker.id) : '#9ca3af';
 
-    // Speed stats come from the same helper the player uses, so what is shown
-    // here is what actually happens during playback.
+    /*
+     * 速率与"装不下"判断来自 plan：播放器、本面板、导出三方同源。
+     * videoRate≠1 恰好就是"音频吸收不了、要视频帮忙"的信号。
+     */
     const targetDuration = segment.endTime - segment.startTime;
-    const { audioRate, videoRate } = computeSyncRates(
-        segment.actualDuration,
-        targetDuration,
-    );
-    const cannotFit = isOutsideFitRange(segment.actualDuration, targetDuration);
-    const fitError = fitErrorSeconds(segment.actualDuration, targetDuration);
+    const audioRate = mixEntry?.atempo ?? 1;
+    const videoRate = mixEntry?.videoRate ?? 1;
+    const cannotFit = videoRate !== 1;
+    const fitError = segment.actualDuration ? segment.actualDuration - targetDuration : 0;
 
     return (
         <div
@@ -489,8 +488,12 @@ export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = memo(({
     segments, speakers, isTranscribing, currentTime, onSegmentUpdate, onSynthesize, onRefit, onSeek,
     clonedVoices, onPreviewVoice, previewingSpeaker,
     voices, pinnedVoices, onPickVoice, onToggleMute, onToggleHide, onRetranslate,
-    needsVoiceCloning
+    needsVoiceCloning, mixPlan
 }) => {
+    const mixEntries = useMemo(
+        () => new Map<string, MixPlanSegment>((mixPlan?.segments ?? []).map(e => [e.id, e])),
+        [mixPlan],
+    );
     const speakerMap = new Map(speakers.map(s => [s.id, s]));
     const listRef = React.useRef<HTMLDivElement>(null);
 
@@ -547,6 +550,7 @@ export const TranscriptionPanel: React.FC<TranscriptionPanelProps> = memo(({
                             <SegmentCard
                                 key={segment.id}
                                 segment={segment}
+                                mixEntry={mixEntries.get(segment.id)}
                                 speaker={speakerMap.get(segment.speakerId)}
                                 isActive={currentTime >= segment.startTime && currentTime < segment.endTime}
                                 onSegmentUpdate={onSegmentUpdate}

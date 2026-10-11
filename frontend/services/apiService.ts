@@ -205,8 +205,24 @@ export async function cancelProcessing(
 /**
  * Get the current processing status of a video.
  */
-export async function getVideoStatus(videoId: string) {
-  const response = await fetch(`${API_BASE}/videos/${videoId}/status`);
+/** 混音计划：mix_service 下发，播放与导出共用的唯一策略产物。 */
+export interface MixPlanSegment {
+  id: string; start: number; end: number;
+  atempo: number; videoRate: number; trim: number | null;
+  played: number; gain: number;
+}
+export interface MixPlan {
+  version: string; policyVersion: number;
+  bed: { kind: 'background' | 'original'; gain: number; duck: [number, number][] } | null;
+  segments: MixPlanSegment[];
+  voiceFadeS: number;
+  master: { targetLufs: number; peakLimitDbfs: number; loudnessRange: number };
+}
+export interface MixStatus { version: string; plan: MixPlan | null; }
+
+export async function getVideoStatus(videoId: string, mixVersion?: string | null) {
+  const query = mixVersion ? `?mix_version=${encodeURIComponent(mixVersion)}` : '';
+  const response = await fetch(`${API_BASE}/videos/${videoId}/status${query}`);
 
   if (!response.ok) {
     const err = await response.json().catch(() => ({ detail: response.statusText }));

@@ -57,6 +57,7 @@ from app.services import (
     tts_service,
 )
 from app.services import pipeline_service
+from app.services import mix_service
 from app.services import voice_clone_service
 
 logger = logging.getLogger(__name__)
@@ -255,11 +256,26 @@ async def upload_video(file: UploadFile = File(...)):
 
 
 @router.get("/{video_id}/status", response_model=VideoStatusResponse)
-async def get_video_status(video_id: str):
+async def get_video_status(video_id: str, mix_version: Optional[str] = None):
     """Get the current processing status of a video with detailed progress info."""
     state = get_state(video_id)
     if not state:
         raise HTTPException(status_code=404, detail="Video not found")
+
+    # 混音计划：与导出用**同一个生成器**（现场生成，永远新鲜）。带 mix_version
+    # 查询参数时做版本协商：命中就只回版本号，不重复下发整个 plan。
+    mix_payload: Optional[dict] = None
+    try:
+        mix_plan = mix_service.build_mix_plan(state)
+        mix_payload = (
+            {"version": mix_plan["version"], "plan": None}
+            if mix_version and mix_version == mix_plan["version"]
+            else {"version": mix_plan["version"], "plan": mix_plan}
+        )
+    except Exception as e:
+        # 没有可混的内容（还没合成/垫底判定不了）→ 界面本来就没有配音可播，
+        # 不给 plan 即可；导出仍会在自己的入口响亮失败。
+        logger.info(f"[{video_id}] no mix plan for status: {e}")
 
     video_dir = video_dir_path(video_id)
     # Resolved, not assumed: a styled export lands in an MKV, so checking only
@@ -307,6 +323,7 @@ async def get_video_status(video_id: str):
         # 工作流状态：这个工程此刻有没有在跑、跑到哪一步、能不能停。
         # 页面重载 / 换标签页后靠它判断"是接管还是新起一单"。
         run=run_registry.snapshot(video_id),
+        mix=mix_payload,
         cancelled_step=state.cancelled_step,
         # 缺口清单：哪些行没有译文 / 没有配音。界面上要能直接指出来，
         # 否则用户只能从成片里"少了一句声音"倒推。
@@ -564,7 +581,7 @@ async def synthesize_speech(video_id: str, req: TTSRequest):
             if (req.target_duration and req.target_duration > 0 and req.target_language)
             else None
         )
-        await tts_service.synthesize_speech(
+        _, actual_duration = await tts_service.synthesize_speech(
             video_id,
             req.segment_id,
             req.text,
@@ -583,6 +600,9 @@ async def synthesize_speech(video_id: str, req: TTSRequest):
         for seg in state.segments:
             if seg.id == req.segment_id:
                 seg.audio_path = audio_path
+                # 与管线同一条规则：实际时长落进 state（混音计划要用，见
+                # mix_service）。单行重合成不写回的话，这一行的 atempo 会一直是旧值。
+                seg.actual_duration = actual_duration
                 break
         save_state(state)
 

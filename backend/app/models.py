@@ -52,6 +52,11 @@ class Segment:
     text: str
     translated_text: str = ""
     audio_path: Optional[str] = None
+    # 这段配音的实际时长（秒），合成时由 TTS 拟合步骤测得并写回。
+    # 混音计划（mix_service）用它算每段的 atempo —— 在此之前它只存在于
+    # 前端的临时状态里（且只在用户展开过那一段的播放器时才有值），服务端
+    # 拿不到，导出与预览各猜各的。
+    actual_duration: Optional[float] = None
     # 该行静音：不合成配音，导出时这一段保持无声（原声轨在整条时间轴上已
     # 被配音轨取代，所以"静音"就是这一格没有任何配音音频）。
     muted: bool = False
@@ -331,7 +336,16 @@ def load_state(video_id: str) -> Optional[VideoState]:
         if segments:
             for s in segments:
                 if s.id in tts_map:
-                    s.audio_path = os.path.join(video_dir, tts_map[s.id])
+                    entry = tts_map[s.id]
+                    if isinstance(entry, dict):
+                        # 新形状：{"path", "duration"} —— 时长是混音计划算 atempo
+                        # 的输入，必须跟路径一起活过重启。
+                        s.audio_path = os.path.join(video_dir, entry["path"])
+                        if entry.get("duration"):
+                            s.actual_duration = float(entry["duration"])
+                    else:
+                        # 旧形状：纯路径字符串
+                        s.audio_path = os.path.join(video_dir, entry)
                 else:
                     # Fallback to direct scan
                     audio_file = f"{s.id}.mp3"
