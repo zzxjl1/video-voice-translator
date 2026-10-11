@@ -1,8 +1,14 @@
 """
 Pydantic schemas for API request/response models.
 """
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
+
+# 一段台词的文本上限。ASR 的单句远小于此；上限是为了挡住把整本书塞进一次 TTS /
+# 翻译请求去烧额度的调用。
+MAX_SEGMENT_TEXT_CHARS = 2000
+# 段 id 会被拼进文件路径，所以在入口就卡死形状（与 tts_service.is_safe_segment_id 一致）。
+SEGMENT_ID_PATTERN = r"^[A-Za-z0-9_-]{1,64}$"
 
 
 # ----- Upload -----
@@ -32,8 +38,8 @@ class SegmentOut(BaseModel):
 # ----- Translation -----
 
 class TranslationSegmentIn(BaseModel):
-    id: str
-    text: str
+    id: str = Field(pattern=SEGMENT_ID_PATTERN)
+    text: str = Field(max_length=MAX_SEGMENT_TEXT_CHARS)
     speaker_id: str
     start_time: float
     # Used to compute the per-segment length budget so the translation fits
@@ -52,9 +58,20 @@ class HideRequest(BaseModel):
 
 
 
+class SegmentTextRequest(BaseModel):
+    """
+    保存编辑器里改过的文本。两个字段都可选，只更新给了的那个。
+
+    原文改动写回 asr_result.json，译文改动写回 translation_result.json —— 之前这两
+    处编辑只触发重译/重配音，从不落盘，刷新页面或导出字幕时改动就不见了。
+    """
+    text: Optional[str] = Field(default=None, max_length=MAX_SEGMENT_TEXT_CHARS)
+    translated_text: Optional[str] = Field(default=None, max_length=MAX_SEGMENT_TEXT_CHARS)
+
+
 class TranslateRequest(BaseModel):
     target_language: str = "English"
-    segments: list[TranslationSegmentIn]
+    segments: list[TranslationSegmentIn] = Field(max_length=2000)
     # Optional requester instructions injected into the translation prompts.
     # Clamped server-side; empty means default behaviour.
     custom_prompt: str = ""
@@ -77,8 +94,8 @@ class TranslateResponse(BaseModel):
 # ----- TTS -----
 
 class TTSRequest(BaseModel):
-    segment_id: str
-    text: str
+    segment_id: str = Field(pattern=SEGMENT_ID_PATTERN)
+    text: str = Field(max_length=MAX_SEGMENT_TEXT_CHARS)
     voice: Optional[str] = None
     # Length of the time slot this line has to fill. When given, the backend
     # measures the result and re-synthesizes once if it misses — this is what
@@ -151,6 +168,10 @@ class VideoStatusResponse(BaseModel):
     # 上一次被用户取消时停在哪个阶段（None = 没取消过）。持久化的，所以重开
     # 页面也知道"上次取消在哪一步、能不能接着跑"。
     cancelled_step: Optional[str] = None
+    # 缺口清单：没有译文 / 没有配音的行 id。路由一直在往里填，但这里以前没声明，
+    # 响应模型把它们丢掉了 —— 界面于是永远拿不到缺口。
+    failed_translation_ids: list[str] = []
+    failed_audio_ids: list[str] = []
     enable_voice_clone: bool = False
     # The dub's target language and Chinese accent as stored on THIS project, so
     # a recovered session resumes the project's own choices instead of whatever

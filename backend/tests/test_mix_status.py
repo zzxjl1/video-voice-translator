@@ -1,7 +1,8 @@
 """回归：/status 的 mix 字段与版本协商（TestClient，不占端口）。"""
 import os, sys, tempfile, subprocess, json
-REPO = "/Users/edenfwu/Desktop/video-voice-translator"
-sys.path.insert(0, os.path.join(REPO, "backend")); os.chdir(os.path.join(REPO, "backend"))
+BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, BACKEND); os.chdir(BACKEND)
+os.environ.setdefault("DASHSCOPE_API_KEY", "test"); os.environ.setdefault("LLM_API_KEY", "test")
 from app import models
 TMP = tempfile.mkdtemp(); models.config.DATA_DIR = TMP
 from app.main import app

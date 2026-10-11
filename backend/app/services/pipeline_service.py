@@ -25,12 +25,13 @@ from typing import Callable, Optional
 from app import config
 from app.models import (
     Segment,
-    Speaker,
     VideoState,
     VideoStatus,
     get_state,
     get_video_dir,
     save_state,
+    save_translations,
+    speakers_from_segments,
 )
 from app.services import (
     asr_service,
@@ -91,6 +92,20 @@ def _detect_resume_phase(video_dir: str, state: VideoState) -> str:
     return "separation"
 
 
+def _discard_audio(video_dir: str, state: VideoState) -> None:
+    """
+    作废全部配音：内存里的路径、`tts_results.json`、以及 `tts/*.mp3` 本身。
+
+    只删登记表不够：`load_state` 在找不到登记时会**扫描 tts/ 目录**把旧 mp3 认回
+    来，旧语言/旧口音的音频就这样"复活"，TTS 阶段又因为"已有音频"整批跳过。
+    """
+    for seg in state.segments:
+        seg.audio_path = None
+        seg.actual_duration = None
+        _remove_artifact(os.path.join(video_dir, "tts"), f"{seg.id}.mp3")
+    _remove_artifact(video_dir, "tts_results.json")
+
+
 def _invalidate_from_translation(video_dir: str, state: VideoState) -> None:
     """
     "从翻译重做"之前，把要重做的产物作废掉。
@@ -105,21 +120,8 @@ def _invalidate_from_translation(video_dir: str, state: VideoState) -> None:
     """
     for seg in state.segments:
         seg.translated_text = ""
-        seg.audio_path = None
-        mp3 = os.path.join(video_dir, "tts", f"{seg.id}.mp3")
-        if os.path.exists(mp3):
-            try:
-                os.remove(mp3)
-            except OSError as e:
-                logger.warning(f"could not remove {mp3}: {e}")
-
-    for name in ("translation_result.json", "tts_results.json"):
-        path = os.path.join(video_dir, name)
-        if os.path.exists(path):
-            try:
-                os.remove(path)
-            except OSError as e:
-                logger.warning(f"could not remove {path}: {e}")
+    _discard_audio(video_dir, state)
+    _remove_artifact(video_dir, "translation_result.json")
 
     # 上一轮留下的缺口清单对新的一轮没有意义。
     state.failed_translation_ids = []
@@ -315,9 +317,8 @@ async def run_pipeline(
         )
         for seg in state.segments:
             seg.translated_text = ""
-            seg.audio_path = None
+        _discard_audio(video_dir, state)
         _remove_artifact(video_dir, "translation_result.json")
-        _remove_artifact(video_dir, "tts_results.json")
         state.failed_translation_ids = []
         await emit({"phase": "translation", "status": "invalidated",
                     "reason": "settings changed"})
@@ -325,9 +326,7 @@ async def run_pipeline(
         logger.warning(
             "[%s] 配音设置变了（口音/克隆）：译文保留，旧配音作废", video_id
         )
-        for seg in state.segments:
-            seg.audio_path = None
-        _remove_artifact(video_dir, "tts_results.json")
+        _discard_audio(video_dir, state)
         await emit({"phase": "tts", "status": "invalidated",
                     "reason": "dubbing settings changed"})
     state.translation_fingerprint = new_translation_fp
@@ -374,7 +373,7 @@ async def run_pipeline(
 
         # Extraction is needed by ASR, separation and export alike, so do it once.
         if not os.path.exists(audio_path):
-            await asyncio.get_event_loop().run_in_executor(
+            await asyncio.get_running_loop().run_in_executor(
                 None, asr_service.extract_audio, state.file_path, audio_path
             )
         state.audio_path = audio_path
@@ -417,13 +416,25 @@ async def run_pipeline(
 
             # Ensure audio is extracted
             if not os.path.exists(audio_path):
-                await asyncio.get_event_loop().run_in_executor(
+                await asyncio.get_running_loop().run_in_executor(
                     None, asr_service.extract_audio, state.file_path, audio_path
                 )
 
-            # Use vocals for ASR if available
+            # Use vocals for ASR if available — but as a 16 kHz mono derivative.
+            # The browser uploads vocals.wav at 44.1 kHz; handing that to ASR (and
+            # to omni, which fetches the same /audio URL) is several times the
+            # upload for no recognition benefit, and diarization wants mono.
+            # Voice cloning keeps reading the full-band vocals.wav itself.
             if os.path.exists(vocals_path):
-                state.audio_path = vocals_path
+                asr_audio_path = os.path.join(video_dir, "vocals_asr.wav")
+                if (
+                    not os.path.exists(asr_audio_path)
+                    or os.path.getmtime(asr_audio_path) < os.path.getmtime(vocals_path)
+                ):
+                    await asyncio.get_running_loop().run_in_executor(
+                        None, asr_service.extract_audio, vocals_path, asr_audio_path
+                    )
+                state.audio_path = asr_audio_path
             else:
                 state.audio_path = audio_path
 
@@ -437,9 +448,9 @@ async def run_pipeline(
             )
 
             state.segments = segments
-            if not state.speakers:
-                unique_labels = sorted(set(seg.speaker_label for seg in segments))
-                state.speakers = [Speaker(id=label, name=label) for label in unique_labels]
+            # 每次识别都按新分段重算：重新识别后 speaker_id 可能不同，沿用旧列表会
+            # 留下指向不存在说话人的条目。id 用 speaker_id（音色/克隆映射的键）。
+            state.speakers = speakers_from_segments(segments)
 
             state.status = VideoStatus.TRANSCRIBED
             save_state(state)
@@ -573,8 +584,6 @@ async def run_pipeline(
         # Phase 2: Translation
         # =====================================================
         if resume_phase in ("separation", "asr", "translation"):
-            await emit({"phase": "translation", "status": "started", "count": len(state.segments)})
-
             state.status = VideoStatus.TRANSLATING
             save_state(state)
 
@@ -582,6 +591,10 @@ async def run_pipeline(
             # the time slot it has to fill. When multimodal enhancement produced
             # a corrected+annotated version of a line, THAT text is what gets
             # translated — the raw ASR text stays untouched in state/编辑器.
+            #
+            # 只翻"还没有译文"的行：整条翻译被作废（换语言/Reprocess）时所有行的
+            # 译文都已清空，等于全翻；而上一次部分失败后的续跑只补缺口 —— 以前
+            # 会把已经译好、已经配好音的行也重翻一遍，既花钱又让它们的配音作废。
             context = [
                 {
                     "id": seg.id,
@@ -591,7 +604,11 @@ async def run_pipeline(
                     "end_time": seg.end_time,
                 }
                 for seg in state.segments
+                if not seg.translated_text
+                and (text_overrides.get(seg.id) or seg.text or "").strip()
             ]
+
+            await emit({"phase": "translation", "status": "started", "count": len(context)})
 
             results, failed_ids = await llm_service.translate_script(
                 video_id, context, target_language, emit=emit,
@@ -630,23 +647,10 @@ async def run_pipeline(
 
             state.status = VideoStatus.TRANSLATED
             save_state(state)
-            # 译文自己落盘一份：`_detect_resume_phase` 就是靠这个文件判断"翻译
-            # 做完了"，而此前它只由 llm_service.translate_script 顺手写 —— 于是
-            # "能不能续跑"取决于另一个模块的副作用。内容一致，重复写是幂等的。
+            # 译文落盘：`_detect_resume_phase` 靠这个文件判断"翻译做完了"。写的是
+            # **整个 state** 的译文（不是本次结果），所以与别处的写入互不覆盖。
             try:
-                with open(
-                    os.path.join(video_dir, "translation_result.json"), "w", encoding="utf-8"
-                ) as f:
-                    json.dump(
-                        [
-                            {"id": seg.id, "translatedText": seg.translated_text}
-                            for seg in state.segments
-                            if seg.translated_text
-                        ],
-                        f,
-                        ensure_ascii=False,
-                        indent=1,
-                    )
+                save_translations(video_id, state.segments)
             except OSError as e:
                 logger.warning(f"[{video_id}] Failed to save translation result: {e}")
 
@@ -772,7 +776,7 @@ async def run_pipeline(
         semaphore = asyncio.Semaphore(max(1, config.TTS_CONCURRENCY))
         counter_lock = asyncio.Lock()
         counters = {"done": already_done}
-        succeeded_segments: list = []      # (segment_id, actual_duration) 或 str
+        succeeded_segments: list[tuple[str, float | None]] = []   # (segment_id, actual_duration)
         last_tts_error: list[str] = []   # 收尾时用它说明"为什么整批都失败"
 
         async def synthesize_segment(seg: Segment) -> None:
@@ -867,7 +871,10 @@ async def run_pipeline(
             for seg in state.segments
             if (seg.text or "").strip() and not seg.muted and not seg.translated_text
         ]
-        no_audio = [seg.id for seg in (to_synthesize or []) if seg.id not in succeeded_segments]
+        # succeeded_segments 里是 (id, duration) 元组：必须先取出 id 再比较，
+        # 否则 `seg.id not in [...]` 恒为真，每次合成成功也会被报成"没配音"。
+        succeeded_ids = {sid for sid, _ in succeeded_segments}
+        no_audio = [seg.id for seg in to_synthesize if seg.id not in succeeded_ids]
         if no_translation or no_audio:
             parts: list[str] = []
             if no_translation:

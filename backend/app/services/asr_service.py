@@ -23,8 +23,6 @@ diarization is not viable on a small CPU-only host, so this cloud call is
 the cheapest way to get transcript + timestamps + speaker ids at once.
 """
 import asyncio
-import hashlib
-import json
 import logging
 import os
 import subprocess
@@ -271,6 +269,14 @@ async def transcribe_video(video_id: str, video_path: str, audio_path: str, file
                     "attributed to a single speaker."
                 )
             break
+        except TimeoutError as e:
+            # 任务已提交、只是还没跑完。换配置重提交只会让同一段音频被**再计费**
+            # 一次（最坏三次），而且慢的原因多半是音频本身长 —— 直接报超时。
+            raise RuntimeError(
+                f"ASR task timed out after {config.ASR_MAX_WAIT}s (model={model}); "
+                "not re-submitting, to avoid being billed for the same audio again. "
+                "Raise ASR_MAX_WAIT for long videos."
+            ) from e
         except Exception as e:  # noqa: BLE001 - we retry with a degraded config
             last_error = e
             logger.warning(
@@ -301,7 +307,7 @@ async def transcribe_video(video_id: str, video_path: str, audio_path: str, file
     )
 
     # Parse results into segments
-    logger.info(f"--- [ASR] Step 4: Parsing ASR results into segments ---")
+    logger.info("--- [ASR] Step 4: Parsing ASR results into segments ---")
     segments = await parse_asr_results(results)
     logger.info(f"--- [ASR] Step 4: Parsing complete. Generated {len(segments)} segments. ---")
     

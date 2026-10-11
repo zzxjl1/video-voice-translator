@@ -5,6 +5,8 @@ python-dotenv>=1.0.0
 openai>=1.60.0
 requests>=2.32.0
 httpx>=0.27.0
+# Export mixes the dubbed timeline with numpy (memory-mapped, chunked).
+numpy>=1.26
 # `instruction`（方言/口音）参数从 1.27.1 才有：1.27.0 及以前传它会让每个
 # 分段在 SpeechSynthesizer 构造器上抛 TypeError（配音整批失败）。
 dashscope>=1.27.1
@@ -12,7 +14,7 @@ dashscope>=1.27.1
 # --- Vocal separation ---
 # No Python package is required for this. The browser (WebGPU/WASM) runs the
 # MDX-Net ONNX model itself and the server only serves the weights and stores
-# the resulting stems; the alternative backend is 302.AI over HTTPS.
+# the resulting stems.
 #
 # Do NOT add audio-separator / torch / torchaudio / demucs here. This host has
 # no GPU, so a local separator would consume hundreds of MB of RSS and make the

@@ -8,6 +8,7 @@ from fastapi import FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 
 from app import config
+from app.models import repair_interrupted_states
 from app.routers import models, subtitles, video
 
 # Configure logging
@@ -40,6 +41,13 @@ async def lifespan(app: FastAPI):
         ", ".join(parts),
         config.SEPARATION_MODE,
     )
+
+    # A process that died mid-run (deploy, OOM, Ctrl-C) leaves projects whose
+    # status is still "transcribing"/"synthesizing". Nothing is running them now,
+    # and the UI would show them as in progress forever.
+    repaired = repair_interrupted_states()
+    if repaired:
+        logger.info("Marked %d interrupted project(s) as cancelled (resumable)", repaired)
 
     logger.info("Startup tasks complete.")
     yield

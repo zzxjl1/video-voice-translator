@@ -23,7 +23,11 @@ export const RUN_STEP_LABEL: Record<string, string> = {
 export function mapServerSegment(seg: any): TranscriptionSegment {
   return {
     id: seg.id,
-    speakerId: seg.speaker_label,
+    // `speaker_id`, not `speaker_label`: it is the key the server stores voice pins
+    // and cloned voices under, and the id of the entries in `speakers`. Using the
+    // display label made every per-speaker lookup (pinned voice, "Cloned" badge,
+    // name, colour) miss.
+    speakerId: seg.speaker_id,
     startTime: seg.start_time,
     endTime: seg.end_time,
     originalText: seg.text,
@@ -50,11 +54,11 @@ export function mapServerSpeakers(spks: any[]): Speaker[] {
  * `color` 是 Speaker 的必填字段：缺了它界面拿到 undefined 会渲染成透明/灰色。
  */
 export function deriveSpeakers(segments: TranscriptionSegment[]): Speaker[] {
-  const labels = Array.from(new Set(segments.map(s => s.speakerId)));
-  return labels.map(label => ({
-    id: label,
-    name: label,
-    color: getSpeakerColor(label),
+  const ids = Array.from(new Set(segments.map(s => s.speakerId)));
+  return ids.map(id => ({
+    id,
+    name: `Speaker ${id}`,
+    color: getSpeakerColor(id),
   }));
 }
 

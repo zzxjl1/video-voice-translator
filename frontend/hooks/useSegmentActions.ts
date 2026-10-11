@@ -2,6 +2,7 @@ import { useCallback } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 
 import {
+  saveSegmentText,
   setSegmentHidden,
   setSegmentMuted,
   synthesizeSpeech,
@@ -176,19 +177,43 @@ export function useSegmentActions({
       return s;
     }));
 
-    // Auto-trigger Processing Chain
-    if (updates.originalText !== undefined) {
-      // Chain: ASR -> Translation -> TTS
-      handleTranslateSegmentImpl(id, updates.originalText).then(newTranslation => {
-        if (newTranslation) {
-          handleSynthesizeSegment(id, newTranslation);
+    const textEdited = updates.originalText !== undefined || updates.translatedText !== undefined;
+    if (!textEdited || !videoId) return;
+
+    /*
+     * 先落盘，再往下走。
+     *
+     * 以前这两条编辑链路（原文→重译→配音、译文→配音）只调用 /translate 或 /tts，
+     * 没有任何一步把新文本写到服务端：导出的字幕读的是服务端的旧文字，配音念的是
+     * 新文字，刷新页面改动还会整个丢掉。
+     *
+     * 必须 await：随后的 /translate 与 /tts 会读服务端存着的这一行（原文、说话人、
+     * 时间槽），写入若还没完成它们读到的就是旧值。
+     */
+    const persisted = saveSegmentText(
+      videoId,
+      id,
+      updates.originalText !== undefined
+        ? { text: updates.originalText }
+        : { translated_text: updates.translatedText },
+    );
+
+    persisted
+      .then(async () => {
+        if (updates.originalText !== undefined) {
+          // Chain: Original -> Translation -> TTS
+          const newTranslation = await handleTranslateSegmentImpl(id, updates.originalText);
+          if (newTranslation) await handleSynthesizeSegment(id, newTranslation);
+        } else if (updates.translatedText !== undefined) {
+          // Chain: Translation -> TTS
+          await handleSynthesizeSegment(id, updates.translatedText);
         }
+      })
+      .catch(e => {
+        console.error('Failed to save the edit:', e);
+        setRawLog(prev => prev + `\n保存修改失败: ${e instanceof Error ? e.message : 'unknown'}\n`);
       });
-    } else if (updates.translatedText !== undefined) {
-      // Chain: Translation -> TTS
-      handleSynthesizeSegment(id, updates.translatedText);
-    }
-  }, [handleTranslateSegmentImpl, handleSynthesizeSegment]);
+  }, [videoId, handleTranslateSegmentImpl, handleSynthesizeSegment]);
 
   /**
    * 隐藏/取消隐藏一行的字幕。

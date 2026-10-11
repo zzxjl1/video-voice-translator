@@ -21,7 +21,7 @@ import json
 import logging
 import os
 
-from app.models import VideoState, get_video_dir
+from app.models import VideoState, video_dir_path
 
 logger = logging.getLogger(__name__)
 
@@ -109,17 +109,19 @@ def _duck_breakpoints(
     return cleaned
 
 
-def _segment_entries(state: VideoState) -> tuple[list[dict], bool]:
+def _segment_entries(state: VideoState) -> list[dict]:
     """
-    每段配音的摆位条目。返回 (entries, state 是否被补写过)。
+    每段配音的摆位条目。
 
-    旧工程没有 actual_duration（以前只写日志不落盘）：这里用 ffprobe 现量一次
-    并写回 —— 是数据补齐，只发生一次，之后随 state 持久化。
+    旧工程没有 actual_duration（以前只写日志不落盘）：这里用 ffprobe 现量。
+    **纯函数、不写盘**：这个函数在 `/status` 的每次轮询里都会被调到，而它拿到
+    的 state 是一份磁盘快照 —— 以前量完顺手 `save_state` 回去，管线正在跑时会
+    用这份旧快照覆盖掉管线刚写的状态。量时长本身有 mtime 缓存（见
+    subtitle_service.probe_duration），重复量不贵。
     """
     from app.services.subtitle_service import probe_duration
 
     entries: list[dict] = []
-    dirty = False
     for seg in state.segments:
         if not seg.audio_path or not os.path.exists(seg.audio_path):
             continue
@@ -132,10 +134,7 @@ def _segment_entries(state: VideoState) -> tuple[list[dict], bool]:
         actual = seg.actual_duration
         if not actual:
             actual = probe_duration(seg.audio_path)
-            if actual:
-                seg.actual_duration = actual
-                dirty = True
-            else:
+            if not actual:
                 # 量不出来（文件损坏）。不是"猜一个 1.0 继续混"：这条按自然速度
                 # 摆入并裁到槽长，导出日志会点名 —— 与"跳过坏文件"同一待遇。
                 logger.warning(
@@ -168,7 +167,7 @@ def _segment_entries(state: VideoState) -> tuple[list[dict], bool]:
             # "自然时长 × 进度"，速率≠1 时对位就是错的）。
             "played": round(played, 4),
         })
-    return entries, dirty
+    return entries
 
 
 def build_mix_plan(state: VideoState) -> dict:
@@ -178,11 +177,11 @@ def build_mix_plan(state: VideoState) -> dict:
     - 没有垫底来源（既无分离产物、原片又没音轨）→ RuntimeError —— 这条链路
       本来就走不到（没音轨过不了 ASR），真出现说明有别的 bug，响亮失败。
     """
-    entries, dirty = _segment_entries(state)
+    entries = _segment_entries(state)
     if not entries:
         raise RuntimeError("没有任何可混音的配音 —— 先完成合成")
 
-    video_dir = get_video_dir(state.video_id)
+    video_dir = video_dir_path(state.video_id)
     background_path = os.path.join(video_dir, "background.wav")
     if os.path.exists(background_path):
         bed = {
@@ -221,12 +220,6 @@ def build_mix_plan(state: VideoState) -> dict:
         },
     }
     plan["version"] = plan_version(plan)
-
-    if dirty:
-        # 补齐过的时长写回 state（只发生一次；info.json 是原子写）
-        from app.models import save_state
-        save_state(state)
-
     return plan
 
 

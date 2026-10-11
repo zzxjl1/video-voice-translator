@@ -79,7 +79,11 @@ async def enhance_transcript(
 
     items: [{"id": ..., "text": <ASR 原文>}]. 返回 {id: 增强后的文本} ——
     【每一条都要返回】（纠错是身份性的：没纠错也要原样返回），调用方据此
-    覆盖翻译输入。失败返回 {}（调用方回退原始 ASR 文本）。
+    覆盖翻译输入。
+
+    **失败抛 RuntimeError**，不返回 {}：调用方（管线）会把返回值落盘缓存，
+    "失败"若与"没有任何需要改的行"共用同一个空结果，失败就会被当成成功缓存下来，
+    之后每次续跑都跳过增强且再也不会重试。抛出后管线回退原始 ASR 文本，且不写缓存。
     """
     if not items or not audio_url:
         return {}
@@ -163,7 +167,7 @@ async def enhance_transcript(
             by_id = None
 
     if not by_id:
-        return {}
+        raise RuntimeError("omni 没有返回可用的审听结果（已重试一次）")
 
     enhanced: dict[str, str] = {}
     for item in items:

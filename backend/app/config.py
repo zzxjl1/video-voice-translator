@@ -172,8 +172,20 @@ LLM_CHUNK_RESERVE_TOKENS = _env_int("LLM_CHUNK_RESERVE_TOKENS", 6000)
 # provider defaults that thinking is ON: a measured one-line translation spent
 # 208 of its 223 output tokens on reasoning. Setting LLM_REASONING_EFFORT=none
 # removes that entirely; this allowance keeps chunks honest while it is on.
-LLM_CHUNK_REASONING_ALLOWANCE_TOKENS = _env_int("LLM_CHUNK_REASONING_ALLOWANCE_TOKENS", 8000)
+#
+# The default scales with `LLM_MAX_TOKENS` instead of being a flat 8000: with the
+# documented default cap of 8192 a flat 8000 left a NEGATIVE answer budget, which
+# silently degraded every translation to one request per line.
+LLM_CHUNK_REASONING_ALLOWANCE_TOKENS = _env_int(
+    "LLM_CHUNK_REASONING_ALLOWANCE_TOKENS",
+    0 if LLM_REASONING_EFFORT.strip().lower() == "none" else min(8000, LLM_MAX_TOKENS // 3),
+)
 LLM_CHUNK_OUTPUT_RESERVE_TOKENS = _env_int("LLM_CHUNK_OUTPUT_RESERVE_TOKENS", 2000)
+# Upper bound on the answer one request is asked to produce, whatever
+# `LLM_MAX_TOKENS` allows. A huge cap (65536) would otherwise put the whole
+# script in ONE request whose generation time can exceed `LLM_TIMEOUT`, and a
+# timeout then loses every line in it instead of a handful.
+LLM_CHUNK_ANSWER_CAP_TOKENS = _env_int("LLM_CHUNK_ANSWER_CAP_TOKENS", 12000)
 # Token estimates, deliberately pessimistic (see _estimate_segment_tokens).
 LLM_SOURCE_CHARS_PER_TOKEN = _env_float("LLM_SOURCE_CHARS_PER_TOKEN", 1.5)
 # Deliberately NO segment-count cap: a script is split by token usage alone, so

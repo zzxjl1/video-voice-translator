@@ -22,7 +22,6 @@ import datetime
 import json
 import logging
 import os
-import re
 from typing import Any, Optional
 
 from openai import AsyncOpenAI
@@ -249,6 +248,23 @@ def _load_local_glossary(video_dir: str) -> dict[str, str]:
     return {}
 
 
+# 少于等于这个行数的请求视为"局部重译"（单行重译菜单等），不重新抽取术语表。
+_PARTIAL_RETRANSLATION_MAX_LINES = 3
+
+
+def _load_cached_glossary(llm_dir: str) -> dict[str, str]:
+    """上一次整片翻译抽取并落盘的术语表；没有或读不出来就是空。"""
+    path = os.path.join(llm_dir, "glossary_extracted.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): str(v) for k, v in data.items()}
+
+
 async def _extract_glossary(
     video_dir: str, segments: list[dict], llm_dir: str, video_id: str | None = None
 ) -> dict[str, str]:
@@ -327,10 +343,11 @@ def _chunk_budgets() -> tuple[int, int]:
     input_budget = int(
         config.LLM_CONTEXT_TOKENS * config.LLM_CHUNK_CONTEXT_USAGE
     ) - config.LLM_CHUNK_RESERVE_TOKENS
-    answer_budget = (
+    answer_budget = min(
         config.LLM_MAX_TOKENS
         - config.LLM_CHUNK_OUTPUT_RESERVE_TOKENS
-        - config.LLM_CHUNK_REASONING_ALLOWANCE_TOKENS
+        - config.LLM_CHUNK_REASONING_ALLOWANCE_TOKENS,
+        config.LLM_CHUNK_ANSWER_CAP_TOKENS,
     )
     return input_budget, answer_budget
 
@@ -668,11 +685,17 @@ async def translate_script(
         target_language: Target language for translation.
 
     Returns:
-        List of dicts with keys: id, translatedText (the format persisted to
-        translation_result.json and consumed by app.models.load_state).
+        `(results, failed_ids)`. `results` is a list of dicts with keys id and
+        translatedText, covering only the segments passed in.
+
+        This function deliberately does NOT write `translation_result.json`.
+        That file is the project-wide record of every line's translation
+        (see `app.models.save_translations`), and a caller may hand us just ONE
+        line — writing our partial result over it used to wipe every other
+        line's translation. Callers merge into their `state` and persist that.
     """
     if not segments:
-        return []
+        return [], []
 
     video_dir = get_video_dir(video_id)
     llm_dir = os.path.join(video_dir, "llm")
@@ -733,7 +756,12 @@ async def translate_script(
     # ---- Glossary: local file wins, then auto-extraction ----
     glossary = _load_local_glossary(video_dir)
     if config.GLOSSARY_AUTO_EXTRACT:
-        extracted = await _extract_glossary(video_dir, items, llm_dir, video_id=video_id)
+        if len(items) <= _PARTIAL_RETRANSLATION_MAX_LINES:
+            # 重译一两行：这点文本里提不出术语表，只会白花一次 LLM 调用，
+            # 还会用"只有这一行"的结果覆盖整片的术语表。有缓存就复用。
+            extracted = _load_cached_glossary(llm_dir)
+        else:
+            extracted = await _extract_glossary(video_dir, items, llm_dir, video_id=video_id)
         # Explicit local entries always take precedence over auto-extracted ones.
         merged = dict(extracted)
         merged.update(glossary)
@@ -928,16 +956,12 @@ async def translate_script(
             f"{len(tag_invented)} line(s) added an unknown tag {list(tag_invented)[:6]}"
         )
 
-    # ---- Persist in the format expected by models.load_state ----
     ordered = [
         {"id": item["id"], "translatedText": translations[item["id"]]}
         for item in items
         if item["id"] in translations
     ]
-
-    latest_path = os.path.join(video_dir, "translation_result.json")
-    _dump(latest_path, ordered, "translation result")
-    logger.info(f"[{video_id}] Saved {len(ordered)} translations to {latest_path}")
+    logger.info(f"[{video_id}] Translated {len(ordered)}/{len(items)} segment(s)")
 
     # 失败清单一起返回：调用方必须知道"哪些行没有译文" —— 以前只有一句
     # logger.warning，管线照旧走到 COMPLETED，用户是在成片里才发现的。

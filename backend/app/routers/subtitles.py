@@ -22,24 +22,28 @@ On burning
 ----------
 There is deliberately no burn endpoint. Rendering text into frames needs libass
 plus an installed CJK font and forces a full video re-encode, which this class of
-host cannot do — `capabilities()["burn_server"]` reports exactly that, and the
+host cannot do — `capabilities()["burn"]` reports exactly that, and the
 UI greys the option out. Burning happens in the browser instead (Canvas2D +
 MediaRecorder), where it costs the server nothing.
 """
 import logging
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 
-from app import config
-from app.models import get_state, save_state
+from app.deps import validate_video_id
+from app.models import get_state, update_state_fields
 from app.services import subtitle_service
 from app.services.subtitle_service import SubtitleStyle
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/subtitles", tags=["subtitles"])
-video_router = APIRouter(prefix="/videos", tags=["subtitles"])
+# The same shape check the main video router applies: without it a malformed id
+# reaches `get_state` / the filesystem through these routes.
+video_router = APIRouter(
+    prefix="/videos", tags=["subtitles"], dependencies=[Depends(validate_video_id)]
+)
 
 # Text for the style editor's preview cue, when the playhead is not on a line.
 #
@@ -114,7 +118,7 @@ def _safe_filename_track(track: str) -> str:
 
 
 @router.get("/capabilities")
-async def get_capabilities():
+def get_capabilities():
     """
     Which subtitle deliveries this server can actually perform, and why not.
 
@@ -129,7 +133,7 @@ async def get_capabilities():
 
 
 @router.get("/defaults")
-async def get_defaults():
+def get_defaults():
     """The style a video starts with (config-derived)."""
     return {"style": subtitle_service.default_style().to_dict()}
 
@@ -140,7 +144,7 @@ async def get_defaults():
 
 
 @video_router.get("/{video_id}/subtitles/style")
-async def get_style(video_id: str):
+def get_style(video_id: str):
     """The style in effect for this video, plus the server default for reset."""
     state = get_state(video_id)
     if not state:
@@ -154,26 +158,34 @@ async def get_style(video_id: str):
 
 
 @video_router.put("/{video_id}/subtitles/style")
-async def put_style(video_id: str, style: dict):
+def put_style(video_id: str, style: dict):
     """
     Save this video's subtitle style.
 
-    The body is taken as a plain dict and normalised by `SubtitleStyle`, so a
-    stale client sending an unknown key gets it ignored rather than a 422, and
-    out-of-range numbers are clamped instead of corrupting every later export.
+    The body is a PATCH: it is merged over the style already saved for this video,
+    so a client that sends only the field it changed (which is what the style
+    panel does while a slider moves) does not reset every other field to its
+    default. Unknown keys are ignored and out-of-range numbers are clamped by
+    `SubtitleStyle`, so a stale client gets a 200 instead of a 422 and a bad value
+    cannot corrupt every later export.
+
+    These endpoints are plain `def`: they read audio durations through ffprobe
+    (`build_cues`), and FastAPI runs a sync endpoint in its thread pool instead of
+    stalling the event loop that also carries the SSE progress streams.
     """
     state = get_state(video_id)
     if not state:
         raise HTTPException(status_code=404, detail="Video not found")
 
-    normalised = SubtitleStyle.from_dict(style)
-    state.subtitle_style = normalised.to_dict()
-    save_state(state)
-    return {"video_id": video_id, "style": state.subtitle_style}
+    merged = SubtitleStyle.from_dict({**_style_for(state).to_dict(), **(style or {})})
+    # `update_state_fields`, not `save_state`: a pipeline run holds an older copy of
+    # this state and writes it back many times; see models._USER_OWNED_FIELDS.
+    update_state_fields(video_id, subtitle_style=merged.to_dict())
+    return {"video_id": video_id, "style": merged.to_dict()}
 
 
 @video_router.post("/{video_id}/subtitles/preview")
-async def preview_cues(video_id: str, body: dict):
+def preview_cues(video_id: str, body: dict):
     """
     Cues rendered with a style the caller supplies, WITHOUT saving it.
 
@@ -223,7 +235,7 @@ async def preview_cues(video_id: str, body: dict):
 
 
 @video_router.get("/{video_id}/subtitles.srt")
-async def download_srt(video_id: str, track: str = Query(default="")):
+def download_srt(video_id: str, track: str = Query(default="")):
     """
     Download the subtitles as a standalone .srt file.
 

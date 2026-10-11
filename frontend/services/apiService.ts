@@ -94,6 +94,32 @@ export async function setSegmentHidden(
 }
 
 
+/**
+ * 把用户在编辑器里改过的文本落盘（原文 / 译文）。
+ *
+ * 以前这两处编辑只触发重译或重配音，从不写盘：刷新页面改动就丢，导出的字幕
+ * 还是旧文字。服务端同时会作废这一行的旧配音（它念的是旧文本）。
+ */
+export async function saveSegmentText(
+  videoId: string,
+  segmentId: string,
+  fields: { text?: string; translated_text?: string },
+): Promise<void> {
+  const response = await fetch(
+    `${API_BASE}/videos/${videoId}/segments/${encodeURIComponent(segmentId)}/text`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(fields),
+    },
+  );
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ detail: response.statusText }));
+    throw new Error(err.detail || 'Failed to save the edit');
+  }
+}
+
+
 export async function translateScript(
   videoId: string,
   segments: { id: string; text: string; speaker_id: string; start_time: number; end_time?: number }[],

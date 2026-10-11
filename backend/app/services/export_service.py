@@ -14,6 +14,7 @@ cheap:
 * numpy is used for the mixing when present; a stdlib fallback keeps the
   module working without it.
 """
+import asyncio
 import json
 import logging
 import os
@@ -25,7 +26,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from app import config
-from app.models import VideoState, get_state, get_video_dir
+from app.models import VideoState, get_state, get_video_dir, video_dir_path
 from app.services import mix_service, subtitle_service
 
 logger = logging.getLogger(__name__)
@@ -52,7 +53,10 @@ def get_export_path(video_id: str, container: str = "mp4") -> str:
         if container == "mkv"
         else config.EXPORT_FILENAME
     )
-    return os.path.join(get_video_dir(video_id), name)
+    # No mkdir: `find_export` calls this from read-only endpoints, and creating a
+    # directory because someone asked about a project that does not exist is how
+    # a GET used to leave empty folders behind.
+    return os.path.join(video_dir_path(video_id), name)
 
 
 def find_export(video_id: str) -> Optional[tuple[str, str]]:
@@ -99,6 +103,32 @@ def _drop_other_exports(video_id: str, keep_container: str) -> None:
             logger.info(f"[{video_id}] Removed stale .{container} export")
         except OSError as e:
             logger.warning(f"[{video_id}] Could not remove stale export {stale}: {e}")
+
+
+def resolve_plan(
+    state: VideoState, patch: Optional[dict] = None
+) -> subtitle_service.ExportPlan:
+    """
+    The plan an export should use: the saved one, overlaid with `patch`.
+
+    The STYLE always starts from the project's own saved style
+    (`state.subtitle_style`, what the style panel edits) and only `patch["style"]`
+    keys override it. The plan used to carry a style of its own that nothing ever
+    updated, so an embedded/MKV export came out in the config defaults no matter
+    what the user had set in the panel — only the browser burn-in honoured it.
+    """
+    merged = subtitle_service.ExportPlan.from_dict(
+        getattr(state, "subtitle_export", None)
+    ).to_dict()
+    patch = patch or {}
+    for key in ("enabled", "format", "tracks", "default_track"):
+        if patch.get(key) is not None:
+            merged[key] = patch[key]
+    project_style = subtitle_service.SubtitleStyle.from_dict(
+        getattr(state, "subtitle_style", None)
+    ).to_dict()
+    merged["style"] = {**project_style, **(patch.get("style") or {})}
+    return subtitle_service.ExportPlan.from_dict(merged)
 
 
 def container_for(plan: subtitle_service.ExportPlan) -> str:
@@ -647,30 +677,61 @@ def _mux(
     if output_path.endswith(".mp4"):
         # Only meaningful for MP4; the Matroska muxer rejects the option.
         cmd += ["-movflags", "+faststart"]
-    cmd.append(output_path)
+
+    # Written beside the target and renamed into place only on success. Muxing
+    # straight onto `output_path` meant a failed (or killed) export destroyed the
+    # previous good file, which `export_video` explicitly promises not to do.
+    base, extension = os.path.splitext(output_path)
+    partial_path = f"{base}.part{extension}"
+    cmd.append(partial_path)
 
     logger.info(f"[{video_id}] Muxing: {' '.join(cmd)}")
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"ffmpeg mux failed: {result.stderr[-800:] if result.stderr else 'unknown error'}"
-        )
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"ffmpeg mux failed: {result.stderr[-800:] if result.stderr else 'unknown error'}"
+            )
+        os.replace(partial_path, output_path)
+    finally:
+        if os.path.exists(partial_path):
+            try:
+                os.remove(partial_path)
+            except OSError:
+                pass
+
+
+# One export per video at a time: they share `dubbed_timeline.wav`, `bed_ducked.wav`
+# and the output name, so two concurrent runs would interleave writes into the same
+# files and could ship a corrupt mix.
+_export_locks: dict[str, asyncio.Lock] = {}
 
 
 async def export_video(
     video_id: str,
     emit: Optional[Callable] = None,
-) -> str:
+    plan: Optional[subtitle_service.ExportPlan] = None,
+) -> ExportResult:
     """
-    Produce the final dubbed video for a video and return its path.
+    Produce the final dubbed video for a video.
 
-    Reads the subtitle plan from the video's own state, so the pipeline's
-    automatic export and an explicit POST /export produce the same file.
+    `plan` is the subtitle plan for THIS export. When omitted it is resolved from
+    the video's saved state (`resolve_plan`). Passing it explicitly is what lets
+    an export use a plan that must not be persisted (the browser burn-in asks for
+    a subtitle-free file without changing the project's saved preference).
 
     Emits progress events through `emit` when provided (async callable).
     """
-    import asyncio
+    lock = _export_locks.setdefault(video_id, asyncio.Lock())
+    async with lock:
+        return await _export_video_locked(video_id, emit, plan)
 
+
+async def _export_video_locked(
+    video_id: str,
+    emit: Optional[Callable],
+    plan: Optional[subtitle_service.ExportPlan],
+) -> ExportResult:
     if not is_available():
         raise RuntimeError("ffmpeg/ffprobe not found — export requires them on PATH")
 
@@ -678,9 +739,7 @@ async def export_video(
     if not state:
         raise RuntimeError("Video not found")
 
-    plan = subtitle_service.ExportPlan.from_dict(
-        getattr(state, "subtitle_export", None)
-    )
+    plan = plan or resolve_plan(state)
     container = container_for(plan)
 
     async def _emit(event: dict) -> None:
@@ -689,7 +748,7 @@ async def export_video(
 
     await _emit({"phase": "export", "status": "started"})
 
-    duration = await asyncio.get_event_loop().run_in_executor(
+    duration = await asyncio.get_running_loop().run_in_executor(
         None, probe_duration, state.file_path
     )
     if duration <= 0:
@@ -698,11 +757,11 @@ async def export_video(
     # 混音计划：mix_service 从 state 算出的唯一权威（数值/包络/摆位）。
     # 执行端**现场**生成 —— 永远新鲜，不存在"用过期 plan"的问题；播放端拿到的
     # 是同一份生成器的输出（见 /status 的 mix 字段）。
-    mix_plan = await asyncio.get_event_loop().run_in_executor(
+    mix_plan = await asyncio.get_running_loop().run_in_executor(
         None, lambda: mix_service.build_mix_plan(state)
     )
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     progress_queue: asyncio.Queue = asyncio.Queue()
 
     def on_progress(current: int, total: int) -> None:
@@ -730,7 +789,7 @@ async def export_video(
 
     await _emit({"phase": "export", "status": "bed"})
 
-    bed_path = await asyncio.get_event_loop().run_in_executor(
+    bed_path = await asyncio.get_running_loop().run_in_executor(
         None, lambda: build_ducked_bed(video_id, state, mix_plan, duration)
     )
 

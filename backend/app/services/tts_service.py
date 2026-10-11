@@ -4,14 +4,13 @@ import logging
 import os
 import random
 import re
-import subprocess
 import threading
 
 import dashscope
 from dashscope.audio.tts_v2 import SpeechSynthesizer
 
 from app import config
-from app.models import get_video_dir
+from app.models import _atomic_write_json, get_video_dir
 from app.services import usage_service
 
 logger = logging.getLogger(__name__)
@@ -40,6 +39,15 @@ _voice_map_lock = threading.Lock()
 # `tts_results.json` is read-modify-written for every segment. The pipeline
 # now synthesizes segments concurrently, so guard those writes with a lock.
 _registry_lock = threading.Lock()
+
+
+# segment_id 会被拼进文件路径（tts/{id}.mp3），必须是安全的"单段文件名"。ASR 生成
+# 的 id 形如 seg-1a2b3c4d；这里放宽到字母数字/下划线/短横线，挡住 `../` 之类。
+_SAFE_SEGMENT_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def is_safe_segment_id(segment_id: str) -> bool:
+    return bool(_SAFE_SEGMENT_ID.match(segment_id or ""))
 
 
 def _voice_map_path(video_id: str) -> str:
@@ -244,8 +252,7 @@ def _register_segment_audio(
         tts_results[segment_id] = entry
 
         try:
-            with open(results_path, "w", encoding="utf-8") as f:
-                json.dump(tts_results, f, ensure_ascii=False, indent=2)
+            _atomic_write_json(results_path, tts_results)
         except Exception as e:
             logger.warning(f"Failed to update tts registry for {segment_id}: {e}")
 
@@ -358,7 +365,7 @@ async def _synthesize_with_retries(
             if audio:
                 return audio
             last_error = RuntimeError("TTS returned empty audio")
-        except asyncio.TimeoutError as e:
+        except asyncio.TimeoutError:
             last_error = RuntimeError(
                 f"合成超时（>{config.TTS_CALL_TIMEOUT}s，网络或服务端无响应）"
             )
@@ -536,7 +543,7 @@ async def synthesize_speech(
     speech_rate: float | None = None,
     target_duration: float | None = None,
     instruction: str | None = None,
-) -> str:
+) -> tuple[str, float | None]:
     """
     Synthesize speech using Alibaba DashScope Qwen-Audio-TTS.
     Uses non-streaming (blocking) call mode.
@@ -566,6 +573,9 @@ async def synthesize_speech(
         混音计划要用它算每段的 atempo，而它只有这里量得到 —— 以前只写日志，
         结果导出与预览都拿不到，各猜各的。
     """
+    if not is_safe_segment_id(segment_id):
+        raise ValueError(f"invalid segment id: {segment_id!r}")
+
     # 入口净化，先于一切：合成与时长拟合都必须用同一份净化后的文本。
     text = _sanitize_for_tts(text, segment_id)
     voice = voice or config.TTS_DEFAULT_VOICE
@@ -576,7 +586,7 @@ async def synthesize_speech(
         f"{', instruction: ' + instruction if instruction else ''} for {segment_id}"
     )
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     # The SDK call is blocking -> run it in the thread pool so the event loop
     # (and other concurrent segment jobs) keep making progress.
@@ -624,6 +634,41 @@ async def synthesize_speech(
     return audio_path, actual
 
 
+def discard_segment_audio(video_id: str, segment_id: str) -> None:
+    """
+    作废一行的配音：删 mp3，并把它从登记表里摘掉。
+
+    用在"这一行的文本改了"的时刻：旧音频念的是旧文本，留着会让导出的成片与字幕
+    说的不是同一句话。登记表读不出来时不写回（理由同 `_register_segment_audio`）。
+    """
+    if not is_safe_segment_id(segment_id):
+        return
+    video_dir = get_video_dir(video_id)
+    try:
+        os.remove(os.path.join(video_dir, "tts", f"{segment_id}.mp3"))
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        logger.warning(f"[{video_id}] could not remove audio of {segment_id}: {e}")
+
+    results_path = os.path.join(video_dir, "tts_results.json")
+    with _registry_lock:
+        try:
+            with open(results_path, "r", encoding="utf-8") as f:
+                tts_results = json.load(f)
+        except FileNotFoundError:
+            return
+        except Exception as e:
+            logger.error(f"[{video_id}] tts_results.json is corrupt ({e}); left untouched")
+            return
+        if tts_results.pop(segment_id, None) is None:
+            return
+        try:
+            _atomic_write_json(results_path, tts_results)
+        except Exception as e:
+            logger.warning(f"[{video_id}] could not update the tts registry: {e}")
+
+
 def sync_registry(video_id: str, entries: list) -> None:
     """
     Write all segment paths (and fitted durations) in one shot (concurrent-safe).
@@ -659,7 +704,6 @@ def sync_registry(video_id: str, entries: list) -> None:
             tts_results[segment_id] = record
 
         try:
-            with open(results_path, "w", encoding="utf-8") as f:
-                json.dump(tts_results, f, ensure_ascii=False, indent=2)
+            _atomic_write_json(results_path, tts_results)
         except Exception as e:
             logger.warning(f"Failed to sync tts registry: {e}")

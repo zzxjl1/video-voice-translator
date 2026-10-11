@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from app import config
 from app.deps import enforce_separator_token
+from app.http_range import iter_file_range, parse_range
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ def _model_fingerprint(path: str) -> str:
 
 
 @router.get("/separator")
-async def separator_info():
+def separator_info():
     """
     Describe the client-side separation model.
 
@@ -101,10 +102,12 @@ async def download_separator_model(request: Request):
 
     common_headers = {
         "Accept-Ranges": "bytes",
-        # Versioned URL would be nicer, but the fingerprint in the ETag plus
-        # the query string the client appends give the same effect.
+        # The fingerprint in the ETag, plus the `?v=` the client appends, version
+        # the URL. `private`, not `public`: the request carries a per-user token in
+        # its query string, and a shared cache must not store or replay a response
+        # for a URL that identifies a user's session.
         "ETag": f'"{fingerprint}"',
-        "Cache-Control": "public, max-age=31536000, immutable",
+        "Cache-Control": "private, max-age=31536000, immutable",
     }
 
     if request.method == "HEAD":
@@ -114,42 +117,20 @@ async def download_separator_model(request: Request):
             headers={**common_headers, "Content-Length": str(file_size)},
         )
 
-    range_header = request.headers.get("range")
-    if not range_header:
+    byte_range = parse_range(request.headers.get("range", ""), file_size)
+    if byte_range is None:
         return FileResponse(path, media_type=content_type, headers=common_headers)
 
-    try:
-        range_spec = range_header.strip().split("=", 1)[1]
-        start_str, _, end_str = range_spec.partition("-")
-        start = int(start_str) if start_str else 0
-        end = int(end_str) if end_str else file_size - 1
-    except (IndexError, ValueError):
-        raise HTTPException(status_code=416, detail="Malformed Range header")
-
-    end = min(end, file_size - 1)
-    if start > end or start >= file_size:
-        raise HTTPException(status_code=416, detail="Range not satisfiable")
-
+    start, end = byte_range
     content_length = end - start + 1
-
-    def iter_range():
-        with open(path, "rb") as f:
-            f.seek(start)
-            remaining = content_length
-            while remaining > 0:
-                chunk = f.read(min(1024 * 1024, remaining))
-                if not chunk:
-                    break
-                remaining -= len(chunk)
-                yield chunk
-
-    headers = dict(common_headers)
-    headers.update(
-        {
-            "Content-Range": f"bytes {start}-{end}/{file_size}",
-            "Content-Length": str(content_length),
-        }
-    )
+    headers = {
+        **common_headers,
+        "Content-Range": f"bytes {start}-{end}/{file_size}",
+        "Content-Length": str(content_length),
+    }
     return StreamingResponse(
-        iter_range(), status_code=206, media_type=content_type, headers=headers
+        iter_file_range(path, start, content_length, chunk=1024 * 1024),
+        status_code=206,
+        media_type=content_type,
+        headers=headers,
     )

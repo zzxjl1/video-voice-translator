@@ -2,6 +2,7 @@ import datetime
 import json
 import logging
 import os
+import threading
 from dataclasses import asdict, dataclass, field, fields
 from enum import Enum
 from typing import Optional
@@ -211,6 +212,16 @@ def _atomic_write_json(path: str, data) -> None:
     os.replace(tmp_path, path)
 
 
+# 这几个字段只由各自的专用端点写（字幕样式面板 / 导出面板），管线不碰它们。
+# 但管线手里是一份"开跑时读入"的 state 副本，整段运行里会 `save_state` 很多次 ——
+# 若照单全写，运行期间用户改的字幕样式会被副本里的旧值抹掉（lost update）。
+# 所以 `save_state` 对这几个字段**以磁盘为准**，要改它们必须走 `update_state_fields`。
+_USER_OWNED_FIELDS = ("subtitle_style", "subtitle_export")
+
+# 与下面几个读—改—写文件共用的锁，定义在前面以便 save_state 使用。
+_file_lock = threading.RLock()
+
+
 def save_state(state: VideoState):
     """Save video state to the filesystem (atomically)."""
     video_id = state.video_id
@@ -221,11 +232,44 @@ def save_state(state: VideoState):
     data = state.to_dict()
     data.pop("segments", None)
 
-    _atomic_write_json(state_path, data)
+    with _file_lock:
+        existing = _read_json(state_path, {})
+        if isinstance(existing, dict):
+            for key in _USER_OWNED_FIELDS:
+                if key in existing:
+                    data[key] = existing[key]
+        _atomic_write_json(state_path, data)
     logger.info(f"Saved metadata to {state_path}")
 
 
+def update_state_fields(video_id: str, **fields) -> None:
+    """
+    只改 info.json 里指定的字段（读—改—写，整体原子）。
+
+    用于 `_USER_OWNED_FIELDS`：它们不能经由 `save_state` 写，否则会和管线手里的
+    旧副本互相覆盖。info.json 不存在（工程已被删）时抛 FileNotFoundError。
+    """
+    state_path = os.path.join(video_dir_path(video_id), "info.json")
+    with _file_lock:
+        existing = _read_json(state_path, None)
+        if not isinstance(existing, dict):
+            raise FileNotFoundError(state_path)
+        existing.update(fields)
+        _atomic_write_json(state_path, existing)
+
+
 SEGMENT_FLAGS_FILENAME = "segment_flags.json"
+
+# 这几个文件都是"读—改—写"：多个请求线程（同步端点跑在线程池里）同时改会互相
+# 覆盖，共用上面的 `_file_lock`（进程内一把锁就够 —— 部署是单 worker）。
+
+
+def _read_json(path: str, default):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return default
 
 
 def set_segment_flag(video_id: str, segment_id: str, flag: str, value: bool) -> None:
@@ -239,22 +283,112 @@ def set_segment_flag(video_id: str, segment_id: str, flag: str, value: bool) -> 
     video_dir = get_video_dir(video_id)
     path = os.path.join(video_dir, SEGMENT_FLAGS_FILENAME)
 
-    data: dict = {}
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            loaded = json.load(f)
-            if isinstance(loaded, dict):
-                data = loaded
-    except (OSError, json.JSONDecodeError):
-        data = {}
+    with _file_lock:
+        data = _read_json(path, {})
+        if not isinstance(data, dict):
+            data = {}
+        ids = [i for i in (data.get(flag) or []) if i != segment_id]
+        if value:
+            ids.append(segment_id)
+        data[flag] = ids
+        _atomic_write_json(path, data)
 
-    ids = [i for i in (data.get(flag) or []) if i != segment_id]
-    if value:
-        ids.append(segment_id)
-    data[flag] = ids
 
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=1)
+TRANSLATION_FILENAME = "translation_result.json"
+ASR_FILENAME = "asr_result.json"
+
+
+def save_translations(video_id: str, segments: list["Segment"]) -> None:
+    """
+    把**整个工程**每一行的译文写进 translation_result.json。
+
+    这个文件是"全片译文"的唯一记录，所以写入方必须传完整的 segments（从 state
+    来），而不是某次请求里的几行：以前单行重译把只含这一行的结果写进来，刷新页面
+    后其余行的译文全部消失。没有译文的行不写（与 load_state 的读取对应）。
+    """
+    path = os.path.join(get_video_dir(video_id), TRANSLATION_FILENAME)
+    payload = [
+        {"id": seg.id, "translatedText": seg.translated_text}
+        for seg in segments
+        if seg.translated_text
+    ]
+    with _file_lock:
+        _atomic_write_json(path, payload)
+
+
+def patch_asr_text(video_id: str, segment_id: str, text: str) -> bool:
+    """
+    把用户在编辑器里改过的**原文**写回 asr_result.json。返回是否找到这一行。
+
+    asr_result.json 是原文的唯一落盘处（`save_state` 不存 segments），不写回的话
+    刷新页面改动就丢了，而字幕、续跑、重译都会读回旧文本。
+    """
+    path = os.path.join(get_video_dir(video_id), ASR_FILENAME)
+    with _file_lock:
+        data = _read_json(path, None)
+        if not isinstance(data, list):
+            return False
+        found = False
+        for item in data:
+            if isinstance(item, dict) and item.get("id") == segment_id:
+                item["text"] = text
+                found = True
+                break
+        if found:
+            _atomic_write_json(path, data)
+        return found
+
+
+def speakers_from_segments(segments: list["Segment"]) -> list[Speaker]:
+    """分段里出现过的说话人：id 是 ASR 的 speaker_id，name 是展示标签。"""
+    labels: dict[str, str] = {}
+    for seg in segments:
+        labels.setdefault(seg.speaker_id, seg.speaker_label or seg.speaker_id)
+    return [Speaker(id=sid, name=labels[sid]) for sid in sorted(labels)]
+
+
+ENHANCED_FILENAME = "enhanced_transcript.json"
+
+
+def drop_enhanced_line(video_id: str, segment_id: str) -> None:
+    """
+    把一行从 omni 审听缓存里去掉。
+
+    用户手改了某行原文之后，缓存里那一行（按**旧**原文纠错/打标签的版本）就过期了：
+    留着的话，随后的行级重译会把它当"审听版"套上去，把用户刚改的文字顶掉。
+    """
+    path = os.path.join(video_dir_path(video_id), ENHANCED_FILENAME)
+    with _file_lock:
+        data = _read_json(path, None)
+        lines = data.get("lines") if isinstance(data, dict) else None
+        if not isinstance(lines, dict) or segment_id not in lines:
+            return
+        lines.pop(segment_id)
+        _atomic_write_json(path, data)
+
+
+def _normalise_speakers(state: "VideoState") -> None:
+    """
+    说话人 id 统一成分段的 `speaker_id`（ASR 给的 "0"、"1"…）。
+
+    老工程里 `Speaker.id` 存的是展示标签（"Speaker 0"），而音色映射、克隆映射、
+    管线合成全按 `speaker_id` 查 —— 于是界面上钉音色、试听克隆音色都对不上号。
+    这里把旧数据就地迁到新约定：id=speaker_id，name=展示标签。
+    """
+    if not state.segments:
+        return
+    by_label = {s.speaker_label: s.speaker_id for s in state.segments}
+    ids = {s.speaker_id for s in state.segments}
+    names = {s.speaker_id: s.speaker_label for s in state.segments}
+    fixed: list[Speaker] = []
+    seen: set[str] = set()
+    for sp in state.speakers:
+        sid = sp.id if sp.id in ids else by_label.get(sp.id, sp.id)
+        if sid in seen:
+            continue
+        seen.add(sid)
+        fixed.append(Speaker(id=sid, name=sp.name if sp.name != sp.id else names.get(sid, sp.name)))
+    state.speakers = fixed
 
 
 def load_state(video_id: str) -> Optional[VideoState]:
@@ -375,8 +509,10 @@ def load_state(video_id: str) -> Optional[VideoState]:
 
         # Assemble
         data["segments"] = segments
-        return VideoState.from_dict(data)
-        
+        state = VideoState.from_dict(data)
+        _normalise_speakers(state)
+        return state
+
     except Exception as e:
         # 走到这里说明是上面没预料到的异常。**仍然不要把工程判成不存在** ——
         # info.json 完好就说明工程在，只是衍生数据没读全（P1 #6）。
@@ -390,6 +526,52 @@ def load_state(video_id: str) -> Optional[VideoState]:
         except Exception as e2:
             logger.error(f"[{video_id}] even the metadata could not be parsed: {e2}")
             return None
+
+
+# Statuses that only exist WHILE a pipeline is running. Seeing one at startup, when
+# no pipeline can be running, means the previous process died mid-run.
+_IN_FLIGHT_STATUSES = {
+    VideoStatus.EXTRACTING_AUDIO,
+    VideoStatus.TRANSCRIBING,
+    VideoStatus.TRANSLATING,
+    VideoStatus.SYNTHESIZING,
+}
+
+
+def repair_interrupted_states() -> int:
+    """
+    Turn "in flight" statuses left behind by a dead process into CANCELLED.
+
+    CANCELLED already means "resumable from the last finished phase", which is
+    exactly the truth: every stage writes its artifact as it completes. Only
+    `info.json` is touched, and only the status field. Returns how many projects
+    were repaired.
+    """
+    if not os.path.isdir(config.DATA_DIR):
+        return 0
+    repaired = 0
+    for name in os.listdir(config.DATA_DIR):
+        info_path = os.path.join(config.DATA_DIR, name, "info.json")
+        if not os.path.isfile(info_path):
+            continue
+        with _file_lock:
+            data = _read_json(info_path, None)
+            if not isinstance(data, dict):
+                continue
+            try:
+                status = VideoStatus(data.get("status"))
+            except ValueError:
+                continue
+            if status not in _IN_FLIGHT_STATUSES:
+                continue
+            data["status"] = VideoStatus.CANCELLED.value
+            data.setdefault("cancelled_step", None)
+            try:
+                _atomic_write_json(info_path, data)
+                repaired += 1
+            except OSError as e:
+                logger.warning(f"[{name}] could not repair interrupted status: {e}")
+    return repaired
 
 
 def get_or_create_state(video_id: str, filename: str = "", file_path: str = "") -> VideoState:

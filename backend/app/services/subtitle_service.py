@@ -87,16 +87,24 @@ class SubtitleStyle:
     VALID_BACKGROUNDS = ("none", "box")
 
     def normalised(self) -> "SubtitleStyle":
-        """Clamp anything a hand-edited request could have got wrong."""
+        """
+        Clamp anything a hand-edited request could have got wrong.
+
+        Every numeric field goes through `_clamped`, which falls back to the
+        field's default for junk (`"abc"`, `None`, NaN) instead of raising — a
+        style round-trips through the browser, and one bad value must not be
+        able to 500 an export or the preview.
+        """
+        defaults = SubtitleStyle()
         return SubtitleStyle(
             track=self.track if self.track in self.VALID_TRACKS else "translated",
-            font_family=(self.font_family or "sans-serif").strip(),
-            font_size_percent=min(12.0, max(1.5, float(self.font_size_percent))),
+            font_family=str(self.font_family or "sans-serif").strip() or "sans-serif",
+            font_size_percent=_clamped(self.font_size_percent, defaults.font_size_percent, 1.5, 12.0),
             primary_color=_normalise_color(self.primary_color, "#FFFFFF"),
             outline_color=_normalise_color(self.outline_color, "#000000"),
-            outline_width=min(8.0, max(0.0, float(self.outline_width))),
-            shadow=min(8.0, max(0.0, float(self.shadow))),
-            bold=bool(self.bold),
+            outline_width=_clamped(self.outline_width, defaults.outline_width, 0.0, 8.0),
+            shadow=_clamped(self.shadow, defaults.shadow, 0.0, 8.0),
+            bold=_as_bool(self.bold, defaults.bold),
             background=(
                 self.background if self.background in self.VALID_BACKGROUNDS else "box"
             ),
@@ -105,11 +113,11 @@ class SubtitleStyle:
                 if self.alignment in self.VALID_ALIGNMENTS
                 else "bottom"
             ),
-            margin_v_percent=min(40.0, max(0.0, float(self.margin_v_percent))),
-            margin_h_percent=min(40.0, max(0.0, float(self.margin_h_percent))),
-            max_chars_per_line=min(60, max(6, int(self.max_chars_per_line))),
-            max_lines=min(4, max(1, int(self.max_lines))),
-            min_duration=min(10.0, max(0.1, float(self.min_duration))),
+            margin_v_percent=_clamped(self.margin_v_percent, defaults.margin_v_percent, 0.0, 40.0),
+            margin_h_percent=_clamped(self.margin_h_percent, defaults.margin_h_percent, 0.0, 40.0),
+            max_chars_per_line=int(_clamped(self.max_chars_per_line, defaults.max_chars_per_line, 6, 60)),
+            max_lines=int(_clamped(self.max_lines, defaults.max_lines, 1, 4)),
+            min_duration=_clamped(self.min_duration, defaults.min_duration, 0.1, 10.0),
         )
 
     def to_dict(self) -> dict:
@@ -127,6 +135,33 @@ class SubtitleStyle:
             return cls().normalised()
         known = {f for f in cls.__dataclass_fields__}  # type: ignore[attr-defined]
         return cls(**{k: v for k, v in data.items() if k in known}).normalised()
+
+
+def _clamped(value, default: float, lo: float, hi: float) -> float:
+    """`value` as a float clamped to [lo, hi]; `default` when it is not a usable number."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    if number != number or number in (float("inf"), float("-inf")):
+        return default
+    return min(hi, max(lo, number))
+
+
+def _as_bool(value, default: bool) -> bool:
+    """bool(...) would read the string "false" as True; JSON from a client may send it."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("true", "1", "yes", "on"):
+            return True
+        if lowered in ("false", "0", "no", "off"):
+            return False
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
 
 
 def default_style() -> SubtitleStyle:
@@ -627,10 +662,15 @@ def to_srt(cues: list[Cue], style: SubtitleStyle) -> str:
 
 
 def _ass_time(seconds: float) -> str:
-    seconds = max(0.0, seconds)
-    hours, rest = divmod(seconds, 3600)
-    minutes, secs = divmod(rest, 60)
-    return f"{int(hours):d}:{int(minutes):02d}:{secs:05.2f}"
+    """
+    `H:MM:SS.cc`. Rounded to centiseconds FIRST and split afterwards: formatting
+    `secs` with `%05.2f` rounds up on its own, so 59.999 s used to print as the
+    illegal `0:00:60.00`.
+    """
+    total_cs = max(0, int(round(max(0.0, seconds) * 100)))
+    hours, rest = divmod(total_cs, 360000)
+    minutes, rest = divmod(rest, 6000)
+    return f"{hours:d}:{minutes:02d}:{rest // 100:02d}.{rest % 100:02d}"
 
 
 def _ass_color(hex_color: str) -> str:
@@ -649,6 +689,15 @@ def _ass_color(hex_color: str) -> str:
 _ASS_ALIGNMENT = {"bottom": 2, "center": 5, "top": 8}
 
 
+def _ass_number(value: float) -> str:
+    return f"{value:.2f}".rstrip("0").rstrip(".") or "0"
+
+
+def _ass_field(text: str) -> str:
+    """A value placed in a comma-separated ASS field: commas and line breaks would shift the columns."""
+    return " ".join(str(text).replace(",", " ").split())
+
+
 def to_ass(cues: list[Cue], style: SubtitleStyle, width: int, height: int) -> str:
     """
     ASS subtitle text, sized for THIS video.
@@ -657,16 +706,53 @@ def to_ass(cues: list[Cue], style: SubtitleStyle, width: int, height: int) -> st
     it, which is what makes one style work across resolutions. ASS is also the
     only way to carry real styling in a remux (`-c:v copy`) — MP4's `mov_text`
     supports no styling at all.
+
+    Outline and shadow are PERCENT-OF-HEIGHT quantities (per mille, exactly as
+    the preview's `resolveMetrics` computes them), converted to PlayRes pixels
+    here. Passing the raw "2.0" through would mean 2 px at any resolution — a
+    hairline at 1080p-relative sizing looks fine at 1080 and fat at 480.
+
+    The translucent box is a SEPARATE style drawn one layer below the text. ASS
+    only has one border colour per style, so a box (BorderStyle 3, which paints
+    the box in OutlineColour) and a text outline cannot coexist in one style —
+    but the preview shows both, so the export does too: the box line carries a
+    fully transparent fill and draws only the box, the text line draws the
+    outline and shadow on top.
     """
     font_size = max(8, round(height * style.font_size_percent / 100.0))
     margin_v = max(0, round(height * style.margin_v_percent / 100.0))
     margin_h = max(0, round(width * style.margin_h_percent / 100.0))
+    outline = height * style.outline_width / 1000.0
+    shadow = height * style.shadow / 1000.0
+    box = style.background == "box"
+    # Same padding the preview uses around a line (0.18 of the font size).
+    box_pad = max(1.0, font_size * 0.18)
 
-    # BorderStyle 3 draws an opaque box behind the text; 1 draws only the
-    # outline. "box" in the UI maps to 3 with a translucent BackColour.
-    border_style = 3 if style.background == "box" else 1
-    back_color = "&H80000000" if style.background == "box" else "&HFF000000"
-    border_and_shadow = "yes"
+    font = _ass_field(style.font_family) or "sans-serif"
+    alignment = str(_ASS_ALIGNMENT.get(style.alignment, 2))
+    bold = "-1" if style.bold else "0"
+
+    def style_line(name, primary, outline_colour, back_colour, border_style, outline_px, shadow_px):
+        return ",".join(
+            [
+                f"Style: {name}",
+                font,
+                str(font_size),
+                primary,
+                primary,
+                outline_colour,
+                back_colour,
+                bold,
+                "0", "0", "0",
+                "100", "100", "0", "0",
+                str(border_style),
+                _ass_number(outline_px),
+                _ass_number(shadow_px),
+                alignment,
+                str(margin_h), str(margin_h), str(margin_v),
+                "1",
+            ]
+        )
 
     lines = [
         "[Script Info]",
@@ -684,26 +770,29 @@ def to_ass(cues: list[Cue], style: SubtitleStyle, width: int, height: int) -> st
         "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, "
         "ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, "
         "MarginL, MarginR, MarginV, Encoding",
-        ",".join(
-            [
-                "Style: Default",
-                style.font_family,
-                str(font_size),
-                _ass_color(style.primary_color),
-                _ass_color(style.primary_color),
-                _ass_color(style.outline_color),
-                back_color,
-                "-1" if style.bold else "0",
-                "0", "0", "0",
-                "100", "100", "0", "0",
-                str(border_style),
-                f"{style.outline_width:g}",
-                f"{style.shadow:g}",
-                str(_ASS_ALIGNMENT.get(style.alignment, 2)),
-                str(margin_h), str(margin_h), str(margin_v),
-                "1",
-            ]
+        style_line(
+            "Default",
+            _ass_color(style.primary_color),
+            _ass_color(style.outline_color),
+            "&H80000000",
+            1,
+            outline,
+            shadow,
         ),
+    ]
+    if box:
+        lines.append(
+            style_line(
+                "Box",
+                "&HFF000000",      # fill fully transparent: only the box is drawn
+                "&H80000000",      # BorderStyle 3 paints the box in OutlineColour; 50% black
+                "&HFF000000",
+                3,
+                box_pad,
+                0,
+            )
+        )
+    lines += [
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -716,10 +805,10 @@ def to_ass(cues: list[Cue], style: SubtitleStyle, width: int, height: int) -> st
         # \N is an explicit break, \n would be a soft one.
         text = "\\N".join(body)
         text = text.replace("{", "(").replace("}", ")")   # keep override tags out
-        lines.append(
-            f"Dialogue: 0,{_ass_time(cue.start)},{_ass_time(cue.end)},Default,,"
-            f"0,0,0,,{text}"
-        )
+        start, end = _ass_time(cue.start), _ass_time(cue.end)
+        if box:
+            lines.append(f"Dialogue: 0,{start},{end},Box,,0,0,0,,{text}")
+        lines.append(f"Dialogue: 1,{start},{end},Default,,0,0,0,,{text}")
 
     return "\n".join(lines) + "\n"
 

@@ -6,16 +6,20 @@ import asyncio
 import hashlib
 import json
 import logging
+import mimetypes
 import os
+import re
 import shutil
 import subprocess
 import uuid
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
 
 from app import config
 from app.deps import enforce_separator_token, validate_video_id
+from app.http_range import iter_file_range, parse_range
 from app.services import (
     run_registry,
     speech_timing,
@@ -23,14 +27,16 @@ from app.services import (
     voice_clone_service,
 )
 from app.models import (
-    Speaker,
     VideoState,
-    VideoStatus,
     get_or_create_state,
     get_state,
+    drop_enhanced_line,
     get_video_dir,
+    patch_asr_text,
     save_state,
+    save_translations,
     set_segment_flag,
+    update_state_fields,
     video_dir_path,
 )
 from app.schemas import (
@@ -40,6 +46,7 @@ from app.schemas import (
     ExportResponse,
     SegmentOut,
     SpeakerOut,
+    SegmentTextRequest,
     TranslateRequest,
     TranslateResponse,
     TranslationResultItem,
@@ -58,7 +65,6 @@ from app.services import (
 )
 from app.services import pipeline_service
 from app.services import mix_service
-from app.services import voice_clone_service
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +175,46 @@ def _reject_if_running(video_id: str) -> None:
         )
 
 
+_SAFE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _safe_name(value: str, what: str) -> str:
+    """
+    A path parameter that is about to become a file or directory name.
+
+    `segment_id` / `speaker_id` arrive in the URL and used to be joined straight
+    into `data/<id>/tts/<segment_id>.mp3` and `voice_clone/<speaker_id>/…`. A
+    framework-decoded `..` or a `%2f` has no business in either.
+    """
+    if not _SAFE_NAME_RE.match(value or ""):
+        raise HTTPException(status_code=400, detail=f"malformed {what}")
+    return value
+
+
+def _require_state(video_id: str):
+    state = get_state(video_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Video not found")
+    return state
+
+
+def _client_address(request: Request) -> str:
+    """
+    The caller's address for rate limiting.
+
+    Behind nginx every request's socket peer is 127.0.0.1, which put all users in
+    ONE rate-limit bucket. nginx sets `X-Real-IP` (see nginx.conf); it is trusted
+    ONLY when the peer is the local proxy, so a direct client cannot pick its own
+    bucket by sending the header.
+    """
+    peer = request.client.host if request.client else "unknown"
+    if peer in ("127.0.0.1", "::1"):
+        forwarded = (request.headers.get("x-real-ip") or "").strip()
+        if forwarded:
+            return forwarded
+    return peer
+
+
 def _compute_md5(file_path: str) -> str:
     """Compute MD5 hash of a file."""
     md5 = hashlib.md5()
@@ -179,8 +225,15 @@ def _compute_md5(file_path: str) -> str:
 
 
 @router.post("/upload", response_model=UploadResponse)
-async def upload_video(file: UploadFile = File(...)):
-    """Upload a video file. Returns video_id (MD5 hash) and whether it already exists."""
+def upload_video(file: UploadFile = File(...)):
+    """
+    Upload a video file. Returns video_id (MD5 hash) and whether it already exists.
+
+    A plain `def` on purpose: the body is blocking file I/O (a copy of up to 2 GB
+    plus an MD5 pass). As `async def` it ran on the event loop and froze every
+    other request — including the SSE progress streams of running pipelines —
+    for the length of the upload. FastAPI runs a sync endpoint in its thread pool.
+    """
     logger.info(f"Received upload request for file: {file.filename}")
     
     # 类型/大小校验（P2 #17）：以前既不限大小也不查类型 —— 任意客户端可以写满
@@ -256,8 +309,13 @@ async def upload_video(file: UploadFile = File(...)):
 
 
 @router.get("/{video_id}/status", response_model=VideoStatusResponse)
-async def get_video_status(video_id: str, mix_version: Optional[str] = None):
-    """Get the current processing status of a video with detailed progress info."""
+def get_video_status(video_id: str, mix_version: Optional[str] = None):
+    """
+    Get the current processing status of a video with detailed progress info.
+
+    Sync (thread pool) because it is polled every couple of seconds and does real
+    work: several JSON reads plus the mix plan, which may probe audio durations.
+    """
     state = get_state(video_id)
     if not state:
         raise HTTPException(status_code=404, detail="Video not found")
@@ -356,13 +414,18 @@ async def get_video_status(video_id: str, mix_version: Optional[str] = None):
 
 
 @router.post("/{video_id}/reset")
-async def reset_video(video_id: str):
+def reset_video(video_id: str):
     """
     Reset a video's processing data so it can be re-processed from scratch.
     Deletes all intermediate files but keeps the original video.
     """
-    video_dir = get_video_dir(video_id)
-    if not os.path.exists(video_dir):
+    # 运行中不能清：管线正往这个目录里写，边写边删会得到半套文件。
+    _reject_if_running(video_id)
+
+    # 只读路径，不用 get_video_dir：它会 mkdir，于是对不存在的工程调 reset 也会
+    # 凭空建出一个目录。
+    video_dir = video_dir_path(video_id)
+    if not os.path.isdir(video_dir):
         raise HTTPException(status_code=404, detail="Video not found")
 
     # Find original video file (keep it)
@@ -375,6 +438,11 @@ async def reset_video(video_id: str):
     if not original_video:
         raise HTTPException(status_code=404, detail="Original video file not found")
 
+    # Remember the name the user uploaded: the fresh state below must keep it,
+    # or the project list would show the on-disk "original_video.mp4" afterwards.
+    previous = get_state(video_id)
+    display_name = (previous.filename if previous and previous.filename else original_video)
+
     # Delete everything except original video
     for item in os.listdir(video_dir):
         if item == original_video:
@@ -385,15 +453,17 @@ async def reset_video(video_id: str):
         else:
             os.remove(item_path)
 
-    # The directory is gone, so the cached voice map must go with it — otherwise
-    # it would both serve the old speakers' voices and write the file back.
+    # The directory is gone, so the in-process caches that mirror it must go too —
+    # otherwise they would keep serving the old speakers' voices / cloned voices
+    # and write them back to disk on the next assignment.
     tts_service.forget_voice_map(video_id)
+    voice_clone_service.forget_cloned_voices(video_id)
 
     # Re-create clean state
     original_path = os.path.join(video_dir, original_video)
     state = VideoState(
         video_id=video_id,
-        filename=original_video,
+        filename=display_name,
         file_path=original_path,
     )
     save_state(state)
@@ -442,23 +512,33 @@ async def delete_video(video_id: str):
 
 @router.post("/{video_id}/translate", response_model=TranslateResponse)
 async def translate_video(video_id: str, req: TranslateRequest):
-    """Translate transcript segments using SiliconFlow LLM."""
+    """
+    Translate the given transcript segments with the configured LLM.
+
+    Used for one-line re-translation from the editor: `req.segments` is usually a
+    SINGLE line. Three things follow from that, and each was a bug before:
+
+    * The result is merged into the project's translations and the WHOLE set is
+      written back (`save_translations`). Writing only this request's lines
+      replaced `translation_result.json` with one entry, so after a refresh every
+      other line had lost its translation.
+    * The project status is left alone. Flipping it to TRANSLATING/TRANSLATED made
+      a finished project read as "unfinished" on the next open.
+    * `custom_prompt` here is a ONE-LINE instruction ("只对这句话生效"). It is
+      passed to the model for this call only; persisting it as the project's
+      prompt made every later Reprocess re-translate EVERYTHING with it.
+    """
     _reject_if_running(video_id)
     logger.info(f"Translation requested for video_id: {video_id}, Target: {req.target_language}")
-    state = get_state(video_id)
-    if not state:
-        logger.warning(f"Translation failed: Video {video_id} not found")
-        raise HTTPException(status_code=404, detail="Video not found")
+    state = _require_state(video_id)
 
     try:
-        state.status = VideoStatus.TRANSLATING
-        logger.info(f"[{video_id}] Status: {state.status.value}")
-        save_state(state)
-
-        # Prepare context payload. When the caller does not send end_time we
-        # fall back to the persisted segment, so the length budget is still
-        # available for single-line re-translation.
+        # When the caller does not send end_time we fall back to the persisted
+        # segment, so the length budget is still available for one-line retranslation.
         stored = {seg.id: seg for seg in state.segments}
+        unknown = [seg.id for seg in req.segments if seg.id not in stored]
+        if unknown:
+            raise HTTPException(status_code=404, detail=f"Segment not found: {unknown[0]}")
 
         # 审听版作为翻译基底（omni 的纠错 + 语气标签）。两个前提，缺一个都不该套用：
         #
@@ -467,20 +547,13 @@ async def translate_video(video_id: str, req: TranslateRequest):
         #    标签 —— 用户明明在界面上关了它。所以这里看 state.mm_enhance，不看文件在不在。
         # ② 请求里的文本与该段存着的 ASR 原文逐字相同：侧栏的 Original 栏是可编辑的，
         #    用户手改过就以他的文本为准，不能被旧的审听版顶掉。
-        reviewed: dict[str, str] = {}
-        if state.mm_enhance:
-            reviewed = _reviewed_text(video_id)
-        elif os.path.exists(os.path.join(video_dir_path(video_id), "enhanced_transcript.json")):
-            logger.info(
-                f"[{video_id}] /translate: multimodal enhancement is OFF — ignoring the "
-                f"enhanced_transcript.json left over from an earlier run"
-            )
+        reviewed: dict[str, str] = _reviewed_text(video_id) if state.mm_enhance else {}
         text_overrides: dict[str, str] = {}
         for seg in req.segments:
             base = reviewed.get(seg.id)
             if not base:
                 continue
-            original = (stored[seg.id].text if seg.id in stored else None) or ""
+            original = stored[seg.id].text or ""
             if seg.text.strip() != original.strip():
                 continue          # 用户改过 → 尊重用户的
             if base.strip() and base.strip() != seg.text.strip():
@@ -497,118 +570,148 @@ async def translate_video(video_id: str, req: TranslateRequest):
                 "text": seg.text,
                 "speaker_id": seg.speaker_id,
                 "start_time": seg.start_time,
-                "end_time": seg.end_time
-                or (stored[seg.id].end_time if seg.id in stored else 0.0),
+                "end_time": seg.end_time or stored[seg.id].end_time or 0.0,
             }
             for seg in req.segments
         ]
 
-        # Clamp here, once: the prompt injector downstream trusts this to be
-        # short and non-hostile-in-length. 500 chars is generous for a style
-        # instruction and small next to the chunk prompt itself.
+        # Clamp here, once: the prompt injector downstream trusts this to be short.
         custom_prompt = (req.custom_prompt or "").strip()[:500]
-        if custom_prompt:
-            state.custom_prompt = custom_prompt
-            save_state(state)
         length_hint = req.length_hint if req.length_hint in ("longer", "shorter") else None
         results, _failed = await llm_service.translate_script(
             video_id, context, req.target_language,
             custom_prompt=custom_prompt, length_hint=length_hint,
-            # 审听版：translate_script 会把它当"reviewed text"发给模型，并把
-            # ASR 原文作为 asr_original 一起给（供仲裁），与原管线一致。
             text_overrides=text_overrides or None,
         )
 
-        # Update state with translations
+        # Merge into the project and persist the WHOLE translation set.
         translations = []
         result_map = {r["id"]: r["translatedText"] for r in results}
         for seg in state.segments:
-            if seg.id in result_map:
-                seg.translated_text = result_map[seg.id]
-                translations.append(
-                    TranslationResultItem(
-                        id=seg.id,
-                        translated_text=seg.translated_text,
-                    )
-                )
+            new_text = result_map.get(seg.id)
+            if not new_text:
+                continue
+            if new_text != seg.translated_text:
+                # The old take reads the OLD text; leaving it would export a dub
+                # that no longer matches the subtitle.
+                tts_service.discard_segment_audio(video_id, seg.id)
+                seg.audio_path = None
+                seg.actual_duration = None
+            seg.translated_text = new_text
+            translations.append(
+                TranslationResultItem(id=seg.id, translated_text=new_text)
+            )
+        save_translations(video_id, state.segments)
+        logger.info(f"[{video_id}] Translated {len(translations)} item(s) on request")
 
-        state.status = VideoStatus.TRANSLATED
-        logger.info(f"[{video_id}] Status: {state.status.value}. Translated {len(translations)} items.")
-        save_state(state)
-
-        return TranslateResponse(
-            video_id=video_id,
-            translations=translations,
-        )
+        return TranslateResponse(video_id=video_id, translations=translations)
+    except HTTPException:
+        raise
     except Exception as e:
+        # Not recorded on the project: a failed single-line request is not a failed
+        # project, and `state.status = ERROR` made the whole thing look broken.
         logger.error(f"[{video_id}] Translation error: {str(e)}", exc_info=True)
-        state.status = VideoStatus.ERROR
-        state.error_message = str(e)
-        save_state(state)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/{video_id}/segments/{segment_id}/text")
+def save_segment_text(video_id: str, segment_id: str, req: SegmentTextRequest):
+    """
+    Persist text the user edited in the editor (original and/or translation).
+
+    These edits used to trigger a re-translation or re-synthesis and nothing else:
+    nothing wrote the new text to disk. The subtitles (built from the server's
+    state) kept the old words while the dub spoke the new ones, and a refresh
+    threw the edit away.
+
+    A changed line also loses its synthesized audio: it reads the old text.
+    """
+    _reject_if_running(video_id)
+    _safe_name(segment_id, "segment id")
+    state = _require_state(video_id)
+    seg = next((s for s in state.segments if s.id == segment_id), None)
+    if not seg:
+        raise HTTPException(status_code=404, detail="Segment not found")
+
+    changed = False
+    if req.text is not None and req.text != seg.text:
+        if not patch_asr_text(video_id, segment_id, req.text):
+            raise HTTPException(status_code=409, detail="no transcript on disk to update")
+        # The cached omni review of this line describes the OLD words.
+        drop_enhanced_line(video_id, segment_id)
+        seg.text = req.text
+        changed = True
+    if req.translated_text is not None and req.translated_text != seg.translated_text:
+        seg.translated_text = req.translated_text
+        save_translations(video_id, state.segments)
+        changed = True
+
+    if changed:
+        tts_service.discard_segment_audio(video_id, segment_id)
+    return {"id": segment_id, "saved": changed}
 
 
 @router.post("/{video_id}/tts", response_model=TTSResponse)
 async def synthesize_speech(video_id: str, req: TTSRequest):
-    """Synthesize speech for a text segment using DashScope CosyVoice3."""
+    """Synthesize speech for ONE text segment (editor "regenerate" / "refit")."""
     _reject_if_running(video_id)
     logger.info(f"TTS requested for video_id: {video_id}")
-    state = get_state(video_id)
-    if not state:
-        logger.warning(f"TTS failed: Video {video_id} not found")
-        raise HTTPException(status_code=404, detail="Video not found")
+    state = _require_state(video_id)
+
+    seg_obj = next((s for s in state.segments if s.id == req.segment_id), None)
+    if seg_obj is None:
+        raise HTTPException(status_code=404, detail="Segment not found")
+    if not req.text.strip():
+        raise HTTPException(status_code=400, detail="text is empty")
+
+    # The request's language/accent win; the project's own are the fallback, so a
+    # client that omits them does not silently drop this one line to Mandarin or
+    # to the default voice pool.
+    language = req.target_language or state.target_language or None
+    accent = req.accent if req.accent is not None else state.accent
 
     try:
-        # Resolve voice: explicit request > cloned voice > speaker-assigned voice
+        # Same precedence the batch pipeline applies: explicit > cloned > the
+        # speaker's assigned system voice. The last step is what keeps a
+        # re-generated line in the SAME voice as its neighbours — without it the
+        # line fell back to the global default voice instead.
         voice = req.voice
+        if not voice and state.enable_voice_clone:
+            voice = voice_clone_service.get_cloned_voice(video_id, seg_obj.speaker_id)
+            if voice:
+                logger.info(
+                    f"[{video_id}] Using cloned voice {voice} for segment "
+                    f"{req.segment_id} (speaker {seg_obj.speaker_id})"
+                )
         if not voice:
-            # Find which speaker this segment belongs to
-            seg_obj = next((s for s in state.segments if s.id == req.segment_id), None)
-            if seg_obj:
-                cloned = voice_clone_service.get_cloned_voice(video_id, seg_obj.speaker_id)
-                if cloned:
-                    voice = cloned
-                    logger.info(f"[{video_id}] Using cloned voice {voice} for segment {req.segment_id} (speaker {seg_obj.speaker_id})")
+            voice = tts_service.assign_voice_for_speaker(video_id, seg_obj.speaker_id, language)
 
         # When the caller tells us which slot this line has to fill, aim the
-        # synthesis at it. The language is only used for the opening guess; the
-        # measurement-based correction inside synthesize_speech works without
-        # it, so a missing language degrades rather than failing.
+        # synthesis at it; the measurement-based correction inside
+        # synthesize_speech works without a language, so a missing one degrades.
         planned_rate = (
-            speech_timing.plan_speech_rate(
-                req.text, req.target_language, req.target_duration
-            )
-            if (req.target_duration and req.target_duration > 0 and req.target_language)
+            speech_timing.plan_speech_rate(req.text, language, req.target_duration)
+            if (req.target_duration and req.target_duration > 0 and language)
             else None
         )
-        _, actual_duration = await tts_service.synthesize_speech(
+        # `synthesize_speech` registers the path and measured duration in
+        # tts_results.json (write_registry defaults to True), which is what
+        # `load_state` reads back. The state is NOT re-saved here: `save_state`
+        # stores no segments, so doing it only risked clobbering fields written
+        # elsewhere in the meantime.
+        await tts_service.synthesize_speech(
             video_id,
             req.segment_id,
             req.text,
             voice,
             speech_rate=planned_rate,
             target_duration=req.target_duration,
-            # Same resolution the pipeline uses, so a single-segment re-synthesis
-            # ("Refit", or editing a line) stays in the accent the job was dubbed
-            # in instead of silently reverting that one line to Mandarin.
-            instruction=config.tts_instruction(req.target_language, req.accent),
+            instruction=config.tts_instruction(language, accent),
         )
         logger.info(f"[{video_id}] TTS synthesis complete (Segment: {req.segment_id})")
 
-        # Update in-memory state to reflect the new audio path
-        audio_path = os.path.join(get_video_dir(video_id), "tts", f"{req.segment_id}.mp3")
-        for seg in state.segments:
-            if seg.id == req.segment_id:
-                seg.audio_path = audio_path
-                # 与管线同一条规则：实际时长落进 state（混音计划要用，见
-                # mix_service）。单行重合成不写回的话，这一行的 atempo 会一直是旧值。
-                seg.actual_duration = actual_duration
-                break
-        save_state(state)
-
-        audio_url = f"/api/videos/{video_id}/tts/{req.segment_id}"
         return TTSResponse(
-            audio_url=audio_url,
+            audio_url=f"/api/videos/{video_id}/tts/{req.segment_id}",
             content_type="audio/mp3",
         )
     except Exception as e:
@@ -617,13 +720,10 @@ async def synthesize_speech(video_id: str, req: TTSRequest):
 
 
 @router.get("/{video_id}/video")
-async def serve_video(video_id: str, request: Request):
+def serve_video(video_id: str, request: Request):
     """Serve the original video file with Range request support for seeking."""
-    from fastapi.responses import Response, StreamingResponse
-    import mimetypes
-
-    state = get_state(video_id)
-    if not state or not state.file_path:
+    state = _require_state(video_id)
+    if not state.file_path:
         raise HTTPException(status_code=404, detail="Video not found")
 
     if not os.path.exists(state.file_path):
@@ -633,56 +733,35 @@ async def serve_video(video_id: str, request: Request):
     file_size = os.path.getsize(file_path)
     content_type = mimetypes.guess_type(file_path)[0] or "video/mp4"
 
-    range_header = request.headers.get("range")
-
-    if range_header:
-        # Parse Range header: "bytes=start-end"
-        range_spec = range_header.strip().split("=")[1]
-        range_parts = range_spec.split("-")
-        start = int(range_parts[0]) if range_parts[0] else 0
-        end = int(range_parts[1]) if range_parts[1] else file_size - 1
-        end = min(end, file_size - 1)
-        content_length = end - start + 1
-
-        def iter_file():
-            with open(file_path, "rb") as f:
-                f.seek(start)
-                remaining = content_length
-                while remaining > 0:
-                    chunk_size = min(8192, remaining)
-                    data = f.read(chunk_size)
-                    if not data:
-                        break
-                    remaining -= len(data)
-                    yield data
-
-        return StreamingResponse(
-            iter_file(),
-            status_code=206,
-            media_type=content_type,
-            headers={
-                "Content-Range": f"bytes {start}-{end}/{file_size}",
-                "Accept-Ranges": "bytes",
-                "Content-Length": str(content_length),
-            },
-        )
-    else:
-        # No range requested — serve full file
-        from fastapi.responses import FileResponse
+    byte_range = parse_range(request.headers.get("range", ""), file_size)
+    if byte_range is None:
         return FileResponse(
             file_path,
             media_type=content_type,
             headers={"Accept-Ranges": "bytes"},
         )
 
+    start, end = byte_range
+    content_length = end - start + 1
+
+    return StreamingResponse(
+        iter_file_range(file_path, start, content_length),
+        status_code=206,
+        media_type=content_type,
+        headers={
+            "Content-Range": f"bytes {start}-{end}/{file_size}",
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(content_length),
+        },
+    )
+
 
 @router.get("/{video_id}/audio")
-async def serve_audio(video_id: str):
+def serve_audio(video_id: str):
     """
     Serve the extracted audio file.
     Used internally for Ali ASR to access the audio file via URL.
     """
-    from fastapi.responses import FileResponse
 
     logger.info(f"Audio serve requested for video_id: {video_id}")
     state = get_state(video_id)
@@ -701,7 +780,7 @@ async def serve_audio(video_id: str):
     "/{video_id}/audio/stereo",
     dependencies=[Depends(enforce_separator_token)],
 )
-async def serve_separation_source(video_id: str):
+def serve_separation_source(video_id: str):
     """
     STEREO 44.1 kHz audio, for in-browser vocal separation.
 
@@ -716,15 +795,14 @@ async def serve_separation_source(video_id: str):
     from the URL). Extracted on demand from the original upload and cached
     beside it; token gated because the extraction costs real CPU.
     """
-    from fastapi.responses import FileResponse
 
-    state = get_state(video_id)
-    if not state:
-        raise HTTPException(status_code=404, detail="Video not found")
+    state = _require_state(video_id)
 
-    video_dir = get_video_dir(video_id)
+    video_dir = video_dir_path(video_id)
     stereo_path = os.path.join(video_dir, "separation_source.wav")
 
+    # Plain `def` (thread pool): the extraction below is a long blocking ffmpeg
+    # run, which as `async def` froze the event loop for its whole duration.
     if not os.path.exists(stereo_path):
         if not state.file_path or not os.path.exists(state.file_path):
             raise HTTPException(
@@ -736,17 +814,24 @@ async def serve_separation_source(video_id: str):
                 ),
             )
 
+        # Written to a temp name and renamed: a half-written WAV left at the final
+        # path would be served as-is by every later request.
+        partial_path = f"{stereo_path}.part.wav"
         result = subprocess.run(
             [
                 "ffmpeg", "-y", "-v", "error",
                 "-i", state.file_path,
                 "-vn", "-acodec", "pcm_s16le",
                 "-ar", "44100", "-ac", "2",
-                stereo_path,
+                partial_path,
             ],
             capture_output=True,
             text=True,
         )
+        if result.returncode == 0:
+            os.replace(partial_path, stereo_path)
+        elif os.path.exists(partial_path):
+            os.remove(partial_path)
         if result.returncode != 0:
             logger.error(
                 f"[{video_id}] Stereo extraction for separation failed: "
@@ -765,33 +850,53 @@ async def stream_events(video_id: str):
     """
     订阅这个工程**正在跑**的那条管线的事件（SSE），并先回放有界历史（P3 #9）。
 
-    为什么需要它：SSE 原本只能从发起处理的那次 `POST /process` 拿到，刷新页面
-    就永久失去事件流 —— 服务器还在跑，界面却再也收不到任何东西，用户只能靠
-    轮询 /status 猜进度。
-
-    语义仍然是"一条运行一个消费者"：接管时替换队列（旧连接已断，它的读取端会
-    一直等下去），新订阅者先拿到最近 `HISTORY_LIMIT` 条事件再继续接收。
+    语义仍然是"一条运行一个消费者"：接管时替换队列，旧连接的读取端会被唤醒并
+    结束（见 `PipelineRun.subscribe`），新订阅者先拿到最近 `HISTORY_LIMIT` 条事件
+    再继续接收。
     """
-    from fastapi.responses import StreamingResponse
-
     run = run_registry.get(video_id)
     if run is None:
         # 没有活跃运行：明确说清楚，而不是挂一条永远不发事件的流。
         raise HTTPException(status_code=404, detail="No active run for this video")
 
-    queue = run.subscribe()
+    return StreamingResponse(
+        _sse_stream(run, run.subscribe()),
+        media_type="text/event-stream",
+        headers=_SSE_HEADERS,
+    )
 
-    async def event_stream():
-        try:
-            while True:
-                msg = await queue.get()
-                if msg is None:
-                    break
-                yield f"data: {json.dumps(msg)}\n\n"
-        finally:
-            run.unsubscribe(queue)
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+# 反向代理不要缓冲、不要缓存这条流；nginx 看 X-Accel-Buffering，别的代理看 no-cache。
+_SSE_HEADERS = {
+    "Cache-Control": "no-cache",
+    "X-Accel-Buffering": "no",
+}
+
+# 管线可能在一个步骤里静默几分钟（等 ASR/omni）。每隔这么久发一行 SSE 注释：
+# 既让中间设备不因空闲掐断连接，也让客户端断开时服务端能尽快发现并清理。
+_SSE_HEARTBEAT_S = 15.0
+
+
+async def _sse_stream(run, queue: "asyncio.Queue"):
+    """
+    One consumer of a run's events, as an SSE byte stream.
+
+    Ends on the `None` sentinel. Always detaches in `finally` — and only if the
+    queue is still THIS consumer's: a reconnect replaces it, and the old reader
+    must not clear the new one's.
+    """
+    try:
+        while True:
+            try:
+                msg = await asyncio.wait_for(queue.get(), timeout=_SSE_HEARTBEAT_S)
+            except asyncio.TimeoutError:
+                yield ": keep-alive\n\n"
+                continue
+            if msg is None:
+                break
+            yield f"data: {json.dumps(msg, ensure_ascii=False)}\n\n"
+    finally:
+        run.unsubscribe(queue)
 
 
 @router.post("/{video_id}/cancel")
@@ -818,6 +923,11 @@ async def cancel_processing(video_id: str):
     }
 
 
+# 后台任务的强引用。事件循环只对任务保留**弱**引用：没人持有的 `create_task(...)`
+# 可能在运行中途被垃圾回收，管线就这样无声无息地停了。
+_background_tasks: set["asyncio.Task"] = set()
+
+
 @router.post("/{video_id}/process")
 async def process_video(video_id: str, req: ProcessRequest):
     """
@@ -827,15 +937,11 @@ async def process_video(video_id: str, req: ProcessRequest):
     If a run for this video is already live, the request is refused with 409
     (see the registry note above) — it never joins that run.
     """
-    from fastapi.responses import StreamingResponse
-
     logger.info(f"Full pipeline requested for video_id: {video_id}, lang: {req.target_language}")
-    state = get_state(video_id)
-    if not state:
-        raise HTTPException(status_code=404, detail="Video not found")
+    _require_state(video_id)
 
-    live = run_registry.get(video_id)
-    if live is not None:
+    if run_registry.get(video_id) is not None:
+        live = run_registry.get(video_id)
         # 拒绝，而不是接管：一条管线的设置属于发起它的人（见 run_registry）。
         raise HTTPException(
             status_code=409,
@@ -846,6 +952,9 @@ async def process_video(video_id: str, req: ProcessRequest):
         )
 
     run = run_registry.start(video_id)
+    # 队列必须先于任务创建：drive 一开跑就会 emit，队列还没建的话那几个事件
+    # 就被静默丢掉了（客户端会以为管线卡在开头）。
+    queue = run.subscribe()
 
     async def drive() -> None:
         try:
@@ -870,34 +979,24 @@ async def process_video(video_id: str, req: ProcessRequest):
             logger.error(f"[{video_id}] Pipeline error: {e}", exc_info=True)
             await run.emit({"error": str(e)})
         finally:
+            # 先注销，再发结束标记：标记发出时 /status 必须已经是"没在跑"。
             run_registry.finish(video_id)
-            if run.queue is not None:
-                run.queue.put_nowait(None)
+            run.close()
 
-    # 队列必须先于任务创建：drive 一开跑就会 emit，队列还没建的话那几个事件
-    # 就被静默丢掉了（客户端会以为管线卡在开头）。
-    run.queue = asyncio.Queue()
-    asyncio.create_task(drive())
+    task = asyncio.create_task(drive())
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
-    async def event_stream():
-        try:
-            while True:
-                msg = await run.queue.get()
-                if msg is None:
-                    break
-                yield f"data: {json.dumps(msg)}\n\n"
-        finally:
-            # 客户端断开：管线照跑（磁盘上照样逐阶段落盘），但不再往这个队列塞
-            # 东西 —— 否则没人消费的队列会一直涨。
-            run.queue = None
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        _sse_stream(run, queue),
+        media_type="text/event-stream",
+        headers=_SSE_HEADERS,
+    )
 
 
 @router.get("/{video_id}/audio/background")
-async def serve_background_audio(video_id: str):
+def serve_background_audio(video_id: str):
     """Serve the separated background (instrumental) audio."""
-    from fastapi.responses import FileResponse
 
     video_dir = video_dir_path(video_id)
     bg_path = os.path.join(video_dir, "background.wav")
@@ -909,9 +1008,9 @@ async def serve_background_audio(video_id: str):
 
 
 @router.get("/{video_id}/tts/{segment_id}")
-async def serve_segment_audio(video_id: str, segment_id: str):
+def serve_segment_audio(video_id: str, segment_id: str):
     """Serve synthesized MP3 for a specific segment."""
-    from fastapi.responses import FileResponse
+    _safe_name(segment_id, "segment id")
     video_dir = video_dir_path(video_id)
     audio_path = os.path.join(video_dir, "tts", f"{segment_id}.mp3")
     
@@ -922,9 +1021,9 @@ async def serve_segment_audio(video_id: str, segment_id: str):
 
 
 @router.get("/{video_id}/voice-sample/{speaker_id}")
-async def serve_voice_sample(video_id: str, speaker_id: str):
+def serve_voice_sample(video_id: str, speaker_id: str):
     """Serve extracted voice sample WAV for DashScope voice enrollment."""
-    from fastapi.responses import FileResponse
+    _safe_name(speaker_id, "speaker id")
 
     video_dir = video_dir_path(video_id)
     sample_path = os.path.join(video_dir, "voice_clone", speaker_id, "sample.wav")
@@ -1008,8 +1107,28 @@ async def list_voices(video_id: str, language: Optional[str] = None):
     }
 
 
+def _set_flag(video_id: str, segment_id: str, flag: str, value: bool) -> dict:
+    """
+    Shared body of mute / hide: validate, refuse while a run is writing, persist.
+
+    The flags live in `segment_flags.json`, which `load_state` merges back — the
+    running pipeline reads it only when it starts, but a flag toggled mid-run would
+    still race with the pipeline's own end-of-run state, so it is refused like the
+    other write endpoints.
+    """
+    _reject_if_running(video_id)
+    _safe_name(segment_id, "segment id")
+    state = _require_state(video_id)
+    seg = next((s for s in state.segments if s.id == segment_id), None)
+    if not seg:
+        raise HTTPException(status_code=404, detail="Segment not found")
+    set_segment_flag(video_id, segment_id, flag, value)
+    logger.info(f"[{video_id}] Segment {segment_id} {flag}={value}")
+    return {"id": segment_id, flag: value}
+
+
 @router.post("/{video_id}/segments/{segment_id}/mute")
-async def mute_segment(video_id: str, segment_id: str, req: MuteRequest):
+def mute_segment(video_id: str, segment_id: str, req: MuteRequest):
     """
     Mute or unmute ONE line.
 
@@ -1020,21 +1139,11 @@ async def mute_segment(video_id: str, segment_id: str, req: MuteRequest):
     the take means unmuting brings the line back without paying for a
     re-synthesis.
     """
-    state = get_state(video_id)
-    if not state:
-        raise HTTPException(status_code=404, detail="Video not found")
-    seg = next((s for s in state.segments if s.id == segment_id), None)
-    if not seg:
-        raise HTTPException(status_code=404, detail="Segment not found")
-
-    seg.muted = bool(req.muted)
-    set_segment_flag(video_id, segment_id, "muted", seg.muted)
-    logger.info(f"[{video_id}] Segment {segment_id} muted={seg.muted}")
-    return {"id": seg.id, "muted": seg.muted}
+    return _set_flag(video_id, segment_id, "muted", bool(req.muted))
 
 
 @router.post("/{video_id}/segments/{segment_id}/hide")
-async def hide_segment(video_id: str, segment_id: str, req: HideRequest):
+def hide_segment(video_id: str, segment_id: str, req: HideRequest):
     """
     Hide or unhide ONE line's subtitle.
 
@@ -1043,18 +1152,7 @@ async def hide_segment(video_id: str, segment_id: str, req: HideRequest):
     `subtitle_service.build_cues`). Its dubbed AUDIO is untouched, so the line
     is still spoken; muting is the flag that removes the voice.
     """
-    state = get_state(video_id)
-    if not state:
-        raise HTTPException(status_code=404, detail="Video not found")
-
-    seg = next((s for s in state.segments if s.id == segment_id), None)
-    if not seg:
-        raise HTTPException(status_code=404, detail="Segment not found")
-
-    seg.hidden = bool(req.hidden)
-    set_segment_flag(video_id, segment_id, "hidden", seg.hidden)
-    logger.info(f"[{video_id}] Segment {segment_id} hidden={seg.hidden}")
-    return {"id": seg.id, "hidden": seg.hidden}
+    return _set_flag(video_id, segment_id, "hidden", bool(req.hidden))
 
 
 @router.post("/{video_id}/speaker-voice")
@@ -1117,40 +1215,44 @@ async def pin_speaker_voice(video_id: str, req: SpeakerVoiceRequest):
 @router.post("/{video_id}/voice-clone/{speaker_id}/preview")
 async def preview_cloned_voice(video_id: str, speaker_id: str):
     """Generate and serve a short TTS preview using the cloned voice."""
-    from fastapi.responses import FileResponse
+    _safe_name(speaker_id, "speaker id")
+    state = _require_state(video_id)
 
-    state = get_state(video_id)
-    if not state:
-        raise HTTPException(status_code=404, detail="Video not found")
-
-    # 试听文案要用工程自己的目标语言（#27）。以前硬编码 "Chinese"：给英语/日语
-    # 工程试听时念的是中文，用户听到的和片子里的不是一回事。
-    _state = get_state(video_id)
-    target_language = (getattr(_state, "target_language", "") or "").strip() or "Chinese"
+    # 试听文案要用工程自己的目标语言：硬编码 "Chinese" 时，给英语/日语工程试听念的
+    # 是中文，用户听到的和片子里的不是一回事。
+    target_language = (state.target_language or "").strip() or "Chinese"
 
     try:
         preview_path = await voice_clone_service.preview_cloned_voice(
             video_id, speaker_id, target_language
         )
-        if not preview_path or not os.path.exists(preview_path):
-            raise HTTPException(status_code=404, detail="No cloned voice available for this speaker")
-
-        return FileResponse(preview_path, media_type="audio/mp3")
     except Exception as e:
         logger.error(f"[{video_id}] Voice preview failed for {speaker_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+    # Outside the `try`: the 404 below used to be raised inside it, caught by the
+    # blanket `except Exception`, and re-reported as a 500.
+    if not preview_path or not os.path.exists(preview_path):
+        raise HTTPException(
+            status_code=404, detail="No cloned voice available for this speaker"
+        )
+    return FileResponse(preview_path, media_type="audio/mp3")
+
 
 @router.get("/{video_id}/voice-clone/{speaker_id}/preview")
-async def serve_voice_preview(video_id: str, speaker_id: str):
+def serve_voice_preview(video_id: str, speaker_id: str):
     """Serve previously generated voice preview audio."""
-    from fastapi.responses import FileResponse
-
-    video_dir = get_video_dir(video_id)
-    preview_path = os.path.join(video_dir, "voice_clone", speaker_id, "preview.mp3")
+    _safe_name(speaker_id, "speaker id")
+    # video_dir_path, not get_video_dir: this is a GET and must not create folders.
+    preview_path = os.path.join(
+        video_dir_path(video_id), "voice_clone", speaker_id, "preview.mp3"
+    )
 
     if not os.path.exists(preview_path):
-        raise HTTPException(status_code=404, detail="Voice preview not found. Generate one first via POST.")
+        raise HTTPException(
+            status_code=404,
+            detail="Voice preview not found. Generate one first via POST.",
+        )
 
     return FileResponse(preview_path, media_type="audio/mp3")
 
@@ -1171,7 +1273,7 @@ async def issue_separator_token(video_id: str, request: Request):
     if not state:
         raise HTTPException(status_code=404, detail="Video not found")
 
-    client_key = request.client.host if request.client else "unknown"
+    client_key = _client_address(request)
     if not token_service.check_issue_rate(client_key):
         raise HTTPException(
             status_code=429,
@@ -1189,7 +1291,7 @@ async def issue_separator_token(video_id: str, request: Request):
 
 
 @router.post("/{video_id}/stems", dependencies=[Depends(enforce_separator_token)])
-async def upload_stems(
+def upload_stems(
     video_id: str,
     vocals: UploadFile = File(...),
     background: UploadFile = File(...),
@@ -1237,7 +1339,11 @@ async def upload_stems(
             logger.error(f"[{video_id}] Failed to store stem {filename}: {e}")
             raise HTTPException(status_code=400, detail=f"Invalid stem {filename}: {e}")
 
-    # Separation is done — make sure the pipeline does not try to redo it.
+    # Separation is done — make sure the pipeline does not try to redo it. The 16 kHz
+    # ASR derivative of an earlier vocals.wav is stale now; the pipeline rebuilds it.
+    stale = os.path.join(video_dir, "vocals_asr.wav")
+    if os.path.exists(stale):
+        os.remove(stale)
     state.audio_path = os.path.join(video_dir, "vocals.wav")
     save_state(state)
 
@@ -1259,39 +1365,37 @@ async def export_video(video_id: str, req: Optional[ExportRequest] = None):
 
     The body is optional. When present it is merged over the video's saved plan
     — only the fields actually sent are overridden, so a client that flips one
-    switch does not reset the style — and the merged plan is persisted, which is
-    what makes the pipeline's own automatic export produce the same file.
+    switch does not reset the rest. The subtitle STYLE always starts from the
+    project's own saved style (what the style panel edits).
+
+    `persist=false` exports with the merged plan WITHOUT saving it. The plan is
+    handed to the exporter explicitly: previously it was computed and then
+    discarded, and the exporter re-read the SAVED plan, so a "no subtitles, don't
+    remember this" request (the browser burn-in) still produced whatever the
+    project had saved — embedded tracks the burn then drew a second time, or an
+    MKV the in-browser burner cannot read.
     """
     _reject_if_running(video_id)
     logger.info(f"Export requested for video_id: {video_id}")
 
-    state = get_state(video_id)
-    if not state:
-        raise HTTPException(status_code=404, detail="Video not found")
+    state = _require_state(video_id)
 
     if not export_service.is_available():
         raise HTTPException(
             status_code=503, detail="ffmpeg/ffprobe are not available on the server"
         )
 
-    if req and req.subtitles:
-        merged = subtitle_service.ExportPlan.from_dict(state.subtitle_export).to_dict()
-        for field_name in ("enabled", "format", "tracks", "default_track", "style"):
-            value = getattr(req.subtitles, field_name)
-            if value is None:
-                continue
-            if field_name == "style":
-                # Style is merged key by key: the UI sends only what changed.
-                merged["style"] = {**merged.get("style", {}), **value}
-            else:
-                merged[field_name] = value
-        plan = subtitle_service.ExportPlan.from_dict(merged)
-        if req.persist:
-            state.subtitle_export = plan.to_dict()
-            save_state(state)
+    patch = req.subtitles.model_dump(exclude_none=True) if req and req.subtitles else None
+    plan = export_service.resolve_plan(state, patch)
+    if patch and req.persist:
+        # Only the plan's own fields: the style is the project's, kept in
+        # `subtitle_style` and edited from the style panel.
+        saved = plan.to_dict()
+        saved.pop("style", None)
+        update_state_fields(video_id, subtitle_export=saved)
 
     try:
-        result = await export_service.export_video(video_id)
+        result = await export_service.export_video(video_id, plan=plan)
         size_mb = os.path.getsize(result.path) / 1024 / 1024
         return ExportResponse(
             video_id=video_id,
@@ -1307,7 +1411,7 @@ async def export_video(video_id: str, req: Optional[ExportRequest] = None):
 
 
 @router.get("/{video_id}/export/download")
-async def download_export(video_id: str):
+def download_export(video_id: str):
     """
     Download the exported (dubbed) video.
 
@@ -1315,7 +1419,6 @@ async def download_export(video_id: str):
     styled subtitles were requested, MP4 otherwise — so the file is resolved
     from disk rather than assumed.
     """
-    from fastapi.responses import FileResponse
 
     found = export_service.find_export(video_id)
     if not found:

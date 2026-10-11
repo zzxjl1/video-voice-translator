@@ -31,7 +31,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 import time
 from typing import Callable, Optional
 
@@ -534,7 +533,15 @@ async def clone_voice_for_speaker(
         )
         try:
             service = VoiceEnrollmentService()
-            info = service.query_voice(voice_id=cached_voice_id)
+            # Blocking SDK call with no timeout of its own: run it in a worker
+            # thread and bound the wait, or one unresponsive DashScope request
+            # freezes the whole event loop (every other request and SSE stream).
+            info = await asyncio.wait_for(
+                asyncio.get_running_loop().run_in_executor(
+                    None, lambda: service.query_voice(voice_id=cached_voice_id)
+                ),
+                timeout=config.CLONE_POLL_CALL_TIMEOUT,
+            )
             status = info.get("status", "UNKNOWN")
             logger.info(f"[Clone] Voice {cached_voice_id} status={status}")
             if status == "OK":
@@ -673,8 +680,8 @@ async def clone_voice_for_speaker(
         )
 
     # Build sample with ffmpeg (segments + 1s gaps)
-    logger.info(f"[Clone] Step 1b: Building sample with ffmpeg...")
-    loop = asyncio.get_event_loop()
+    logger.info("[Clone] Step 1b: Building sample with ffmpeg...")
+    loop = asyncio.get_running_loop()
     if emit is not None:
         await emit({
             "phase": "voice_clone",
@@ -780,7 +787,7 @@ async def clone_voice_for_speaker(
             )
             if attempt == max_create_attempts or not transient:
                 raise
-            time.sleep(3)
+            await asyncio.sleep(3)   # not time.sleep: that stalls the event loop
 
     if voice_id is None:
         raise RuntimeError(f"Failed to create voice for {speaker_id} after retries")
@@ -916,7 +923,7 @@ async def preview_cloned_voice(
     os.makedirs(speaker_clone_dir, exist_ok=True)
     preview_path = os.path.join(speaker_clone_dir, "preview.mp3")
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     def _synthesize():
         # 走 tts_service 的唯一构造点，而不是自己 new 一个 SpeechSynthesizer：

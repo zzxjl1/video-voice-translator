@@ -1999,7 +1999,7 @@ const App: React.FC = () => {
             const recoveredSegments = statusData.segments.map(mapServerSegment);
             setSpeakers(
               statusData.speakers && statusData.speakers.length > 0
-                ? statusData.speakers
+                ? mapServerSpeakers(statusData.speakers)   // 要补上颜色字段
                 : deriveSpeakers(recoveredSegments)
             );
             setSegments(recoveredSegments);
@@ -2360,19 +2360,39 @@ const App: React.FC = () => {
         : 'off';
 
   const styleSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * 还没发出去的样式改动，按键合并。
+   *
+   * 以前防抖只保留最后一次的 patch：500ms 内先改字号、再改颜色，字号那次的请求
+   * 被丢掉，服务端永远不知道。现在把窗口内所有改动合成一个 patch 再发。
+   */
+  const pendingStylePatch = useRef<SubtitleStylePatch>({});
+
+  const flushStyleSave = useCallback(async () => {
+    if (styleSaveTimer.current) {
+      clearTimeout(styleSaveTimer.current);
+      styleSaveTimer.current = null;
+    }
+    const patch = pendingStylePatch.current;
+    pendingStylePatch.current = {};
+    if (!videoId || Object.keys(patch).length === 0) return;
+    try {
+      await saveSubtitleStyle(videoId, patch);
+    } catch (err) {
+      console.warn('Could not save subtitle style:', err);
+    }
+  }, [videoId]);
+
   const handleSubtitleStyleChange = useCallback(
     (patch: SubtitleStylePatch) => {
       styleEditRef.current += 1;   // 见 styleEditRef 的说明
       setSubtitleStyle(prev => ({ ...prev, ...patch }));
       if (!videoId) return;
+      pendingStylePatch.current = { ...pendingStylePatch.current, ...patch };
       if (styleSaveTimer.current) clearTimeout(styleSaveTimer.current);
-      styleSaveTimer.current = setTimeout(() => {
-        saveSubtitleStyle(videoId, patch).catch(err =>
-          console.warn('Could not save subtitle style:', err)
-        );
-      }, 500);
+      styleSaveTimer.current = setTimeout(() => void flushStyleSave(), 500);
     },
-    [videoId],
+    [videoId, flushStyleSave],
   );
 
   const handleDownloadSrt = useCallback(() => {
@@ -2433,6 +2453,10 @@ const App: React.FC = () => {
     setExportError('');
 
     try {
+      // 导出读的是服务端保存的样式：还在防抖窗口里的改动要先发出去，否则这次导出
+      // 用的是它们改动之前的样子。
+      await flushStyleSave();
+
       /*
        * Burn-in runs HERE, before the normal export.
        *
@@ -2547,6 +2571,7 @@ const App: React.FC = () => {
     // currently showing, in the style the preview is currently showing it in.
     subtitleCues,
     subtitleStyle,
+    flushStyleSave,
   ]);
 
   /**
