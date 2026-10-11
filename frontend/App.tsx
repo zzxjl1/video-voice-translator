@@ -55,7 +55,7 @@ import {
   API_BASE,
 } from './services/apiService';
 import { getAudioWaveform, getAudioWaveformFromUrl } from './utils/audioProcessor';
-import { decodeAudio, separateAndUpload, isModelCached } from './utils/mdx/separatorClient';
+import { openAudioSource, separateAndUpload, isModelCached } from './utils/mdx/separatorClient';
 import { setPreservesPitch } from './utils/playbackSync';
 import type { MixPlan, MixPlanSegment, MixStatus } from './services/apiService';
 import {
@@ -1591,35 +1591,34 @@ const App: React.FC = () => {
         setRawLog(prev => prev + `Downloading the ${info.size_mb} MB model (cached for next time)...\n`);
       }
 
-      // Prefer the in-memory file: no extra transfer. After a page reload there
-      // is none, yet the pipeline can still be started from the URL, so fall
-      // back to the audio the server has already extracted. `decodeAudio`
-      // accepts any Blob, so both sources share the same code path — that is
-      // what makes separation possible on the retry routes.
-      let source: Blob;
-      if (file) {
-        source = file;
-      } else {
+      // Where the audio comes from is decided by `openAudioSource`, on memory
+      // grounds: a SHORT in-memory file is decoded right here (no transfer);
+      // a long one — or none at all, after a page reload — is read window by
+      // window from the server's WAV, so a long video never has to exist as
+      // floats in this tab. That same path is what makes separation possible
+      // on the retry routes, which have no File.
+      const audio = await openAudioSource({
+        file,
+        onLog: (message) => setRawLog(prev => prev + message + '\n'),
         // Not `/audio`: that file is the 16 kHz MONO track ASR uses, and
         // separating it would band-limit the output to 8 kHz and discard the
         // stereo image. This endpoint produces a stereo 44.1 kHz source from
         // the original upload, and caches it server-side.
-        setRawLog(prev => prev + 'Fetching a stereo separation source from the server...\n');
-        const response = await fetch(
-          `/api/videos/${vid}/audio/stereo?token=${encodeURIComponent(token)}`
-        );
-        if (!response.ok) {
-          throw new Error(
-            `could not fetch a separation source (HTTP ${response.status})`
+        fetchServerSource: async () => {
+          setRawLog(prev => prev + 'Fetching a stereo separation source from the server...\n');
+          const response = await fetch(
+            `/api/videos/${vid}/audio/stereo?token=${encodeURIComponent(token)}`
           );
-        }
-        source = await response.blob();
-      }
-
-      setRawLog(prev => prev + 'Decoding audio locally...\n');
-      const audio = await decodeAudio(source);
+          if (!response.ok) {
+            throw new Error(
+              `could not fetch a separation source (HTTP ${response.status})`
+            );
+          }
+          return response.blob();
+        },
+      });
       setRawLog(prev =>
-        prev + `Decoded ${audio.duration.toFixed(1)}s @ ${audio.sampleRate} Hz.\n`
+        prev + `Audio ready: ${audio.duration.toFixed(1)}s @ ${audio.sampleRate} Hz.\n`
       );
 
       await separateAndUpload({
