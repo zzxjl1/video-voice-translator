@@ -77,11 +77,11 @@ class PipelineRun:
         """
         接管事件消费：队列先灌入历史，之后接着收新事件。
 
-        仍然是"一条运行一个消费者"。被替换下来的旧队列会收到一个结束标记：它的
-        读取端（一条已经断开、但服务端还没发现的连接）就此退出，而不是永远挂在
-        `queue.get()` 上泄漏一个协程。
+        仍然是"一条运行一个消费者"。被替换下来的旧队列**不**发结束标记：旧连接
+        可能还活着（另一个标签页），给它发结束标记，它的前端会以为运行结束了，
+        随后看到 /status 仍 active 又去接管 —— 两个标签页互相抢流、反复回放历史。
+        旧连接是死是活交给 `_sse_stream` 的心跳去发现：写不出去时生成器被关闭。
         """
-        previous = self.queue
         queue: asyncio.Queue = asyncio.Queue()
         for event in self.history:
             queue.put_nowait(event)
@@ -89,8 +89,6 @@ class PipelineRun:
             # 运行已经结束：历史回放完就收尾，别让新订阅者等一个不会来的事件。
             queue.put_nowait(None)
         self.queue = queue
-        if previous is not None:
-            previous.put_nowait(None)
         return queue
 
     def unsubscribe(self, queue: asyncio.Queue) -> None:

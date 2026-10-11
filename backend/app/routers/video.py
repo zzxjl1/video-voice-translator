@@ -1109,14 +1109,14 @@ async def list_voices(video_id: str, language: Optional[str] = None):
 
 def _set_flag(video_id: str, segment_id: str, flag: str, value: bool) -> dict:
     """
-    Shared body of mute / hide: validate, refuse while a run is writing, persist.
+    Shared body of mute / hide: validate, persist.
 
-    The flags live in `segment_flags.json`, which `load_state` merges back — the
-    running pipeline reads it only when it starts, but a flag toggled mid-run would
-    still race with the pipeline's own end-of-run state, so it is refused like the
-    other write endpoints.
+    Allowed while a pipeline runs: the flags live in their own file
+    (`segment_flags.json`, read-modify-written under the models lock) that the
+    pipeline never writes, so there is nothing to race with. A line muted mid-run
+    may still get synthesized by that run; the flag is honoured by every consumer
+    afterwards (mix plan, export, status), and the take is kept for unmuting.
     """
-    _reject_if_running(video_id)
     _safe_name(segment_id, "segment id")
     state = _require_state(video_id)
     seg = next((s for s in state.segments if s.id == segment_id), None)

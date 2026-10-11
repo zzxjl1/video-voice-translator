@@ -196,8 +196,8 @@ check("⑨ 起点越界 → 416", r.status_code == 416, r.status_code)
 async def registry_case():
     run = run_registry.start("regressA")
     q1 = run.subscribe()
-    q2 = run.subscribe()                       # 刷新页面后重连
-    first = await asyncio.wait_for(q1.get(), 1)
+    q2 = run.subscribe()                       # 刷新页面 / 另一个标签页接管
+    first = q1.empty()                         # 旧队列不发结束标记（否则两个标签页互相抢流）
     await run.emit({"phase": "asr", "status": "started"})
     got = await asyncio.wait_for(q2.get(), 1)
     run.unsubscribe(q1)                        # 旧连接迟到的清理，不能清掉新队列
@@ -212,7 +212,7 @@ async def registry_case():
 
 
 first, got, still, replay, tail = asyncio.run(registry_case())
-check("⑩ 被替换的旧队列收到结束标记（读取端不再永远挂着）", first is None)
+check("⑩ 被替换的旧队列不收结束标记（避免两个标签页互相抢流）", first is True)
 check("⑩ 新队列收到事件", got.get("phase") == "asr")
 check("⑩ 旧连接的 unsubscribe 不会清掉新队列", still is True)
 check("⑩ 运行结束后的订阅者：回放历史后收到结束标记", replay.get("phase") == "asr" and tail is None)
