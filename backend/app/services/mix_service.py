@@ -12,7 +12,8 @@
 
 策略本身（一段话）：配音满电平摆进自己的时间槽，超槽先变速（与播放同一组
 夹取界）再裁；垫底那条在有人说话时按固定 dB 下压、带 attack/release；
-整条混完后按 master 目标做响度归一与限峰。分离出的背景（不含人声）不下压，
+整条混完后按 master 目标做响度归一与限峰：量一次整合响度，整条加同一个静态
+增益（`master_gain`），再用限幅器兜住峰值。分离出的背景（不含人声）不下压，
 未分离的原声（含原语言人声）下压到台词之下。
 """
 
@@ -36,10 +37,16 @@ from app.config import env_float as _env_float
 
 # 整条混音的整合响度目标（LUFS）。-16 是通用/网页内容的常用目标。
 TARGET_LUFS = _env_float("MIX_TARGET_LUFS", -16.0)
-# 峰值上限（dBFS）。loudnorm 的 TP 参数按真峰算，这里给 -1.5 留出余量。
+# 峰值上限（dBFS，按真峰语义；执行端的限幅器是采样峰值，会再留一点过采样余量）。
 PEAK_LIMIT_DBFS = _env_float("MIX_PEAK_LIMIT_DBFS", -1.5)
-# 响度范围目标（loudnorm 的 LRA）。
-LOUDNESS_RANGE = _env_float("MIX_LOUDNESS_RANGE", 11.0)
+# 为了凑够响度，限幅器最多愿意压多少 dB。超过它说明这条混音峰值太尖（对白+音乐
+# 的瞬态），硬凑会把波形压扁、听感发闷；宁可让整条停在目标之下，也不过度限幅。
+MAX_LIMITING_DB = _env_float("MIX_MAX_LIMITING_DB", 3.0)
+# 单次整体抬升的上限（dB）。真有一条 -40 LUFS 的混音，说明上游出了问题（静音的
+# 配音、坏掉的电平），把它抬 24 dB 只会放大底噪 —— 不是响度归一该掩盖的事。
+MAX_BOOST_DB = _env_float("MIX_MAX_BOOST_DB", 20.0)
+# 低于它的"响度"不是内容：EBU R128 的绝对门限是 -70 LUFS，纯静音就读成它。
+SILENCE_LUFS = -70.0
 
 # 每段配音首尾的淡入淡出（秒），消掉 TTS 边缘的咔哒声。
 VOICE_FADE_S = 0.02
@@ -60,11 +67,55 @@ RATE_MIN = _env_float("MIX_RATE_MIN", 0.8)
 RATE_MAX = _env_float("MIX_RATE_MAX", 1.25)
 
 # 策略语义变了就 +1：让所有已下发的 plan 失效，前端会重新取。
-POLICY_VERSION = 1
+# 2：master 从 loudnorm（两遍、动态）改为"量响度 → 一次静态增益 → 限幅兜底"。
+POLICY_VERSION = 2
 
 
 def db_to_gain(db: float) -> float:
     return 10.0 ** (db / 20.0)
+
+
+def master_gain(measured_lufs: float | None, sample_peak_dbfs: float, master: dict) -> dict:
+    """
+    整条混音要加多少 dB（一个数，整条同一个增益），以及为什么是这个数。
+
+    纯函数：测量在 ffmpeg 里做（export_service），这里只做决定 —— 策略与数值
+    只存在于本模块，决定本身不依赖任何进程，可以直接单测。
+
+    想要的增益 = 目标响度 − 实测响度。然后按两条护栏夹取：
+      · 峰值护栏：加完增益后，峰值超出上限的部分由限幅器吃掉；吃的量不得超过
+        `maxLimitingDb`，否则整体少加一点（可能是负的 —— 这条混音太尖，宁可
+        停在目标之下，也不压扁波形）；
+      · 抬升护栏：单次最多抬 `maxBoostDb`。
+
+    返回：
+      gainDb          最终采用的增益
+      wantedDb        没有护栏时想要的增益（测不出响度时为 None）
+      limitedBy       "none" | "peak" | "boost" | "unmeasurable"
+      expectedLimitDb 限幅器预计在峰值处压的量（0 = 基本碰不到）
+    """
+    ceiling = float(master["peakLimitDbfs"])
+    if measured_lufs is None or measured_lufs <= SILENCE_LUFS or measured_lufs != measured_lufs:
+        # 静音 / 测不出：没有任何依据去动电平，只留限幅兜底。
+        return {"gainDb": 0.0, "wantedDb": None, "limitedBy": "unmeasurable",
+                "expectedLimitDb": max(0.0, sample_peak_dbfs - ceiling)}
+
+    wanted = float(master["targetLufs"]) - measured_lufs
+    by_peak = ceiling - sample_peak_dbfs + float(master["maxLimitingDb"])
+    by_boost = float(master["maxBoostDb"])
+
+    gain, limited_by = wanted, "none"
+    if by_peak < gain:
+        gain, limited_by = by_peak, "peak"
+    if by_boost < gain:
+        gain, limited_by = by_boost, "boost"
+
+    return {
+        "gainDb": round(gain, 3),
+        "wantedDb": round(wanted, 3),
+        "limitedBy": limited_by,
+        "expectedLimitDb": round(max(0.0, sample_peak_dbfs + gain - ceiling), 3),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +267,8 @@ def build_mix_plan(state: VideoState) -> dict:
         "master": {
             "targetLufs": TARGET_LUFS,
             "peakLimitDbfs": PEAK_LIMIT_DBFS,
-            "loudnessRange": LOUDNESS_RANGE,
+            "maxLimitingDb": MAX_LIMITING_DB,
+            "maxBoostDb": MAX_BOOST_DB,
         },
     }
     plan["version"] = plan_version(plan)

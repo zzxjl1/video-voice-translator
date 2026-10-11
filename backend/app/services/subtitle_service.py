@@ -41,6 +41,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Iterable, Optional
 
 from app import config
+from app.services import audio_probe
 
 logger = logging.getLogger(__name__)
 
@@ -417,6 +418,10 @@ def probe_duration(path: str) -> Optional[float]:
 
     Cached: a video with a few hundred segments would otherwise shell out to
     ffprobe once per segment on every single export.
+
+    MP3 (what TTS produces) is read straight from its frame headers — no
+    process, ~0.2 ms. `audio_probe` answers only when it is certain; otherwise
+    (Xing/VBRI header, damaged file, anything else) this falls through to ffprobe.
     """
     if not path:
         return None
@@ -431,6 +436,12 @@ def probe_duration(path: str) -> Optional[float]:
     cached = _duration_cache.get(key)
     if cached is not None:
         return cached
+
+    if path.lower().endswith(".mp3"):
+        direct = audio_probe.mp3_duration(path)
+        if direct:
+            _duration_cache[key] = direct
+            return direct
 
     try:
         result = subprocess.run(

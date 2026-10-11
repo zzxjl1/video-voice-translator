@@ -242,7 +242,8 @@ export interface MixPlan {
   bed: { kind: 'background' | 'original'; gain: number; duck: [number, number][] } | null;
   segments: MixPlanSegment[];
   voiceFadeS: number;
-  master: { targetLufs: number; peakLimitDbfs: number; loudnessRange: number };
+  /** 导出的母带目标；播放端不求值（预览不做响度归一），只随计划下发。 */
+  master: { targetLufs: number; peakLimitDbfs: number; maxLimitingDb: number; maxBoostDb: number };
 }
 export interface MixStatus { version: string; plan: MixPlan | null; }
 

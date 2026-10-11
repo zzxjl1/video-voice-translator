@@ -15,9 +15,9 @@ cheap:
   module working without it.
 """
 import asyncio
-import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -236,8 +236,8 @@ def build_dubbed_timeline(
         if not len(samples):
             continue
 
-        # 首尾淡出。plan 不来这边做响度处理 —— 响度归一在 mux 的 loudnorm 里，
-        # 对整条混音做（逐段拉平会毁掉轻重与情绪）。
+        # 首尾淡出。这里不做响度处理 —— 响度归一在 mux 的母带步骤里对整条混音
+        # 做一次（逐段拉平会毁掉轻重与情绪）。
         fade = min(fade_samples, len(samples) // 4)
         if fade > 0:
             ramp = np.linspace(0.0, 1.0, fade)
@@ -524,69 +524,94 @@ def build_ducked_bed(
     return out_path
 
 
-def _measure_loudness(
-    video_id: str, input_args: list[str], pre_filter: str, master: dict
-) -> dict:
-    """
-    loudnorm 第一遍：BS.1770 量混音的输入响度。失败就抛，绝不猜。
+_EBUR128_NUMBER = r"(-?(?:inf|\d+(?:\.\d+)?))"
 
-    两遍法与单遍的区别：单遍是动态的（随时间调增益，音乐上会"泵"）；两遍在
-    第二遍里用 linear=true 变成一次静态增益 —— 这才是"归一到 -16 LUFS"的本意。
+
+def parse_ebur128_summary(stderr: str) -> tuple[Optional[float], float]:
     """
-    target = (
-        f"loudnorm=I={master['targetLufs']}:TP={master['peakLimitDbfs']}"
-        f":LRA={master['loudnessRange']}:print_format=json"
-    )
-    # 注意 -v info：loudnorm 的 JSON 走的是 **info 级**日志，warning 会把它吞掉。
-    # input_args 里带着 mux 用的 "-v warning"，这里必须覆盖成 info。
-    cmd = ["ffmpeg", "-hide_banner", "-nostats"]
-    it = iter(input_args[1:])     # [0] 是程序名，不能复制（否则它会被当成输出文件）
-    skip = False
-    for arg in it:
-        if skip:
-            skip = False
-            continue
-        if arg == "-v":
-            cmd += ["-v", "info"]
-            skip = True          # 跳过它后面的级别值
-            continue
-        cmd.append(arg)
-    cmd += [
-        "-filter_complex", f"{pre_filter}{target}",
-        "-f", "null", "-",
+    ffmpeg `ebur128=peak=sample` 的 Summary 段 → (整合响度 LUFS, 采样峰值 dBFS)。
+
+    纯函数，单独拿出来是为了能用一段真实输出直接单测。响度读成 -70.0（EBU R128
+    的绝对门限）或 -inf 表示纯静音，返回 None；峰值 -inf 原样返回。缺字段就抛 ——
+    一次读不懂的测量不能悄悄变成"增益 0"。
+    """
+    summary = stderr[stderr.rfind("Summary:"):] if "Summary:" in stderr else ""
+    loudness = re.search(r"I:\s+" + _EBUR128_NUMBER + r"\s+LUFS", summary)
+    peak = re.search(r"Sample peak:\s+Peak:\s+" + _EBUR128_NUMBER + r"\s+dBFS", summary)
+    if not loudness or not peak:
+        raise RuntimeError(f"响度测量没有产出可读的结果: {stderr[-400:]}")
+    lufs = float(loudness.group(1))
+    return (None if lufs <= mix_service.SILENCE_LUFS else lufs), float(peak.group(1))
+
+
+def _measure_mix(timeline_path: str, bed_path: Optional[str]) -> tuple[Optional[float], float]:
+    """
+    量整条混音的 (整合响度, 采样峰值)。失败就抛，绝不猜。
+
+    只读配音时间轴与垫底这两个小 WAV，**不碰视频**：以前量响度是把整个原视频
+    也作为输入打开的（只是不映射，但解复用仍要把它从头读到尾）。BS.1770 本身
+    比 loudnorm 第一遍便宜一个数量级（37 分钟混音实测 1.0 秒 vs 25.5 秒）。
+    """
+    if bed_path:
+        inputs = ["-i", timeline_path, "-i", bed_path]
+        pre = "[0:a][1:a]amix=inputs=2:duration=first:normalize=0[mix];[mix]"
+    else:
+        inputs = ["-i", timeline_path]
+        pre = "[0:a]"
+    # -v info：Summary 走的是 info 级日志，warning 会把它吞掉。
+    cmd = [
+        "ffmpeg", "-hide_banner", "-nostats", "-v", "info", *inputs,
+        "-filter_complex", f"{pre}ebur128=peak=sample:framelog=quiet[o]",
+        "-map", "[o]", "-f", "null", "-",
     ]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         raise RuntimeError(
-            f"loudnorm 测量失败: {result.stderr[-400:] if result.stderr else 'unknown'}"
+            f"响度测量失败: {result.stderr[-400:] if result.stderr else 'unknown'}"
         )
-    stderr = result.stderr or ""
-    start = stderr.rfind("{")
-    end = stderr.rfind("}")
-    if start == -1 or end == -1 or end < start:
-        raise RuntimeError(f"loudnorm 没有产出测量结果: {stderr[-400:]}")
-    try:
-        data = json.loads(stderr[start : end + 1])
-    except json.JSONDecodeError as e:
-        raise RuntimeError(
-            f"loudnorm 测量结果解析失败: {stderr[start : end + 1][:200]}"
-        ) from e
+    return parse_ebur128_summary(result.stderr or "")
 
-    def _num(key: str) -> float:
-        value = data.get(key)
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            raise RuntimeError(f"loudnorm 测量值不可用: {key}={value!r}") from None
 
-    return {
-        "I": _num("input_i"),
-        "TP": _num("input_tp"),
-        "LRA": _num("input_lra"),
-        "thresh": _num("input_thresh"),
-        "offset": _num("target_offset"),
-    }
+def master_filter(video_id: str, lufs: Optional[float], peak_dbfs: float, master: dict) -> str:
+    """
+    母带滤镜串：一次静态增益 → 升到 48 kHz → 限幅器兜底。
 
+    增益的决定在 `mix_service.master_gain`（策略归那边）；这里只负责把它翻成滤镜
+    并把结果说清楚。顺序是有讲究的：限幅器放在升采样**之后**。先限 24 kHz 再升
+    采样，过采样产生的采样间峰值会冲出上限（真工程实测 -1.30 dBTP，上限 -1.5）；
+    升采样后再限，成片真峰正好落在 -1.50。
+    """
+    decision = mix_service.master_gain(lufs, peak_dbfs, master)
+    gain = decision["gainDb"]
+
+    if decision["limitedBy"] == "unmeasurable":
+        logger.warning(
+            f"[{video_id}] 混音响度测不出（静音？）：不做增益，只留限幅 "
+            f"(peak {peak_dbfs:.1f} dBFS)"
+        )
+    else:
+        shortfall = decision["wantedDb"] - gain
+        message = (
+            f"[{video_id}] Master: mix {lufs:.1f} LUFS / peak {peak_dbfs:.1f} dBFS "
+            f"-> gain {gain:+.2f} dB (target {master['targetLufs']} LUFS), "
+            f"limiter reduces up to {decision['expectedLimitDb']:.1f} dB at the peaks"
+        )
+        if shortfall > 0.5:
+            reason = {
+                "peak": f"峰值太尖，限幅超过 {master['maxLimitingDb']} dB 会压扁波形",
+                "boost": f"单次抬升上限 {master['maxBoostDb']} dB",
+            }[decision["limitedBy"]]
+            logger.warning(f"{message}；比目标低 {shortfall:.1f} dB（{reason}）")
+        else:
+            logger.info(message)
+
+    # alimiter.limit 是线性值，范围 [0.0625, 1]（-24 dB .. 0 dB）。
+    ceiling_db = min(0.0, max(-24.0, float(master["peakLimitDbfs"])))
+    limit = 10.0 ** (ceiling_db / 20.0)
+    return (
+        f"volume={gain:.3f}dB,aresample=48000,"
+        f"alimiter=limit={limit:.6f}:attack=5:release=50:level=disabled:latency=1"
+    )
 
 
 def _mux(
@@ -604,7 +629,8 @@ def _mux(
     Combine the original video stream + dubbed timeline (+ ducked bed + subtitles).
 
     音频链：amix（normalize=0；duration=first —— 以前对背景用 longest，垫底比
-    视频长时成片音轨会长出尾巴）→ loudnorm 两遍法归一到 plan.master 的目标。
+    视频长时成片音轨会长出尾巴）→ 母带：量一次响度、整条加同一个静态增益、
+    限幅器兜住峰值（见 `master_filter`）。
 
     The video stream is always copied. Subtitles are EMBEDDED, never burned:
     embedding is a remux (~40 ms), burning would need a full re-encode plus
@@ -628,15 +654,8 @@ def _mux(
     else:
         pre_filter = "[1:a]"
 
-    measured = _measure_loudness(video_id, base_cmd, pre_filter, master)
-    loudnorm = (
-        f"loudnorm=I={master['targetLufs']}:TP={master['peakLimitDbfs']}"
-        f":LRA={master['loudnessRange']}"
-        f":measured_I={measured['I']}:measured_TP={measured['TP']}"
-        f":measured_LRA={measured['LRA']}:measured_thresh={measured['thresh']}"
-        f":offset={measured['offset']}:linear=true"
-    )
-    filter_complex = f"{pre_filter}{loudnorm}[aout]"
+    lufs, peak_dbfs = _measure_mix(timeline_path, bed_path)
+    filter_complex = f"{pre_filter}{master_filter(video_id, lufs, peak_dbfs, master)}[aout]"
 
     cmd = base_cmd + [
         "-filter_complex", filter_complex,
@@ -650,7 +669,7 @@ def _mux(
         "-c:v", "copy",          # never re-encode the video stream
         "-c:a", "aac",
         "-b:a", "160k",
-        # loudnorm 内部把采样率抬到 192k；不显式压回去，AAC 编码器会照单全收
+        # 滤镜链末端已经是 48 kHz；显式写出来，是为了不依赖链里谁改了采样率。
         "-ar", "48000",
     ]
 
