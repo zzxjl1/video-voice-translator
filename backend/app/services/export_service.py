@@ -113,22 +113,9 @@ def container_for(plan: subtitle_service.ExportPlan) -> str:
 # ---------------------------------------------------------------------------
 
 def probe_duration(path: str) -> float:
-    result = subprocess.run(
-        [
-            "ffprobe", "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
-            path,
-        ],
-        capture_output=True,
-        text=True,
-    )
-    try:
-        return float(result.stdout.strip())
-    except (ValueError, AttributeError):
-        return 0.0
-
-
+    """时长探测的唯一实现在 subtitle_service.probe_duration（带 mtime 缓存）。"""
+    from app.services.subtitle_service import probe_duration as _probe
+    return _probe(path) or 0.0
 
 
 def _decode_to_pcm(path: str, sample_rate: int, atempo: float = 1.0) -> bytes:

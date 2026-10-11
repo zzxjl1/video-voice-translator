@@ -1712,7 +1712,7 @@ const App: React.FC = () => {
       waited += 1;
       let stillRunning = true;
       try {
-        stillRunning = (await getVideoStatus(vid)).run?.active ?? false;
+        stillRunning = (await getVideoStatus(vid, mixVersionRef.current)).run?.active ?? false;
       } catch {
         // 状态取不到就继续等，不把"网络抖动"当成"已取消"。
         continue;
@@ -1752,7 +1752,7 @@ const App: React.FC = () => {
     async (vid: string, what: string, interactive = true): Promise<boolean> => {
       let live: RunState | null = null;
       try {
-        live = (await getVideoStatus(vid)).run ?? null;
+        live = (await getVideoStatus(vid, mixVersionRef.current)).run ?? null;
       } catch {
         return true; // 问不到就不在这里拦，交给服务器
       }
@@ -1922,7 +1922,8 @@ const App: React.FC = () => {
         setIsLogOpen(false);
         setIsTranscribing(false);
 
-        const statusData = await getVideoStatus(uploadResult.video_id);
+        const statusData = await getVideoStatus(uploadResult.video_id, mixVersionRef.current);
+        applyMix(statusData);
 
         /*
          * 只刷新"服务端能跑哪些后端"这份能力清单，**不恢复工程里存的设置**。
@@ -2093,7 +2094,8 @@ const App: React.FC = () => {
 
       try {
         // 正在跑就先取消（协作式：等当前请求跑完），否则删除会被服务器拒绝。
-        const status = await getVideoStatus(projectId);
+        const status = await getVideoStatus(projectId, mixVersionRef.current);
+        applyMix(status);
         if (status.run?.active) {
           const stopFirst = window.confirm(
             '这个工程正在处理中。\n\n先取消运行，然后删除？'
@@ -2574,7 +2576,8 @@ const App: React.FC = () => {
 
     let status: any = null;
     try {
-      status = await getVideoStatus(videoId);
+      status = await getVideoStatus(videoId, mixVersionRef.current);
+      applyMix(status);
     } catch (err) {
       /*
        * 状态问不到 —— 不能当成"保存成功"（#22）。

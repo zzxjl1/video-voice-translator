@@ -30,12 +30,8 @@ logger = logging.getLogger(__name__)
 # 策略数值 —— 全仓唯一。改这里的值，导出与预览同时变。
 # ---------------------------------------------------------------------------
 
-def _env_float(name: str, default: float) -> float:
-    raw = os.getenv(name)
-    try:
-        return float(raw) if raw is not None else default
-    except ValueError:
-        return default
+# 复用 config 的读取助手 —— 连"怎么读环境变量"也不留第二份实现
+from app.config import env_float as _env_float
 
 
 # 整条混音的整合响度目标（LUFS）。-16 是通用/网页内容的常用目标。
@@ -45,8 +41,6 @@ PEAK_LIMIT_DBFS = _env_float("MIX_PEAK_LIMIT_DBFS", -1.5)
 # 响度范围目标（loudnorm 的 LRA）。
 LOUDNESS_RANGE = _env_float("MIX_LOUDNESS_RANGE", 11.0)
 
-# 配音电平（线性）。
-VOICE_GAIN = 1.0
 # 每段配音首尾的淡入淡出（秒），消掉 TTS 边缘的咔哒声。
 VOICE_FADE_S = 0.02
 
@@ -122,7 +116,7 @@ def _segment_entries(state: VideoState) -> tuple[list[dict], bool]:
     旧工程没有 actual_duration（以前只写日志不落盘）：这里用 ffprobe 现量一次
     并写回 —— 是数据补齐，只发生一次，之后随 state 持久化。
     """
-    from app.services.export_service import probe_duration
+    from app.services.subtitle_service import probe_duration
 
     entries: list[dict] = []
     dirty = False
@@ -173,7 +167,6 @@ def _segment_entries(state: VideoState) -> tuple[list[dict], bool]:
             # 变速后这句实际占用的秒数：播放器拿它做进度对位（以前前端用
             # "自然时长 × 进度"，速率≠1 时对位就是错的）。
             "played": round(played, 4),
-            "gain": VOICE_GAIN,
         })
     return entries, dirty
 
@@ -194,7 +187,6 @@ def build_mix_plan(state: VideoState) -> dict:
     if os.path.exists(background_path):
         bed = {
             "kind": "background",
-            "path": "background.wav",
             "gain": round(db_to_gain(BGM_GAIN_DB), 5),
             # 背景不含人声，没有要避让的语音 → 不下压，包络为空
             "duck": [],
@@ -202,7 +194,6 @@ def build_mix_plan(state: VideoState) -> dict:
     elif state.file_path and os.path.exists(state.file_path):
         bed = {
             "kind": "original",
-            "path": None,          # 执行端用源视频的音轨
             "gain": round(db_to_gain(ORIGINAL_GAIN_DB), 5),
             "duck": _duck_breakpoints(
                 _merge_spans(
@@ -222,7 +213,6 @@ def build_mix_plan(state: VideoState) -> dict:
         "policyVersion": POLICY_VERSION,
         "bed": bed,
         "segments": entries,
-        "limits": {"audioMin": RATE_MIN, "audioMax": RATE_MAX},
         "voiceFadeS": VOICE_FADE_S,
         "master": {
             "targetLufs": TARGET_LUFS,

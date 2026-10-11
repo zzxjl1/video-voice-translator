@@ -209,7 +209,7 @@ export async function cancelProcessing(
 export interface MixPlanSegment {
   id: string; start: number; end: number;
   atempo: number; videoRate: number; trim: number | null;
-  played: number; gain: number;
+  played: number;
 }
 export interface MixPlan {
   version: string; policyVersion: number;

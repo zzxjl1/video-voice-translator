@@ -256,30 +256,10 @@ def _clamp_rate(rate: float) -> float:
 
 
 def _probe_duration(path: str) -> float | None:
-    """
-    Real duration of a synthesized file, in seconds, or None if ffprobe failed.
-
-    This is free — the audio is already on disk — and it is what turns the
-    duration prediction from a guess into something verifiable.
-    """
-    try:
-        result = subprocess.run(
-            [
-                "ffprobe", "-v", "error",
-                "-show_entries", "format=duration",
-                "-of", "default=nw=1:nk=1",
-                path,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return float(result.stdout.strip())
-        logger.warning(f"ffprobe could not read {path}: {result.stderr[-200:]}")
-    except Exception as e:  # pragma: no cover - defensive
-        logger.warning(f"ffprobe failed on {path}: {e}")
-    return None
+    """时长探测的唯一实现在 subtitle_service.probe_duration（带 mtime 缓存）；
+    这里只是别名，别再写第二份 ffprobe 调用。"""
+    from app.services.subtitle_service import probe_duration
+    return probe_duration(path)
 
 
 def _synth_audio(
