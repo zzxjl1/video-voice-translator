@@ -122,125 +122,139 @@ const ProcessingSettings: React.FC<ProcessingSettingsProps> = ({
     const dubbingOn = enableDubbing ?? true;
 
     return (
-        <div className="w-full space-y-3 text-left">
-            {/* 生成配音：总开关，压住下面所有"产出声音"的选项。关 = 仅字幕。
-                不传该 prop 的宿主不渲染这张卡（弹窗随后接）。 */}
+        <div className="w-full space-y-4 text-left">
+            {/* ───────────────────────── 配音 ─────────────────────────
+                总开关在 section 标题右侧。BGM 分离与声音克隆是它的子选项 ——
+                只在产出配音音轨时才有意义，关掉时连同各自子选项一并收起。
+                不传该 prop 的宿主不渲染这个 section（弹窗随后接）。 */}
             {enableDubbing !== undefined && (
-                <div className={`py-2.5 px-3 rounded-xl border ${dubbingOn ? 'bg-gray-50 border-transparent' : 'bg-amber-50/60 border-amber-200/70'}`}>
-                    <div className="flex items-center justify-between gap-3">
+                <section>
+                    <header className="flex items-center justify-between px-3 pb-2">
                         <div className="flex items-center">
-                            <span className={`text-sm font-bold ${dubbingOn ? 'text-gray-700' : 'text-amber-700'}`}>生成配音</span>
-                            <InfoTooltip text="打开：翻译后合成配音音轨（产生 TTS 费用）。关闭：只翻译字幕，视频原声比特级保留，不产生任何合成费用。" />
+                            <span className="text-[11px] font-bold uppercase tracking-wider text-gray-400">配音</span>
+                            <InfoTooltip text="打开：翻译后合成配音音轨（产生 TTS 费用），导出时替换原声。关闭：只翻译字幕，视频原声比特级保留，不产生任何合成费用。" />
                         </div>
                         <Switch on={dubbingOn} onClick={() => onDubbingChange?.(!dubbingOn)} />
-                    </div>
-                    <p className="mt-1 text-[10px] leading-relaxed text-gray-400">
-                        {dubbingOn
-                            ? '翻译后合成配音音轨，导出时替换原声。'
-                            : '仅翻译字幕：原声原样保留，不合成配音、不产生 TTS 费用。'}
-                    </p>
-                </div>
-            )}
-            <div className={`py-2.5 px-3 bg-gray-50 rounded-xl ${dubbingOn ? '' : 'opacity-50 pointer-events-none'}`}>
-                <div className="flex items-center mb-2">
-                    <span className={`text-sm font-medium ${bgmSeparationLocked ? 'text-gray-400' : 'text-gray-700'}`}>BGM Separation</span>
-                    <InfoTooltip text="Splits vocals from background music for cleaner transcription and voice cloning. Pick which backend does the work, or turn it off." />
-                </div>
-                <SeparationModeSelector
-                    value={separationMode}
-                    onChange={onSeparationModeChange}
-                    backends={separationBackends}
-                    locked={bgmSeparationLocked}
-                />
-            </div>
+                    </header>
 
-            {/* 多模态增强识别：omni 听原声 —— 纠正 ASR 错漏 + 标注语气标签，
-                翻译基于纠错后的文本进行。与克隆正交，且先于克隆出现：
-                它作用于转写与翻译，克隆只作用于声音。 */}
-            <div className="flex items-center justify-between gap-3 py-1.5 px-3 bg-gray-50 rounded-xl">
-                <div className="flex items-center">
-                    <span className="text-sm font-medium text-gray-700">多模态增强识别</span>
-                    <InfoTooltip text="纠正语音识别的错字漏字，并标注每句的语气（兴奋、耳语、大笑…），翻译基于纠错后的文本进行。会增加一些处理时间。" />
-                </div>
-                <Switch on={mmEnhance} onClick={() => onMmEnhanceChange(!mmEnhance)} />
-            </div>
-
-            {/* Voice Cloning 与它决定的内容同住一块灰底：开关、智能选材、
-                音色池（或克隆说明/警告）不再分成三块各自带底色 —— 它们是
-                同一个决策的开关与结果，视觉上就该是一体。内部以细分割线
-                分隔，子行不再自带灰底。 */}
-            <div className={`px-3 py-1.5 bg-gray-50 rounded-xl ${dubbingOn ? '' : 'opacity-50 pointer-events-none'}`}>
-                <div className="flex items-center justify-between gap-3 py-1.5">
-                    <div className="flex items-center">
-                        <span className="text-sm font-medium text-gray-700">Voice Cloning</span>
-                        <InfoTooltip text="Clone the original speaker's voice for synthesis. The translated audio will sound like the original speaker. Requires more processing time." />
-                    </div>
-                    <Switch on={enableVoiceClone} onClick={() => onVoiceCloneChange(!enableVoiceClone)} />
-                </div>
-
-                {/* 智能选材：克隆的子选项，白底小卡表明从属。开关本身的说明
-                    由 ⓘ 承担，不再重复一行文字。 */}
-                {enableVoiceClone && (
-                    <div className="mb-1.5 rounded-lg border border-gray-200/70 bg-white/80">
-                        <div className="flex items-center justify-between gap-3 py-1.5 px-2.5">
-                            <span className="text-xs font-medium text-gray-700">智能选材</span>
-                            <Switch
-                                on={cloneSmartPick}
-                                onClick={() => onCloneSmartPickChange(!cloneSmartPick)}
-                            />
-                        </div>
-                        <p className="px-2.5 pb-2 text-[10px] leading-relaxed text-gray-400">
-                            AI 试听候选片段，挑出无重叠、情绪中性的部分做克隆参考素材；每轮校验，不过关自动重选。
+                    <div className={`px-3 py-2 rounded-xl border transition-colors ${dubbingOn ? 'bg-gray-50 border-transparent' : 'bg-amber-50/60 border-amber-200/70'}`}>
+                        <p className="text-[10px] leading-relaxed text-gray-400">
+                            {dubbingOn
+                                ? '翻译后合成配音音轨，导出时替换原声。'
+                                : '仅翻译字幕：原声原样保留，不合成配音、不产生 TTS 费用。'}
                         </p>
+
+                        {dubbingOn && (
+                            <>
+                                {/* BGM 分离：配音的子选项。白底小卡表明从属。 */}
+                                <div className="mt-2 rounded-lg border border-gray-200/70 bg-white/80 px-2.5 py-2">
+                                    <div className="flex items-center mb-1.5">
+                                        <span className="text-xs font-medium text-gray-700">BGM 分离</span>
+                                        <InfoTooltip text="Splits vocals from background music for cleaner transcription and voice cloning. Pick which backend does the work, or turn it off." />
+                                    </div>
+                                    <SeparationModeSelector
+                                        value={separationMode}
+                                        onChange={onSeparationModeChange}
+                                        backends={separationBackends}
+                                        locked={bgmSeparationLocked}
+                                    />
+                                </div>
+
+                                {/* 声音克隆：子选项块（智能选材 / 音色池住在里面），
+                                    沿用"同一决策的开关与结果住一起"的既有结构。 */}
+                                <div className="mt-2 rounded-lg border border-gray-200/70 bg-white/80">
+                                    <div className="flex items-center justify-between gap-3 py-1.5 px-2.5">
+                                        <div className="flex items-center">
+                                            <span className="text-xs font-medium text-gray-700">声音克隆</span>
+                                            <InfoTooltip text="Clone the original speaker's voice for synthesis. The translated audio will sound like the original speaker. Requires more processing time." />
+                                        </div>
+                                        <Switch on={enableVoiceClone} onClick={() => onVoiceCloneChange(!enableVoiceClone)} />
+                                    </div>
+
+                                    {enableVoiceClone && (
+                                        <div className="mx-2.5 mb-1.5 rounded-lg border border-gray-200/70 bg-gray-50/80">
+                                            <div className="flex items-center justify-between gap-3 py-1.5 px-2.5">
+                                                <span className="text-xs font-medium text-gray-700">智能选材</span>
+                                                <Switch
+                                                    on={cloneSmartPick}
+                                                    onClick={() => onCloneSmartPickChange(!cloneSmartPick)}
+                                                />
+                                            </div>
+                                            <p className="px-2.5 pb-2 text-[10px] leading-relaxed text-gray-400">
+                                                AI 试听候选片段，挑出无重叠、情绪中性的部分做克隆参考素材；每轮校验，不过关自动重选。
+                                            </p>
+                                        </div>
+                                    )}
+
+                                    {!enableVoiceClone && cloneOffExtra}
+                                </div>
+                            </>
+                        )}
                     </div>
-                )}
+                </section>
+            )}
 
-                {/* 克隆关闭时宿主想补的内容（落地页：音色池 / "该语言需要克隆"）。 */}
-                {!enableVoiceClone && cloneOffExtra}
-            </div>
+            {/* ───────────────────────── 翻译 ─────────────────────────
+                多模态增强与自定义要求都作用于转写与翻译 —— 与"要不要配音"
+                正交，仅字幕模式下照样有意义，所以自成一组。 */}
+            <section>
+                <header className="px-3 pb-2">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-gray-400">翻译</span>
+                </header>
 
-            {/* 高级：自定义翻译要求。低频高级项的形态是折叠的一行 ——
-                它改的是翻译模型的默认行为，绝大多数人不需要碰；展开后注入的是
-                自然语言要求，所以不用开关、不用枚举，一个文本框就是全部。
-                空串在后端完全不注入，默认行为零改动。
-                无边框、py-1.5：这一行是页面上最低优先级的可点物，视觉上
-                必须比开关行轻。 */}
-            <div>
-                <button
-                    onClick={() => setShowAdvanced(v => !v)}
-                    className="flex w-full items-center gap-1.5 px-3 py-1.5 text-left cursor-pointer"
-                >
-                    <svg
-                        className={`h-3 w-3 text-gray-400 transition-transform duration-200 ${showAdvanced ? 'rotate-90' : ''}`}
-                        fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor"
-                    >
-                        <path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />
-                    </svg>
-                    <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">
-                        高级 · 自定义翻译要求
-                    </span>
-                    {customPrompt.trim() && (
-                        <span className="px-1.5 py-px rounded-full bg-claude-accent/10 text-[10px] font-bold text-claude-accent">
-                            已设置
-                        </span>
-                    )}
-                </button>
-                {showAdvanced && (
-                    <div className="px-3 pb-3">
-                        <textarea
-                            value={customPrompt}
-                            onChange={e => onCustomPromptChange(e.target.value.slice(0, 500))}
-                            rows={3}
-                            placeholder={'例：专有名词保留英文原文；语气调整为正式，面向企业客户…'}
-                            className="w-full resize-none rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-xs leading-relaxed text-gray-700 placeholder:text-gray-300 focus:outline-none focus:border-claude-accent/50"
-                        />
-                        <div className="mt-1 flex items-baseline justify-between text-[10px] text-gray-400">
-                            <span>注入翻译模型，可覆盖默认行为；留空 = 标准翻译。</span>
-                            <span className="shrink-0 tabular-nums">{customPrompt.length}/500</span>
+                <div className="space-y-3">
+                    <div className="flex items-center justify-between gap-3 py-1.5 px-3 bg-gray-50 rounded-xl">
+                        <div className="flex items-center">
+                            <span className="text-sm font-medium text-gray-700">多模态增强识别</span>
+                            <InfoTooltip text="纠正语音识别的错字漏字，并标注每句的语气（兴奋、耳语、大笑…），翻译基于纠错后的文本进行。会增加一些处理时间。" />
                         </div>
+                        <Switch on={mmEnhance} onClick={() => onMmEnhanceChange(!mmEnhance)} />
                     </div>
-                )}
-            </div>
+
+                    {/* 高级：自定义翻译要求。低频高级项的形态是折叠的一行 ——
+                        它改的是翻译模型的默认行为，绝大多数人不需要碰；展开后注入
+                        的是自然语言要求，所以不用开关、不用枚举，一个文本框就是全部。
+                        空串在后端完全不注入，默认行为零改动。
+                        无边框、py-1.5：这一行是页面上最低优先级的可点物，视觉上
+                        必须比开关行轻。 */}
+                    <div>
+                        <button
+                            onClick={() => setShowAdvanced(v => !v)}
+                            className="flex w-full items-center gap-1.5 px-3 py-1.5 text-left cursor-pointer"
+                        >
+                            <svg
+                                className={`h-3 w-3 text-gray-400 transition-transform duration-200 ${showAdvanced ? 'rotate-90' : ''}`}
+                                fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor"
+                            >
+                                <path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />
+                            </svg>
+                            <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">
+                                高级 · 自定义翻译要求
+                            </span>
+                            {customPrompt.trim() && (
+                                <span className="px-1.5 py-px rounded-full bg-claude-accent/10 text-[10px] font-bold text-claude-accent">
+                                    已设置
+                                </span>
+                            )}
+                        </button>
+                        {showAdvanced && (
+                            <div className="px-3 pb-3">
+                                <textarea
+                                    value={customPrompt}
+                                    onChange={e => onCustomPromptChange(e.target.value.slice(0, 500))}
+                                    rows={3}
+                                    placeholder={'例：专有名词保留英文原文；语气调整为正式，面向企业客户…'}
+                                    className="w-full resize-none rounded-lg border border-gray-200 bg-white px-2.5 py-2 text-xs leading-relaxed text-gray-700 placeholder:text-gray-300 focus:outline-none focus:border-claude-accent/50"
+                                />
+                                <div className="mt-1 flex items-baseline justify-between text-[10px] text-gray-400">
+                                    <span>注入翻译模型，可覆盖默认行为；留空 = 标准翻译。</span>
+                                    <span className="shrink-0 tabular-nums">{customPrompt.length}/500</span>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            </section>
         </div>
     );
 };
