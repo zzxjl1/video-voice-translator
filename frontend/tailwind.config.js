@@ -14,6 +14,8 @@ export default {
     './index.html',
     './*.{ts,tsx}',
     './{components,services,utils,hooks,pages,contexts,features,store,net}/**/*.{js,ts,jsx,tsx}',
+    // streamdown 的组件自带 Tailwind 类名，不扫它就只有裸 HTML 的样子
+    './node_modules/streamdown/dist/*.js',
   ],
   theme: {
     // `extend`, not a replacement: the default palette and scales stay, which
@@ -31,6 +33,19 @@ export default {
         sans: ['Inter', 'sans-serif'],
       },
       colors: {
+        /*
+         * streamdown（AI 回复的 Markdown 渲染器）用 shadcn 的一套语义色名。
+         * 这里把它们映射到本项目的暖色盘，而不是逐元素写覆盖样式 —— 组件内部
+         * 有十几处 bg-muted / border-border / text-muted-foreground，逐个覆盖
+         * 既做不到完备，也会和它自己的结构耦合。
+         */
+        background: '#FFFFFF',
+        foreground: '#2D2D2D',
+        border: '#E6E4DD',
+        muted: '#F2F0E9',
+        'muted-foreground': '#6B7280',
+        primary: '#DA7756',
+        sidebar: '#FBFAF7',
         claude: {
           bg: '#FDFBF9',
           paper: '#F2F0E9',

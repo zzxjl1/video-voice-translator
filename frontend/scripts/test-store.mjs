@@ -133,6 +133,28 @@ const base = () => ({
   const loaded = loadChat([{ id: 'a', role: 'user', ts: 1, text: 'hi' }], true);
   check('⑨ 从落盘记录恢复', loaded.messages.length === 1 && loaded.busy && loaded.streaming === null);
 
+  // 输出完还挂着"输出中 + 停止按钮"：GET /chat 的快照（running=true）比事件旧，
+  // 落在 message/idle 之后会把 busy 覆盖成 true。判据要落在消息上。
+  const asst = { id: 'm1', role: 'assistant', ts: 1, text: '说完了' };
+  const usr = { id: 'm2', role: 'user', ts: 2, text: '在吗' };
+  check('⑨b 快照说 running，但最后一条是 assistant → 不算进行中',
+    loadChat([usr, asst], true).busy === false);
+  check('⑨b 最后一条是 user 且 running → 进行中', loadChat([usr], true).busy === true);
+  check('⑨b 最后一条是确认卡片且 running → 仍算进行中（等确认）',
+    loadChat([usr, { id: 'c1', role: 'confirm', ts: 3, command: 'redub', status: 'pending' }], true).busy === true);
+
+  let firing = loadChat([usr], true);
+  let c2 = reduceChat(firing, { type: 'chat', seq: 1, kind: 'start', id: 'r9' });
+  c2 = reduceChat(c2, { type: 'chat', seq: 2, kind: 'delta', id: 'r9', text: '好' });
+  check('⑨b 流式中的 busy', c2.busy === true && c2.streaming.text === '好');
+  c2 = reduceChat(c2, { type: 'chat', seq: 3, kind: 'message', message: { id: 'r9', role: 'assistant', ts: 2, text: '好了' } });
+  check('⑨b assistant 消息落地即结束这一轮（idle 丢了也不会卡住）',
+    c2.busy === false && c2.streaming === null);
+  let system = loadChat([usr], true);
+  system = reduceChat(system, { type: 'chat', seq: 1, kind: 'start', id: 'r10' });
+  system = reduceChat(system, { type: 'chat', seq: 2, kind: 'message', message: { id: 'w1', role: 'assistant', ts: 3, text: '欢迎', system: true } });
+  check('⑨b 系统欢迎消息不算"这一轮结束"（不会误清进行中的流）', system.busy === true && system.streaming?.id === 'r10');
+
   check('⑩ 步骤标签：带行号', stepLabel({ name: 'set_muted', args: { lines: [1, 2, 3] } }) === '静音（第 1、2、3 句）');
   check('⑩ 步骤标签：单句', stepLabel({ name: 'edit_source', args: { line: 4 } }) === '改原文（第 4 句）');
   check('⑩ 步骤标签：行太多省略', stepLabel({ name: 'redub', args: { lines: [1, 2, 3, 4, 5, 6, 7] } }).endsWith('…）'));

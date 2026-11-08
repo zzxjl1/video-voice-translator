@@ -51,16 +51,6 @@ const TopBar: React.FC<Props> = ({
     dubbing && needs.dub ? `${needs.dub} 句配音` : '',
   ].filter(Boolean).join(' · ');
 
-  const statusDot = (
-    <span
-      className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-        connection === 'open' ? 'bg-emerald-400'
-          : connection === 'closed' ? 'bg-gray-300'
-            : 'bg-amber-400 animate-pulse'
-      }`}
-    />
-  );
-
   return (
     <div className="fixed top-0 inset-x-0 z-50 flex justify-center">
       <header
@@ -104,14 +94,11 @@ const TopBar: React.FC<Props> = ({
               {!expanded && (
                 <>
                   <div className="w-px h-3 bg-gray-300 shrink-0" />
+                  <span className="text-[10px] font-black uppercase tracking-widest text-gray-400 whitespace-nowrap">
+                    Target Lang:
+                  </span>
                   <span className="text-[10px] font-black uppercase tracking-widest text-claude-accent whitespace-nowrap">
                     {targetLanguage}
-                  </span>
-                  <span className="hidden sm:flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-widest text-gray-400 whitespace-nowrap">
-                    {statusDot}
-                    {connection === 'open' ? 'Live'
-                      : connection === 'reconnecting' ? 'Reconnecting'
-                        : connection === 'connecting' ? 'Connecting' : 'Offline'}
                   </span>
                 </>
               )}

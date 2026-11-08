@@ -35,8 +35,6 @@ interface Props {
   busyIds: Set<string>;
   dubbing: boolean;
   actions: ScriptActions;
-  focusLine?: number | null;
-  onFocusHandled?: () => void;
 }
 
 const STATUS: Record<string, { text: string; tone: string }> = {
@@ -45,7 +43,7 @@ const STATUS: Record<string, { text: string; tone: string }> = {
 };
 
 const ScriptPanel: React.FC<Props> = ({
-  lines, speakers, colorOf, currentTime, flash, mix, busyIds, dubbing, actions, focusLine, onFocusHandled,
+  lines, speakers, colorOf, currentTime, flash, mix, busyIds, dubbing, actions,
 }) => {
   const listRef = useRef<HTMLDivElement>(null);
   const speakerById = useMemo(() => new Map(speakers.map((s) => [s.id, s])), [speakers]);
@@ -60,20 +58,6 @@ const ScriptPanel: React.FC<Props> = ({
       box.scrollTo({ top: Math.max(0, el.offsetTop - box.offsetTop - box.clientHeight / 2 + el.clientHeight / 2), behavior: 'smooth' });
     }
   }, [activeId]);
-
-  // AI / 聊天里的行号标签要求定位到某一句
-  useEffect(() => {
-    if (focusLine == null) return;
-    const target = lines.find((l) => l.line === focusLine);
-    if (target) {
-      const el = document.getElementById(`line-${target.id}`);
-      const box = listRef.current;
-      if (el && box) {
-        box.scrollTo({ top: Math.max(0, el.offsetTop - box.offsetTop - 24), behavior: 'smooth' });
-      }
-    }
-    onFocusHandled?.();
-  }, [focusLine, lines, onFocusHandled]);
 
   return (
     <div className="flex flex-col h-full bg-[#fbfbf9] border border-[#e5e5e0] rounded-3xl overflow-hidden shadow-sm">

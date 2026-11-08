@@ -14,24 +14,26 @@ import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 're
 import type { ChatMessage } from '../../net/types';
 import { pendingConfirms, stepLabel, type ChatState, type ToolStep } from '../../store/chat';
 import { ConfirmCard } from './ConfirmCard';
-import { RichText } from './RichText';
+import Markdown from './Markdown';
 
 interface Props {
   chat: ChatState;
-  /** 总行数：行号标签据此判断是否有效。 */
-  lineCount: number;
   disabled?: boolean;
   disabledReason?: string;
   onSend: (text: string) => void;
   onStop: () => void;
   onConfirm: (cardId: string, approve: boolean) => void;
-  onFocusLine: (line: number) => void;
   /** 输入框里的预填内容（比如从脚本里"引用到聊天"）。 */
   draft?: string;
   onDraftConsumed?: () => void;
   suggestions?: string[];
   /** 悬浮窗口的关闭按钮。 */
   onClose?: () => void;
+  /** 会话历史（新的在前）与当前会话 id。 */
+  conversations?: { id: string; title: string; updated: number; count: number }[];
+  currentConv?: string;
+  onNewChat?: () => void;
+  onOpenChat?: (conv: string) => void;
   /** 由 FloatingChat 注入：标题栏同时是窗口的拖动区。 */
   dragProps?: {
     onPointerDown: (e: React.PointerEvent) => void;
@@ -45,9 +47,11 @@ interface Props {
 }
 
 const ChatPanel: React.FC<Props> = ({
-  chat, lineCount, disabled, disabledReason, onSend, onStop, onConfirm, onFocusLine,
+  chat, disabled, disabledReason, onSend, onStop, onConfirm,
   draft, onDraftConsumed, suggestions = [], onClose, dragProps,
+  conversations = [], currentConv = '', onNewChat, onOpenChat,
 }) => {
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [text, setText] = useState('');
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -107,6 +111,28 @@ const ChatPanel: React.FC<Props> = ({
               {waiting ? '等你确认' : '处理中'}
             </span>
           )}
+          {(onNewChat || onOpenChat) && (
+            <div className="relative">
+              <button
+                onClick={() => setHistoryOpen((v) => !v)}
+                title="历史对话"
+                className={`p-1 rounded-md transition-colors ${historyOpen ? 'text-claude-accent bg-claude-accent/10' : 'text-gray-300 hover:text-gray-600 hover:bg-claude-paper'}`}
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 2m6-2a9 9 0 11-9-9 9 9 0 019 9z" />
+                </svg>
+              </button>
+              {historyOpen && (
+                <HistoryMenu
+                  conversations={conversations}
+                  currentConv={currentConv}
+                  onNew={() => { setHistoryOpen(false); onNewChat?.(); }}
+                  onPick={(conv) => { setHistoryOpen(false); onOpenChat?.(conv); }}
+                  onClose={() => setHistoryOpen(false)}
+                />
+              )}
+            </div>
+          )}
           {onClose && (
             <button
               onClick={onClose}
@@ -132,17 +158,32 @@ const ChatPanel: React.FC<Props> = ({
         )}
 
         {chat.messages.map((m) => (
-          <Message key={m.id} message={m} lineCount={lineCount} onConfirm={onConfirm} onFocusLine={onFocusLine} />
+          <Message key={m.id} message={m} onConfirm={onConfirm} />
         ))}
 
         {chat.streaming && (
           <div className="flex flex-col gap-2 items-start">
             {chat.streaming.steps.length > 0 && <Steps steps={chat.streaming.steps} />}
             {chat.streaming.text ? (
-              <Bubble role="assistant"><RichText text={chat.streaming.text} lineCount={lineCount} onFocusLine={onFocusLine} /></Bubble>
-            ) : chat.streaming.steps.length === 0 ? (
-              <Bubble role="assistant"><Dots /></Bubble>
-            ) : null}
+              <Bubble role="assistant">
+                <Markdown text={chat.streaming.text} streaming />
+                {/* 正在输出的标记：结尾一个跳动的省略号（模型还在吐字） */}
+                <span className="inline-flex items-baseline gap-0.5 ml-0.5 text-claude-accent/60" aria-label="正在输出">
+                  <span className="animate-bounce [animation-delay:-0.3s]">·</span>
+                  <span className="animate-bounce [animation-delay:-0.15s]">·</span>
+                  <span className="animate-bounce">·</span>
+                </span>
+              </Bubble>
+            ) : (
+              <Bubble role="assistant">
+                <span className="flex items-center gap-2">
+                  <span className="text-[12px] text-gray-400">
+                    {chat.streaming.steps.length ? '正在处理…' : '正在思考…'}
+                  </span>
+                  <Dots />
+                </span>
+              </Bubble>
+            )}
           </div>
         )}
         <div ref={bottomRef} />
@@ -205,10 +246,8 @@ const ChatPanel: React.FC<Props> = ({
 
 const Message: React.FC<{
   message: ChatMessage;
-  lineCount: number;
   onConfirm: (id: string, approve: boolean) => void;
-  onFocusLine: (line: number) => void;
-}> = React.memo(({ message: m, lineCount, onConfirm, onFocusLine }) => {
+}> = React.memo(({ message: m, onConfirm }) => {
   if (m.role === 'user') {
     return (
       <div className="flex justify-end">
@@ -226,7 +265,7 @@ const Message: React.FC<{
       {actions.length > 0 && <DoneSteps actions={actions} />}
       {m.text && (
         <Bubble role="assistant" system={m.system}>
-          <RichText text={m.text} lineCount={lineCount} onFocusLine={onFocusLine} />
+          <Markdown text={m.text} />
         </Bubble>
       )}
     </div>
@@ -246,6 +285,65 @@ const Bubble: React.FC<{ role: 'user' | 'assistant'; system?: boolean; children:
     {children}
   </div>
 );
+
+/**
+ * 会话历史下拉。挂在标题栏的历史按钮下面，点外部关闭。
+ *
+ * 只列"有内容的会话"：新建后还没说话的会话不显示，免得列表里全是空对话。
+ */
+const HistoryMenu: React.FC<{
+  conversations: { id: string; title: string; updated: number; count: number }[];
+  currentConv: string;
+  onNew: () => void;
+  onPick: (conv: string) => void;
+  onClose: () => void;
+}> = ({ conversations, currentConv, onNew, onPick, onClose }) => {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) onClose(); };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey); };
+  }, [onClose]);
+
+  const when = (ts: number) => {
+    if (!ts) return '';
+    const mins = Math.floor((Date.now() / 1000 - ts) / 60);
+    if (mins < 1) return '刚刚';
+    if (mins < 60) return `${mins} 分钟前`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours} 小时前`;
+    return `${Math.floor(hours / 24)} 天前`;
+  };
+
+  return (
+    <div ref={ref} className="absolute right-0 top-full mt-1.5 w-64 bg-white border border-claude-border rounded-xl shadow-xl z-30 overflow-hidden">
+      <button
+        onClick={onNew}
+        className="w-full flex items-center gap-2 px-3.5 py-2.5 text-[12px] font-bold text-claude-accent hover:bg-claude-paper transition-colors border-b border-claude-border/60"
+      >
+        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 5v14M5 12h14" /></svg>
+        新对话
+      </button>
+      <div className="max-h-64 overflow-y-auto py-1">
+        {conversations.filter((c) => c.count > 0).length === 0 && (
+          <div className="px-3.5 py-3 text-[11px] text-gray-400">还没有历史对话</div>
+        )}
+        {conversations.filter((c) => c.count > 0).map((c) => (
+          <button
+            key={c.id}
+            onClick={() => onPick(c.id)}
+            className={`w-full text-left px-3.5 py-2 hover:bg-claude-paper transition-colors ${c.id === currentConv ? 'bg-claude-accent/5' : ''}`}
+          >
+            <div className={`text-[12px] truncate ${c.id === currentConv ? 'text-claude-accent font-bold' : 'text-claude-text'}`}>{c.title}</div>
+            <div className="text-[10px] text-gray-400 mt-0.5">{when(c.updated)} · {c.count} 条</div>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+};
 
 const Dots: React.FC = () => (
   <div className="flex gap-1 py-1">

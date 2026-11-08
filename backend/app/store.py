@@ -20,6 +20,7 @@ import logging
 import os
 import shutil
 import threading
+import uuid
 from collections import deque
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
@@ -217,6 +218,7 @@ def mutate(
     summary: str = "",
     undoable: Optional[bool] = None,
     extra: Optional[dict] = None,
+    silent: bool = False,
 ) -> Mutation:
     """
     唯一的写入口。`fn(state)` 就地修改传入的副本，返回值原样带回。
@@ -225,6 +227,10 @@ def mutate(
 
     `undoable` 缺省：用户和 AI 的改动可撤销，系统（初始化出的转写、翻译、配音这些
     产物）不可撤销 —— 否则连按撤销就能把整份转写结果撤没。
+
+    `silent`：只改文档、不发事件、不进撤销栈。给"不是数据改动"的状态用（当前是哪个
+    聊天会话）。不静默的代价很具体：它会出现在 AI 下一轮读的"自上次以来发生了什么"里
+    （"系统改了什么？"，莫名其妙），也会让界面闪一下"AI 刚改过"。
     """
     if undoable is None:
         undoable = actor != "system"
@@ -247,6 +253,8 @@ def mutate(
         after_dict["rev"] = work.rev
         _write(work)
         _cache[video_id] = work
+        if silent:
+            return Mutation(value, True, work.rev)
 
         patch = view.diff(before_view, view.snapshot(work))
         seg_patch = patch.get("segments") or {}
@@ -343,7 +351,24 @@ def _chat_path(video_id: str) -> str:
     return os.path.join(video_dir_path(video_id), CHAT_FILE)
 
 
+def current_conv(video_id: str) -> str:
+    """当前会话 id；还没开过就现开一个并写回工程（幂等）。"""
+    conv = require_state(video_id).chat_conv
+    if conv:
+        return conv
+    conv = uuid.uuid4().hex[:10]
+
+    def apply(s):
+        if not s.chat_conv:
+            s.chat_conv = conv
+    mutate(video_id, apply, actor="system", cmd="chat_conv", summary="新会话", undoable=False, silent=True)
+    return require_state(video_id).chat_conv or conv
+
+
 def append_chat(video_id: str, message: dict) -> dict:
+    """落一条消息。自动打上当前会话 id —— 调用方不需要知道会话这回事。"""
+    if "conv" not in message:
+        message = {**message, "conv": current_conv(video_id)}
     with lock_for(video_id):
         try:
             with open(_chat_path(video_id), "a", encoding="utf-8") as f:
@@ -353,7 +378,7 @@ def append_chat(video_id: str, message: dict) -> dict:
     return message
 
 
-def read_chat(video_id: str, limit: int = 200) -> list[dict]:
+def read_chat(video_id: str, limit: int = 200, conv: Optional[str] = None) -> list[dict]:
     """
     聊天记录，旧 → 新。
 
@@ -364,6 +389,7 @@ def read_chat(video_id: str, limit: int = 200) -> list[dict]:
     path = _chat_path(video_id)
     if not os.path.isfile(path):
         return []
+    wanted = conv if conv is not None else current_conv(video_id)
     rows: list[dict] = []
     with lock_for(video_id):
         try:
@@ -377,6 +403,7 @@ def read_chat(video_id: str, limit: int = 200) -> list[dict]:
                             continue
         except OSError:
             return []
+    rows = [r for r in rows if r.get("conv") == wanted]
     states = {r["ref"]: r["status"] for r in rows if r.get("role") == "confirm_state"}
     out = []
     for r in rows:
@@ -386,6 +413,69 @@ def read_chat(video_id: str, limit: int = 200) -> list[dict]:
             r = {**r, "status": states[r["id"]]}
         out.append(r)
     return out[-limit:]
+
+
+def list_convs(video_id: str) -> list[dict]:
+    """
+    所有会话，新的在前：[{id, title, updated, count}]。
+
+    标题取这个会话里第一条用户消息的前 40 字 —— 和聊天软件一致，不需要额外维护。
+    扫整个文件：一个工程的聊天记录就是几百行量级，比起再维护一份索引，简单更可靠。
+    """
+    path = _chat_path(video_id)
+    if not os.path.isfile(path):
+        return []
+    rows: list[dict] = []
+    with lock_for(video_id):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rows.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+        except OSError:
+            return []
+    convs: dict[str, dict] = {}
+    for r in rows:
+        cid = r.get("conv")
+        if not cid:                      # 没有会话 id 的行不属于任何会话
+            continue
+        entry = convs.setdefault(cid, {"id": cid, "title": "", "updated": 0, "count": 0})
+        entry["updated"] = max(entry["updated"], r.get("ts") or 0)
+        if r.get("role") in ("user", "assistant", "confirm"):
+            entry["count"] += 1
+        if not entry["title"] and r.get("role") == "user" and r.get("text"):
+            entry["title"] = " ".join(str(r["text"]).split())[:40]
+    out = list(convs.values())
+    for entry in out:
+        entry["title"] = entry["title"] or "新的对话"
+    out.sort(key=lambda e: e["updated"], reverse=True)
+    return out
+
+
+def new_conv(video_id: str) -> str:
+    """开一个新会话并切过去。旧会话原样保留在文件里。"""
+    conv = uuid.uuid4().hex[:10]
+
+    def apply(s):
+        s.chat_conv = conv
+    mutate(video_id, apply, actor="system", cmd="chat_conv", summary="新会话", undoable=False, silent=True)
+    return conv
+
+
+def select_conv(video_id: str, conv: str) -> bool:
+    """切到某个已有会话。不存在则返回 False。"""
+    if conv not in {c["id"] for c in list_convs(video_id)}:
+        return False
+
+    def apply(s):
+        s.chat_conv = conv
+    mutate(video_id, apply, actor="system", cmd="chat_conv", summary="切换会话", undoable=False, silent=True)
+    return True
 
 
 def resolve_confirm_card(video_id: str, card_id: str, approved: bool) -> None:

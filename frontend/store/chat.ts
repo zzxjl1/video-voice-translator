@@ -38,8 +38,20 @@ export interface ChatState {
 
 export const emptyChat = (): ChatState => ({ messages: [], streaming: null, busy: false });
 
+/**
+ * 用服务端落盘的记录hydrate。
+ *
+ * `running` **不能**直接当成 busy：`GET /chat` 的这份快照可能比实时事件旧 —— 请求发出时
+ * 还在跑，响应回来时这一轮已经结束（message + idle 都到了），此时再把 busy 置回 true，
+ * 界面就会永远停在"正在思考…"和一个点了没用的停止按钮上（真实复现过）。
+ *
+ * 判据是这条不变量：**一轮结束时后端一定会写一条 assistant 消息**，所以"还在跑" ⟺
+ * running 且最后一条消息不是 assistant。用消息本身判断，就不依赖快照与事件谁先到。
+ */
 export function loadChat(messages: ChatMessage[], running: boolean): ChatState {
-  return { messages, streaming: null, busy: running };
+  const last = messages[messages.length - 1];
+  const midTurn = running && last?.role !== 'assistant';
+  return { messages, streaming: null, busy: midTurn };
 }
 
 export function reduceChat(state: ChatState, event: ChatEvent): ChatState {
@@ -79,19 +91,24 @@ export function reduceChat(state: ChatState, event: ChatEvent): ChatState {
 
     case 'message': {
       const m = event.message;
+      // 后端的 assistant 消息只在整轮结束时写一次 —— 它一到，这一轮就结束了。
+      // 不去只依赖 `idle`：事件流重连/丢帧时 idle 可能永远不来，界面会卡在"输出中"。
+      const finishesTurn = m.role === 'assistant' && !m.system;
       if (state.messages.some((x) => x.id === m.id)) {
         // 同 id 的消息：用落盘版本替换（流式气泡用的就是这个 id）
         return {
           ...state,
           messages: state.messages.map((x) => (x.id === m.id ? m : x)),
-          streaming: state.streaming?.id === m.id ? null : state.streaming,
+          streaming: finishesTurn || state.streaming?.id === m.id ? null : state.streaming,
+          busy: finishesTurn ? false : state.busy,
         };
       }
       return {
         ...state,
         messages: [...state.messages, m],
         // 这条就是流式气泡对应的最终消息：气泡完成使命
-        streaming: m.role === 'assistant' && state.streaming?.id === m.id ? null : state.streaming,
+        streaming: finishesTurn || state.streaming?.id === m.id ? null : state.streaming,
+        busy: finishesTurn ? false : state.busy,
       };
     }
 

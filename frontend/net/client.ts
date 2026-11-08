@@ -76,8 +76,27 @@ export async function command<T = Record<string, unknown>>(
 
 // ---- 聊天 -------------------------------------------------------------------
 
-export const getChat = (id: string) =>
-  request<{ messages: ChatMessage[]; running: boolean }>(`/projects/${id}/chat`);
+export interface ChatSummary {
+  id: string;
+  title: string;
+  updated: number;
+  count: number;
+}
+
+export const getChat = (id: string, conv?: string) =>
+  request<{ messages: ChatMessage[]; running: boolean; conv: string }>(
+    `/projects/${id}/chat${conv ? `?conv=${encodeURIComponent(conv)}` : ''}`,
+  );
+
+/** 这个工程的会话列表（新的在前）+ 当前会话 id。 */
+export const listChats = (id: string) => request<{ current: string; conversations: ChatSummary[] }>(`/projects/${id}/chats`);
+
+/** 开一个新对话，旧的留在历史里。 */
+export const newChat = (id: string) => request<{ conv: string }>(`/projects/${id}/chats`, { method: 'POST' });
+
+/** 切到某个历史会话，返回它的消息。 */
+export const selectChat = (id: string, conv: string) =>
+  request<{ conv: string; messages: ChatMessage[] }>(`/projects/${id}/chats/select`, json({ conv }));
 export const sendChat = (id: string, text: string) => request<{ accepted: boolean }>(`/projects/${id}/chat`, json({ text }));
 export const confirmChat = (id: string, cardId: string, approve: boolean) =>
   request<{ ok: boolean }>(`/projects/${id}/chat/confirm`, json({ id: cardId, approve }));

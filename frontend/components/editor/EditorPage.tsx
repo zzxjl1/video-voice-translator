@@ -46,7 +46,6 @@ const EditorPage: React.FC<Props> = ({ project: api_, file, onHome }) => {
   const [showExport, setShowExport] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [draft, setDraft] = useState('');
-  const [focusLine, setFocusLine] = useState<number | null>(null);
   const [waveform, setWaveform] = useState<number[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -117,8 +116,15 @@ const EditorPage: React.FC<Props> = ({ project: api_, file, onHome }) => {
   useEffect(() => {
     if (!ui) return;
     if (ui.action === 'focus_line') {
-      setFocusLine(ui.line as number);
+      // AI 说"我定位到第 N 句"：切到脚本、滚到那一行、按需播放。直接按 DOM id 滚，
+      // 不需要面板再暴露一个"外部要求滚动"的 prop。
       setPanel('script');
+      const seg = lines.find((l) => l.line === ui.line);
+      if (seg) {
+        requestAnimationFrame(() => {
+          document.getElementById(`line-${seg.id}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        });
+      }
       if (ui.play) play(ui.start as number); else seek(ui.start as number);
     } else if (ui.action === 'open_panel') {
       const p = ui.panel as string;
@@ -191,14 +197,6 @@ const EditorPage: React.FC<Props> = ({ project: api_, file, onHome }) => {
     mark: async (l: Line, kind) => { const r = await run('mark_non_speech', { lines: [l.line], kind }); if (!r.ok) setNotice(r.error ?? '标记失败'); },
     askAbout: (l: Line) => { setChatOpen(true); setDraft(`第 ${l.line} 句`); },
   }), [run, seek]);
-
-  const onFocusLine = useCallback((n: number) => {
-    const l = lines.find((x) => x.line === n);
-    if (!l) return;
-    setPanel('script');
-    setFocusLine(n);
-    seek(l.start);
-  }, [lines, seek]);
 
   const busyIds = useMemo(() => new Set<string>(), []);   // 行锁由服务端判断并在命令里说明原因
   const colorOf = useCallback((sid: string) => speakerColor(project!, sid), [project]);
@@ -310,7 +308,6 @@ const EditorPage: React.FC<Props> = ({ project: api_, file, onHome }) => {
             <ScriptPanel
               lines={lines} speakers={project!.speakers} colorOf={colorOf} currentTime={currentTime} flash={flash}
               mix={mixEntries} busyIds={busyIds} dubbing={dubbing} actions={actions}
-              focusLine={focusLine} onFocusHandled={() => setFocusLine(null)}
             />
           ) : (
             <SubtitleStylePanel style={style} onStyleChange={onStyleChange} onClose={() => setPanel('script')} />
@@ -325,16 +322,18 @@ const EditorPage: React.FC<Props> = ({ project: api_, file, onHome }) => {
           {(dragProps) => (
             <ChatPanel
               chat={chat}
-              lineCount={lines.length}
               onSend={(t) => void say(t)}
               onStop={() => void stop()}
               onConfirm={(cid, ok) => void confirm(cid, ok)}
-              onFocusLine={onFocusLine}
               draft={draft}
               onDraftConsumed={() => setDraft('')}
               suggestions={SUGGESTIONS}
               onClose={() => setChatOpen(false)}
               dragProps={dragProps}
+              conversations={api_.conversations}
+              currentConv={api_.currentConv}
+              onNewChat={() => void api_.startNewChat()}
+              onOpenChat={(c) => void api_.openChat(c)}
             />
           )}
         </FloatingChat>

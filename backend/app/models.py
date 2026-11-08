@@ -111,6 +111,9 @@ class VideoState:
     init_error: Optional[str] = None
     # 最近一次初始化的报告（配置快照 + 每步结果），聊天里的第一条消息据此生成。
     init_report: dict = field(default_factory=dict)
+    # 当前聊天会话的 id。空 = 还没开始（第一条消息时自动开一个）。历史会话都在
+    # 同一个 chat.jsonl 里，每行带 conv 字段 —— 追加式写入，切换会话只是换个过滤条件。
+    chat_conv: str = ""
 
     # —— 工程设置 ——
     separation_mode: str = ""            # "client"（浏览器分离）| "off"；初始化时定下

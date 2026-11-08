@@ -10,6 +10,7 @@
  */
 import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import * as api from '../net/client';
+import type { ChatSummary } from '../net/client';
 import { EventClient } from '../net/events';
 import type { ChangeEvent, CommandResult, JobEvent, ProjectView, ServerEvent, UiEvent } from '../net/types';
 import { applyChange } from '../store/project';
@@ -39,6 +40,13 @@ export interface ProjectApi {
   stop: () => Promise<void>;
   confirm: (cardId: string, approve: boolean) => Promise<void>;
   reload: () => Promise<void>;
+  /** 会话列表（新的在前）与当前会话。 */
+  conversations: ChatSummary[];
+  currentConv: string;
+  /** 开一个新对话；旧的仍在历史里。 */
+  startNewChat: () => Promise<void>;
+  /** 切到某个历史会话。 */
+  openChat: (conv: string) => Promise<void>;
 }
 
 export function useProject(id: string | null): ProjectApi {
@@ -49,6 +57,8 @@ export function useProject(id: string | null): ProjectApi {
   const [connection, setConnection] = useState<ConnectionState>('closed');
   const [flash, setFlash] = useState<Flash>({});
   const [ui, setUi] = useState<UiEvent | null>(null);
+  const [conversations, setConversations] = useState<ChatSummary[]>([]);
+  const [currentConv, setCurrentConv] = useState('');
 
   // 事件回调要读到"最新的 project"，又不想因为它变化而重建订阅 → ref
   const projectRef = useRef<ProjectView | null>(null);
@@ -76,9 +86,11 @@ export function useProject(id: string | null): ProjectApi {
   const reload = useCallback(async () => {
     if (!id) return;
     try {
-      const [view, history] = await Promise.all([api.getProject(id), api.getChat(id)]);
+      const [view, history, chats] = await Promise.all([api.getProject(id), api.getChat(id), api.listChats(id)]);
       setProject(view);
       dispatchChat({ type: 'load', messages: history.messages, running: history.running });
+      setConversations(chats.conversations);
+      setCurrentConv(chats.current || history.conv || '');
       setLoadError(null);
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : String(e));
@@ -92,6 +104,8 @@ export function useProject(id: string | null): ProjectApi {
     setInit(emptyInit());
     setFlash({});
     setUi(null);
+    setConversations([]);
+    setCurrentConv('');
     if (!id) {
       setConnection('closed');
       return;
@@ -189,6 +203,37 @@ export function useProject(id: string | null): ProjectApi {
     [id],
   );
 
+  const startNewChat = useCallback(async () => {
+    if (!id) return;
+    const { conv } = await api.newChat(id);
+    dispatchChat({ type: 'load', messages: [], running: false });
+    setCurrentConv(conv);
+    const chats = await api.listChats(id).catch(() => null);
+    if (chats) setConversations(chats.conversations);
+  }, [id]);
+
+  const openChat = useCallback(async (conv: string) => {
+    if (!id || conv === currentConv) return;
+    const r = await api.selectChat(id, conv);
+    dispatchChat({ type: 'load', messages: r.messages, running: false });
+    setCurrentConv(r.conv);
+  }, [id, currentConv]);
+
+  /** 重新拉会话列表（标题/条数/顺序都会变）。 */
+  const refreshChats = useCallback(async () => {
+    if (!id) return;
+    const r = await api.listChats(id).catch(() => null);
+    if (!r) return;
+    setConversations(r.conversations);
+    setCurrentConv((prev) => prev || r.current || '');
+  }, [id]);
+
+  // 一轮对话结束时刷新：新会话的第一个问题、以及条数/标题都只有这时候才会变，
+  // 不刷新的话历史菜单里会一直是打开页面时的旧列表（刚发的消息看不到）。
+  useEffect(() => {
+    if (!chat.busy) void refreshChats();
+  }, [chat.busy, refreshChats]);
+
   const say = useCallback(async (text: string) => {
     if (id) await api.sendChat(id, text);
   }, [id]);
@@ -197,7 +242,10 @@ export function useProject(id: string | null): ProjectApi {
     if (id) await api.confirmChat(id, cardId, approve).catch(() => {});
   }, [id]);
 
-  return { project, loadError, chat, init, connection, flash, ui, clearUi: () => setUi(null), run, say, stop, confirm, reload };
+  return {
+    project, loadError, chat, init, connection, flash, ui, clearUi: () => setUi(null), run, say, stop, confirm, reload,
+    conversations, currentConv, startNewChat, openChat,
+  };
 }
 
 type ChatAction =

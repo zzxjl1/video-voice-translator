@@ -301,9 +301,47 @@ class ConfirmBody(BaseModel):
 
 
 @router.get("/{video_id}/chat")
-def get_chat(video_id: str):
+def get_chat(video_id: str, conv: Optional[str] = None):
+    """当前会话（或 `?conv=` 指定的那个）的消息。"""
     _need(video_id)
-    return {"messages": store.read_chat(video_id, 300), "running": agent.chat_for(video_id).running}
+    if conv and not any(c["id"] == conv for c in store.list_convs(video_id)):
+        raise HTTPException(status_code=404, detail="没有这个会话")
+    return {
+        "messages": store.read_chat(video_id, 300, conv=conv),
+        "running": agent.chat_for(video_id).running,
+        "conv": conv or store.current_conv(video_id),
+    }
+
+
+# ---- 会话（历史 / 新对话） ---------------------------------------------------
+
+@router.get("/{video_id}/chats")
+def list_chats(video_id: str):
+    _need(video_id)
+    return {"current": store.current_conv(video_id), "conversations": store.list_convs(video_id)}
+
+
+@router.post("/{video_id}/chats")
+def create_chat(video_id: str):
+    """开一个新对话（旧的保留在历史里）。"""
+    _need(video_id)
+    return {"conv": store.new_conv(video_id)}
+
+
+class SelectConvBody(BaseModel):
+    conv: str = ""
+
+
+@router.post("/{video_id}/chats/select")
+def select_chat(video_id: str, body: SelectConvBody):
+    """
+    切到某个会话。id 走 body 而不是路径：默认会话的 id 是**空串**，放进路径会变成
+    `/chats//select`，那一层路由匹配不到，只能 404。
+    """
+    _need(video_id)
+    if not store.select_conv(video_id, body.conv):
+        raise HTTPException(status_code=404, detail="没有这个会话")
+    return {"conv": body.conv, "messages": store.read_chat(video_id, 300, conv=body.conv)}
 
 
 @router.post("/{video_id}/chat")
