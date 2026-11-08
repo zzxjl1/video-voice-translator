@@ -14,8 +14,7 @@ os.environ.setdefault("DASHSCOPE_API_KEY", "test"); os.environ.setdefault("LLM_A
 from app import config
 TMP = tempfile.mkdtemp(); config.DATA_DIR = TMP
 from app import jobs, status, store
-import app.commands  # noqa: F401  导入即注册全部命令
-from app.commands import registry as R
+from app.commands import registry as R          # 导入 app.commands 包即注册全部命令
 from app.models import Segment, Speaker, tts_audio_path
 
 fails = []
