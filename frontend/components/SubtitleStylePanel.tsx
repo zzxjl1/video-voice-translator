@@ -5,7 +5,7 @@ import type {
   SubtitleStyle,
   SubtitleStylePatch,
   SubtitleTrack,
-} from '../services/apiService';
+} from '../net/types';
 
 /**
  * Subtitle style editor. It replaces the SCRIPT & TRANSLATION column while open.

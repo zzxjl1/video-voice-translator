@@ -81,7 +81,6 @@ const Timeline: React.FC<TimelineProps> = ({ segments, speakers, duration, curre
         <div className="absolute inset-0 z-10 overflow-hidden rounded-lg">
           {waveform.length > 0 ? waveform.map((peak, idx) => {
             const progress = idx / waveform.length;
-            const time = progress * duration;
             // 颜色来自预计算表（见下方 barColors）：原来在这里对每根柱子做
             // 一次 segments.find，而播放时每帧都会重渲染 → O(柱数 × 段数)（P2 #28）。
             const color = barColors[idx] ?? '#d1d5db';

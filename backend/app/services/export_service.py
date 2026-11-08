@@ -26,7 +26,8 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from app import config
-from app.models import VideoState, get_state, get_video_dir, video_dir_path
+from app import store
+from app.models import VideoState, get_video_dir, video_dir_path
 from app.services import mix_service, subtitle_service
 
 logger = logging.getLogger(__name__)
@@ -802,7 +803,7 @@ async def _export_video_locked(
     if not is_available():
         raise RuntimeError("ffmpeg/ffprobe not found — export requires them on PATH")
 
-    state = get_state(video_id)
+    state = store.get_state(video_id)
     if not state:
         raise RuntimeError("Video not found")
 
@@ -927,7 +928,7 @@ async def _export_video_locked(
         {
             "phase": "export",
             "status": "done",
-            "url": f"/api/videos/{video_id}/export/download",
+            "url": f"/api/projects/{video_id}/export/download",
             "size_mb": round(size_mb, 1),
             "container": container,
             "subtitle_tracks": tracks,

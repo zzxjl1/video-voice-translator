@@ -1,4 +1,4 @@
-import type { SubtitleCue, SubtitleStyle } from '../services/apiService';
+import type { SubtitleCue, SubtitleStyle } from '../net/types';
 import { cueAtTime, drawCueOnCanvas } from './subtitleStyle';
 
 /**

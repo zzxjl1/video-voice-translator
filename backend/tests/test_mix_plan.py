@@ -25,7 +25,7 @@ def make_state(segs, with_bg=True, tmp=None, with_source=True):
 
 def seg(sid, s, e, dur=None, muted=False, audio=True):
     d = os.path.join(tmp, "mixtest000000000000000000000000")
-    sg = Segment(id=sid, speaker_id="S1", speaker_label="S1", start_time=s, end_time=e,
+    sg = Segment(id=sid, speaker_id="S1", start_time=s, end_time=e,
                  text="x", translated_text="y", muted=muted)
     if audio:
         # 生产里 audio_path 是绝对路径（load_state 从 tts_results.json 还原时

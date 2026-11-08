@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "strict": true, "noEmit": true, "noUnusedLocals": true, "allowImportingTsExtensions": true },
+  "include": ["App.tsx", "index.tsx", "net/**/*", "store/**/*", "hooks/**/*", "features/**/*", "components/**/*", "utils/**/*.ts", "types.ts"]
+}

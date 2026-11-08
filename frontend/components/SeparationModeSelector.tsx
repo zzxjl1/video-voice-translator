@@ -1,5 +1,5 @@
 import React from 'react';
-import type { SeparationMode, SeparationBackends } from '../services/apiService';
+import type { SeparationMode, SeparationBackends } from '../net/types';
 
 /**
  * Backend picker for vocal separation.

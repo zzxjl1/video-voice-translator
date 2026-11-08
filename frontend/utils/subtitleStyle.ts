@@ -1,5 +1,5 @@
 import type { CSSProperties } from 'react';
-import type { SubtitleStyle } from '../services/apiService';
+import type { SubtitleStyle } from '../net/types';
 
 /**
  * One style, three renderers.

@@ -1,5 +1,5 @@
 """
-LLM translation service (OpenAI-compatible endpoint, e.g. SiliconFlow).
+LLM translation service (OpenAI-compatible endpoint, e.g. DeepSeek).
 
 Design notes
 ------------
@@ -27,8 +27,7 @@ from typing import Any, Optional
 from openai import AsyncOpenAI
 
 from app import config
-from app.models import get_video_dir
-from app.models import _atomic_write_json
+from app.models import atomic_write_json, get_video_dir
 from app.services import speech_timing, usage_service
 
 logger = logging.getLogger(__name__)
@@ -152,8 +151,7 @@ def _dump(path: str, payload: Any, label: str) -> None:
     """
     try:
         if isinstance(payload, (dict, list)):
-            models_atomic = _atomic_write_json
-            models_atomic(path, payload)
+            atomic_write_json(path, payload)
         else:
             tmp = f"{path}.part"
             with open(tmp, "w", encoding="utf-8") as f:

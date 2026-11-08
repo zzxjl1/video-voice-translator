@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import SeparationModeSelector from './SeparationModeSelector';
-import type { SeparationMode, SeparationBackends } from '../services/apiService';
+import type { SeparationMode, SeparationBackends } from '../net/types';
 
 /*
  * 「处理设置」这块开关的**唯一**定义。

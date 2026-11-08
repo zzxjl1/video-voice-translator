@@ -1,48 +1,29 @@
+"""
+TTS：只做"合成一句话 → 落盘 mp3 → 返回时长"，不碰任何项目状态。
+
+音色、语速、语气指令全部由调用方（命令/任务层）从项目文档里解析好传进来；
+配音是否新鲜由 `app/status.py` 的指纹判断。这里没有登记表、没有音色映射文件：
+那些旧的旁路状态（tts_results.json / speaker_voices.json）都并进了 project.json。
+"""
 import asyncio
-import json
 import logging
 import os
 import random
 import re
-import threading
 
 import dashscope
 from dashscope.audio.tts_v2 import SpeechSynthesizer
 
 from app import config
-from app.models import _atomic_write_json, get_video_dir
+from app.models import get_video_dir, tts_audio_path
 from app.services import usage_service
 
 logger = logging.getLogger(__name__)
 
-# Configure DashScope API key (reuse the existing ASR key)
 dashscope.api_key = config.DASHSCOPE_API_KEY
 
-# Speaker -> voice, persisted per video.
-#
-# Its own file rather than a field on `VideoState`, and `tts_results.json` is
-# separate for the same reason: the pipeline holds a `VideoState` of its own,
-# loaded once at the start of a run, while this module loads another. Every
-# `save_state(state)` the pipeline makes would write back ITS copy of the voice
-# map — the one from before any assignment happened — and wipe out whatever was
-# just chosen here. A file only this module touches cannot be clobbered that
-# way.
-_VOICE_MAP_FILE = "speaker_voices.json"
-
-# Read once per video per process: the pipeline calls
-# `assign_voice_for_speaker` for EVERY segment, and re-reading the file each
-# time would be pure waste. Safe to cache because every writer lives in this
-# module.
-_voice_map_cache: dict[str, dict[str, str]] = {}
-_voice_map_lock = threading.Lock()
-
-# `tts_results.json` is read-modify-written for every segment. The pipeline
-# now synthesizes segments concurrently, so guard those writes with a lock.
-_registry_lock = threading.Lock()
-
-
-# segment_id 会被拼进文件路径（tts/{id}.mp3），必须是安全的"单段文件名"。ASR 生成
-# 的 id 形如 seg-1a2b3c4d；这里放宽到字母数字/下划线/短横线，挡住 `../` 之类。
+# segment_id 会被拼进文件路径（tts/{id}.mp3），必须是安全的"单段文件名"：
+# 挡住 `../` 之类。ASR 生成的 id 形如 seg-1a2b3c4d。
 _SAFE_SEGMENT_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
@@ -50,211 +31,22 @@ def is_safe_segment_id(segment_id: str) -> bool:
     return bool(_SAFE_SEGMENT_ID.match(segment_id or ""))
 
 
-def _voice_map_path(video_id: str) -> str:
-    return os.path.join(get_video_dir(video_id), _VOICE_MAP_FILE)
-
-
-def _read_voice_map(video_id: str) -> dict[str, str]:
-    """The cached map, loading it from disk on first use. Caller holds the lock."""
-    if video_id in _voice_map_cache:
-        return _voice_map_cache[video_id]
-
-    data: dict[str, str] = {}
-    path = _voice_map_path(video_id)
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-            if isinstance(loaded, dict):
-                # Drop empty values: they would read as "pinned to nothing"
-                # rather than "automatic", which is a different state.
-                data = {str(k): str(v) for k, v in loaded.items() if v}
-        except Exception as e:
-            # A corrupt file must not stop a run; the worst case is that
-            # speakers get re-assigned.
-            logger.warning(f"[{video_id}] Could not read {_VOICE_MAP_FILE}: {e}")
-
-    _voice_map_cache[video_id] = data
-    return data
-
-
-def _write_voice_map(video_id: str) -> None:
-    """Persist the cached map. Caller holds the lock."""
-    path = _voice_map_path(video_id)
-    data = _voice_map_cache.get(video_id, {})
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        # Written to a temporary file and renamed, so an interrupted write
-        # cannot leave a half-file that the next run would read as corrupt.
-        tmp = f"{path}.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, path)
-    except Exception as e:
-        logger.warning(f"[{video_id}] Could not persist {_VOICE_MAP_FILE}: {e}")
-
-
-def assign_voice_for_speaker(
-    video_id: str,
-    speaker_id: str,
-    language: str | None = None,
-) -> str:
+def pick_voice(language: str | None, taken: set[str]) -> str:
     """
-    Assign a unique voice to a speaker within a video.
+    从能说 `language` 的音色池里选一个，尽量不与 `taken`（别的说话人已用的）重复。
 
-    Voices are drawn from the pool that can actually synthesize `language`.
-    System voice IDs are model- *and* language-specific: most of the
-    `qwen-audio-3.1-tts-flash` "精品中文" voices only speak Mandarin, and
-    handing one of those to an English dub is rejected by the service rather
-    than silently ignored. Selection is random without replacement so
-    different speakers get different voices.
+    系统音色 id 同时绑定模型和语言：多数"精品中文"音色只会说普通话，拿去配英文会被
+    服务端直接拒绝，所以池子按语言分组。没有任何内置音色支持该语言时仍返回多语种
+    池里的一个（拒绝整个任务不如给个差一点的），日志里点名 —— 真正的解法是声音克隆。
     """
-    with _voice_map_lock:
-        mapping = _read_voice_map(video_id)
-
-        if speaker_id in mapping:
-            return mapping[speaker_id]
-
-        if not config.system_voices_support(language):
-            # Not fatal — there is a fallback pool, so the run still produces
-            # audio — but recorded so the cause is in the log when someone asks
-            # why that dub sounds off. Voice cloning is the real fix. Reachable
-            # only from a hand-made request now: the UI offers no such language.
-            logger.warning(
-                f"[{video_id}] No built-in voice is documented for '{language}'; using the "
-                f"multilingual pool anyway. Expect mispronunciation — voice cloning covers "
-                f"this language."
-            )
-
-        pool = config.voices_for_language(language)
-        used_voices = set(mapping.values())
-        available = [v for v in pool if v not in used_voices]
-
-        if not available:
-            # More speakers than voices — reuse, the caller usually has voice
-            # cloning enabled for multi-speaker videos anyway.
-            available = list(pool)
-
-        voice = random.choice(available)
-        mapping[speaker_id] = voice
-        _write_voice_map(video_id)
-        logger.info(
-            f"[{video_id}] Assigned voice '{voice}' to speaker '{speaker_id}' "
-            f"(language={language or 'any'}, pool size={len(pool)})"
+    if not config.system_voices_support(language):
+        logger.warning(
+            f"No built-in voice is documented for '{language}'; using the multilingual "
+            f"pool anyway. Expect mispronunciation — voice cloning covers this language."
         )
-        return voice
-
-
-def forget_voice_map(video_id: str) -> None:
-    """
-    Drop the in-process copy for a video whose files were just deleted.
-
-    `reset_video` clears the directory — which removes `speaker_voices.json` —
-    but a cache that outlived the file would both keep serving the old mapping
-    and write it back on the next assignment, resurrecting exactly what the user
-    asked to have thrown away.
-    """
-    with _voice_map_lock:
-        _voice_map_cache.pop(video_id, None)
-
-
-def get_speaker_voice_map(video_id: str) -> dict[str, str]:
-    """The speaker->voice mapping for a video, as last saved."""
-    with _voice_map_lock:
-        return dict(_read_voice_map(video_id))
-
-
-def clear_speaker_voice(video_id: str, speaker_id: str) -> None:
-    """
-    Drop a speaker's pinned voice, handing them back to automatic assignment.
-
-    Without this, "automatic" would be a one-way door: the picker offers it, and
-    once a voice is pinned there would be no way back to the random choice.
-    """
-    with _voice_map_lock:
-        mapping = _read_voice_map(video_id)
-        if speaker_id in mapping:
-            removed = mapping.pop(speaker_id)
-            _write_voice_map(video_id)
-            logger.info(f"[{video_id}] Speaker '{speaker_id}' unpinned (was '{removed}')")
-
-
-def clear_speaker_voices(video_id: str) -> None:
-    """
-    Drop every pinned voice for a video, sending all speakers back to automatic.
-
-    Used when the target language changes: a voice id is language-specific, so a
-    pin made for Chinese is not merely suboptimal for an English dub — the
-    service rejects it outright, and it would do so halfway through the run.
-    """
-    with _voice_map_lock:
-        mapping = _read_voice_map(video_id)
-        if mapping:
-            mapping.clear()
-            _write_voice_map(video_id)
-            logger.info(f"[{video_id}] Cleared pinned voices (target language changed)")
-
-
-def set_speaker_voice(video_id: str, speaker_id: str, voice: str) -> None:
-    """
-    Pin a speaker to a specific voice, replacing whatever was auto-assigned.
-
-    Used when voice cloning is OFF: without it the user has no say at all, and
-    `assign_voice_for_speaker` picks at random — so two speakers can swap voices
-    between runs and there is no way to ask for a particular one.
-
-    The voice is NOT validated here; the caller checks it against
-    `config.voices_for_language` so the error can name the language it failed
-    for. Storing it per video, not per segment, is the point: a voice is a
-    property of the speaker, and pinning it per line would let one speaker
-    change voice halfway through the video.
-    """
-    with _voice_map_lock:
-        mapping = _read_voice_map(video_id)
-        mapping[speaker_id] = voice
-        _write_voice_map(video_id)
-    logger.info(f"[{video_id}] Speaker '{speaker_id}' pinned to voice '{voice}'")
-
-
-def _register_segment_audio(
-    video_dir: str, segment_id: str, rel_path: str, duration: float | None = None
-) -> None:
-    """
-    Thread-safe registration of a synthesized segment in tts_results.json.
-
-    值是 `{"path": ..., "duration": ...}`：时长必须与路径一起登记 —— 它只有
-    合成时量得到，而混音计划（mix_service）要用它算每段的 atempo。只存路径的
-    旧表依然能读（load_state 兼容两种形状）。
-    """
-    results_path = os.path.join(video_dir, "tts_results.json")
-    with _registry_lock:
-        tts_results = {}
-        if os.path.exists(results_path):
-            try:
-                with open(results_path, "r", encoding="utf-8") as f:
-                    tts_results = json.load(f)
-            except Exception as e:
-                # 【不写回】：写回等于用"只有这一行"的新表覆盖掉其它行已经登记
-                # 的映射 —— 那些行随后会被当成"还没合成"而重做一遍（既花 API
-                # 费用，又会盖掉已经生成好的音频）。宁可这一次登记失败并报错。
-                # video_id 从目录名取（本函数的入参是 video_dir）。
-                video_id = os.path.basename(video_dir.rstrip(os.sep))
-                logger.error(
-                    f"[{video_id}] tts_results.json is corrupt ({e}); refusing to "
-                    f"overwrite it. Segment {segment_id} was NOT registered in the "
-                    f"resume registry."
-                )
-                return
-
-        entry: dict = {"path": rel_path}
-        if duration:
-            entry["duration"] = round(float(duration), 4)
-        tts_results[segment_id] = entry
-
-        try:
-            _atomic_write_json(results_path, tts_results)
-        except Exception as e:
-            logger.warning(f"Failed to update tts registry for {segment_id}: {e}")
+    pool = config.voices_for_language(language)
+    available = [v for v in pool if v not in taken] or list(pool)
+    return random.choice(available)
 
 
 def _clamp_rate(rate: float) -> float:
@@ -263,8 +55,6 @@ def _clamp_rate(rate: float) -> float:
 
 
 def _probe_duration(path: str) -> float | None:
-    """时长探测的唯一实现在 subtitle_service.probe_duration（带 mtime 缓存）；
-    这里只是别名，别再写第二份 ffprobe 调用。"""
     from app.services.subtitle_service import probe_duration
     return probe_duration(path)
 
@@ -538,48 +328,31 @@ async def synthesize_speech(
     video_id: str,
     segment_id: str,
     text: str,
-    voice: str | None = None,
-    write_registry: bool = True,
+    voice: str,
     speech_rate: float | None = None,
     target_duration: float | None = None,
     instruction: str | None = None,
 ) -> tuple[str, float | None]:
     """
-    Synthesize speech using Alibaba DashScope Qwen-Audio-TTS.
-    Uses non-streaming (blocking) call mode.
+    合成一句话，写到 tts/<segment_id>.mp3，返回 (路径, 实际时长秒)。
 
     Args:
-        video_id: MD5 hash of the video
-        segment_id: Unique ID for the segment
-        text: Text to synthesize
-        voice: Voice name (optional, uses config default)
-        write_registry: Whether to update tts_results.json (set False when the
-            caller batches the registry write itself).
-        speech_rate: Speed to synthesize at (0.5–2.0). None keeps the default.
-            `speech_timing.plan_speech_rate()` predicts this from the text.
-        target_duration: The time slot this line has to fill. When given, the
-            result is measured with ffprobe and — only if it misses by more than
-            `config.TTS_FIT_TOLERANCE` — re-synthesized once at a corrected rate.
-            That costs one extra call for the segments that need it, and nothing
-            for the rest.
-        instruction: Dialect instruction, already resolved and validated by
-            `config.tts_instruction`. None for plain speech. It has to be passed
-            to the FITTING step too, or a line that gets re-synthesized at a
-            corrected rate would come back in Mandarin while every other line
-            stayed in the chosen dialect.
+        voice: 已解析好的音色（本行 > 克隆 > 说话人的系统音色，见 status.resolve_voice）。
+        speech_rate: 语速 0.5–2.0；None 用默认。
+        target_duration: 这一行要填满的时间槽。给了就会量结果，偏差超过
+            `config.TTS_FIT_TOLERANCE` 时按修正后的语速重合成一次（多一次调用，
+            只花在需要的行上）。
+        instruction: 已合并好的语气/方言指令（status.dub_instruction）。拟合步骤也要
+            带上它，否则被重合成的那一行会变回普通话/平淡语气，而别的行不是。
 
-    Returns:
-        (Path to the saved audio file, 实际时长秒数)。时长必须交给调用方持久化：
-        混音计划要用它算每段的 atempo，而它只有这里量得到 —— 以前只写日志，
-        结果导出与预览都拿不到，各猜各的。
+    时长必须由调用方落进项目文档：混音计划用它算每段的 atempo。
     """
     if not is_safe_segment_id(segment_id):
         raise ValueError(f"invalid segment id: {segment_id!r}")
+    if not voice:
+        raise ValueError("no voice resolved for this line")
 
-    # 入口净化，先于一切：合成与时长拟合都必须用同一份净化后的文本。
     text = _sanitize_for_tts(text, segment_id)
-    voice = voice or config.TTS_DEFAULT_VOICE
-
     logger.info(
         f"Submitting TTS task to DashScope ({config.TTS_MODEL}), Voice: {voice}, "
         f"rate: {speech_rate if speech_rate is not None else 'default'}"
@@ -587,123 +360,24 @@ async def synthesize_speech(
     )
 
     loop = asyncio.get_running_loop()
-
-    # The SDK call is blocking -> run it in the thread pool so the event loop
-    # (and other concurrent segment jobs) keep making progress.
+    # SDK 的调用是阻塞的 → 放进线程池，事件循环和其它并发的合成任务照常推进。
     audio = await _synthesize_with_retries(
         loop, text, voice, speech_rate, segment_id, instruction, video_id
     )
 
-    # Save to disk in tts/ subfolder
-    video_dir = get_video_dir(video_id)
-    tts_dir = os.path.join(video_dir, "tts")
-    os.makedirs(tts_dir, exist_ok=True)
-    audio_path = os.path.join(tts_dir, f"{segment_id}.mp3")
+    get_video_dir(video_id)
+    audio_path = tts_audio_path(video_id, segment_id)
+    os.makedirs(os.path.dirname(audio_path), exist_ok=True)
 
-    # 写盘失败必须**抛**：以前这里把异常吞成一行 warning 然后照旧 return 路径，
-    # 调用方据此把这一行计为成功 —— 磁盘满/权限错时界面显示"已配音"、实际没有
-    # 文件，导出时又被静默跳过，成片少一句而无人知晓（P0 #5）。
+    # 写盘失败必须抛：吞掉的话调用方会把这一行记成功，界面显示"已配音"而实际没有
+    # 文件，导出时又被静默跳过。
     actual, applied = await _write_fitted_audio(
-        loop,
-        audio_path,
-        audio,
-        text,
-        voice,
-        speech_rate,
-        target_duration,
-        segment_id,
-        video_id,
-        instruction,
+        loop, audio_path, audio, text, voice, speech_rate, target_duration,
+        segment_id, video_id, instruction,
     )
     if not os.path.exists(audio_path) or os.path.getsize(audio_path) == 0:
         raise RuntimeError(f"合成结果没有落盘：{audio_path}")
     detail = f", {actual:.2f}s" if actual else ""
     detail += f" @ rate {applied:.2f}" if applied else ""
     logger.info(f"Saved synthesized audio to {audio_path}{detail}")
-
-    if write_registry:
-        # 登记表损坏只影响"续跑是否会重做这一行"，音频文件本身是好的 ——
-        # 所以这里保持降级（记 warning），不能因为登记失败而丢掉已经合成好的音频。
-        try:
-            _register_segment_audio(
-                video_dir, segment_id, f"tts/{segment_id}.mp3", actual
-            )
-        except Exception as e:
-            logger.warning(f"Failed to update the resume registry for {segment_id}: {e}")
-
     return audio_path, actual
-
-
-def discard_segment_audio(video_id: str, segment_id: str) -> None:
-    """
-    作废一行的配音：删 mp3，并把它从登记表里摘掉。
-
-    用在"这一行的文本改了"的时刻：旧音频念的是旧文本，留着会让导出的成片与字幕
-    说的不是同一句话。登记表读不出来时不写回（理由同 `_register_segment_audio`）。
-    """
-    if not is_safe_segment_id(segment_id):
-        return
-    video_dir = get_video_dir(video_id)
-    try:
-        os.remove(os.path.join(video_dir, "tts", f"{segment_id}.mp3"))
-    except FileNotFoundError:
-        pass
-    except OSError as e:
-        logger.warning(f"[{video_id}] could not remove audio of {segment_id}: {e}")
-
-    results_path = os.path.join(video_dir, "tts_results.json")
-    with _registry_lock:
-        try:
-            with open(results_path, "r", encoding="utf-8") as f:
-                tts_results = json.load(f)
-        except FileNotFoundError:
-            return
-        except Exception as e:
-            logger.error(f"[{video_id}] tts_results.json is corrupt ({e}); left untouched")
-            return
-        if tts_results.pop(segment_id, None) is None:
-            return
-        try:
-            _atomic_write_json(results_path, tts_results)
-        except Exception as e:
-            logger.warning(f"[{video_id}] could not update the tts registry: {e}")
-
-
-def sync_registry(video_id: str, entries: list) -> None:
-    """
-    Write all segment paths (and fitted durations) in one shot (concurrent-safe).
-
-    `entries` 可以是 `["seg-x", ...]`（只有 id，时长从磁盘现量）或
-    `[("seg-x", 2.34), ...]`（管线在合成现场就有时长，优先用后者）。
-    """
-    video_dir = get_video_dir(video_id)
-    results_path = os.path.join(video_dir, "tts_results.json")
-
-    with _registry_lock:
-        tts_results = {}
-        if os.path.exists(results_path):
-            try:
-                with open(results_path, "r", encoding="utf-8") as f:
-                    tts_results = json.load(f)
-            except Exception as e:
-                # 同 `_register_segment_audio`：读不出来就不写回，别用残缺的表
-                # 覆盖掉其它行的登记。
-                logger.error(
-                    f"[{video_id}] tts_results.json is corrupt ({e}); refusing to "
-                    f"overwrite it during sync."
-                )
-                return
-        for entry in entries:
-            if isinstance(entry, tuple):
-                segment_id, duration = entry
-            else:
-                segment_id, duration = entry, None
-            record: dict = {"path": f"tts/{segment_id}.mp3"}
-            if duration:
-                record["duration"] = round(float(duration), 4)
-            tts_results[segment_id] = record
-
-        try:
-            _atomic_write_json(results_path, tts_results)
-        except Exception as e:
-            logger.warning(f"Failed to sync tts registry: {e}")

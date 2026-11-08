@@ -381,11 +381,14 @@ async def pick_samples(
                 for c in calls
             ],
         })
-        messages.append({
-            "role": "tool",
-            "tool_call_id": calls[0].id,
-            "content": f"REJECTED: {reason}. Fix the problem and call select_samples again.",
-        })
+        # 协议要求：assistant 的**每一个** tool_call 都要有对应的 tool 回复，否则下一次
+        # 请求会被拒（模型一次并行发多个调用时，只回第一个就是不合规）。
+        for call in calls:
+            messages.append({
+                "role": "tool",
+                "tool_call_id": call.id,
+                "content": f"REJECTED: {reason}. Fix the problem and call select_samples again.",
+            })
 
     logger.warning(
         f"[SamplePick] {speaker_id}: gave up after {config.CLONE_OMNI_MAX_TURNS} "

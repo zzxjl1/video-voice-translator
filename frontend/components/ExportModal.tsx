@@ -3,7 +3,7 @@ import type {
   SubtitleCapabilities,
   SubtitleStyle,
   SubtitleTrack,
-} from '../services/apiService';
+} from '../net/types';
 import type { BurnCapability } from '../utils/burnCapability';
 import { overlayLineStyle, resolveMetrics, type Rect } from '../utils/subtitleStyle';
 

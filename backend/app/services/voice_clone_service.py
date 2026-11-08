@@ -1,187 +1,41 @@
 """
-Voice Cloning Service using DashScope voice enrollment.
+声音克隆：给一位说话人造一个音色（DashScope voice enrollment）。
 
-Flow:
-1. For each speaker, collect all vocal segments sorted by time
-2. Concatenate them with silence gaps into a sample audio (stop when max duration reached)
-3. Upload to public URL, call DashScope voice enrollment API
-4. Poll until voice is ready (status=OK)
-5. Persist the voice_id *and the model it was enrolled for*
+本模块只做"挑素材 → 拼样本 → 注册 → 等就绪"，**不碰任何项目状态**：
+  输入  说话人的行 + （可选）指定的样本行
+  输出  voice_id
+登记到哪、是否复用，都是调用方（命令层）的事，音色存在 `Speaker.clone`
+（`{"voice_id", "target_model", "created_at"}`）里。旧版有三份缓存（进程内 dict、
+voice_clone_map.json、每段合成时再读一次）—— 现在只有项目文档里这一份。
 
-Voice ids are model-scoped
---------------------------
-The official docs are explicit: "音色在创建时通过 target_model 绑定到特定的语音
-合成模型，不能跨模型使用" — a voice created for one model cannot be synthesized
-with another. Reusing one raises `InvalidParameter` / `Engine error [411]`, and
-because `tts_results.json` caches per-segment audio, a model switch could
-otherwise keep shipping voice ids that no longer work.
-
-`voice_clone_map.json` therefore records `target_model` next to every voice id:
-
-    {"Speaker 1": {"voice_id": "...", "target_model": "qwen-audio-3.1-tts-flash",
-                   "created_at": 1759536000}}
-
-Entries written by older versions are plain strings
-(`{"Speaker 1": "voice-id"}`); those carry no model, so they are treated as
-invalid and re-cloned. That costs one extra enrollment per speaker after an
-upgrade — voice creation is free for Qwen-Audio-TTS — and is far better than
-silently producing broken audio.
+音色绑定模型
+------------
+官方文档：「音色在创建时通过 target_model 绑定到特定的语音合成模型，不能跨模型
+使用」。拿旧模型的 voice_id 去合成会报 InvalidParameter / Engine error [411]，所以
+`Speaker.clone` 带着 `target_model`，`status.clone_voice_id` 只在它等于当前
+`config.TTS_MODEL` 时才认。
 """
 import asyncio
-import json
 import logging
 import os
-import time
+import subprocess
 from typing import Callable, Optional
 
 import dashscope
-# SpeechSynthesizer 不再在这里用：合成统一走 tts_service._synth_audio()
 from dashscope.audio.tts_v2 import VoiceEnrollmentService
 
 from app import config
-from app.models import Segment, get_state, get_video_dir
+from app.models import Segment, get_video_dir, video_dir_path
 from app.services import usage_service
 
 logger = logging.getLogger(__name__)
 
 dashscope.api_key = config.DASHSCOPE_API_KEY
 
-# In-memory cache: {video_id: {speaker_id: voice_id}}
-#
-# Only ever populated with voices whose target_model matches the current TTS
-# model, so a model switch cannot leak a stale voice id into synthesis.
-_cloned_voice_map: dict[str, dict[str, str]] = {}
-
-CLONE_MAP_FILENAME = "voice_clone_map.json"
-
 
 def clone_target_model() -> str:
-    """
-    The model cloned voices are enrolled against.
-
-    Always follows `config.TTS_MODEL` so the enrollment model and the synthesis
-    model can never drift apart (they must match exactly, or synthesis fails).
-    """
+    """克隆音色注册到哪个模型：始终跟随 TTS 模型，两者不可能漂移（必须完全一致）。"""
     return config.TTS_MODEL
-
-
-def _clone_map_path(video_dir: str) -> str:
-    return os.path.join(video_dir, "voice_clone", CLONE_MAP_FILENAME)
-
-
-def load_clone_map(video_dir: str) -> dict[str, dict]:
-    """
-    Read `voice_clone_map.json`, normalising the legacy shape.
-
-    Current: `{"Speaker 1": {"voice_id": ..., "target_model": ..., "created_at": ...}}`
-    Legacy:  `{"Speaker 1": "voice-id"}`
-
-    Legacy entries get `target_model = None`, which `_cached_voice_for_model`
-    treats as invalid so they are re-cloned rather than reused against an
-    unknown model.
-    """
-    path = _clone_map_path(video_dir)
-    if not os.path.exists(path):
-        return {}
-
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            raw = json.load(f)
-    except Exception as e:
-        logger.warning(f"[Clone] Failed to read {path}: {e}")
-        return {}
-
-    if not isinstance(raw, dict):
-        logger.warning(f"[Clone] Unexpected clone map shape in {path}, ignoring")
-        return {}
-
-    normalised: dict[str, dict] = {}
-    for speaker_id, entry in raw.items():
-        if isinstance(entry, str):
-            normalised[speaker_id] = {"voice_id": entry, "target_model": None}
-        elif isinstance(entry, dict) and entry.get("voice_id"):
-            normalised[speaker_id] = {
-                "voice_id": entry["voice_id"],
-                "target_model": entry.get("target_model"),
-                "created_at": entry.get("created_at"),
-            }
-        else:
-            logger.warning(f"[Clone] Skipping malformed clone entry for {speaker_id}")
-    return normalised
-
-
-def save_clone_entry(
-    video_dir: str, speaker_id: str, voice_id: str, target_model: str
-) -> None:
-    """Persist one speaker -> voice_id mapping, tagged with its target model."""
-    path = _clone_map_path(video_dir)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-
-    raw: dict = {}
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                loaded = json.load(f)
-            if isinstance(loaded, dict):
-                raw = loaded
-        except Exception as e:
-            # 【不写回】：写回会用"只有这一位说话人"的新表覆盖掉整份克隆记录，
-            # 其它说话人随后会被认为"没克隆过"而重新走一遍 enrollment ——
-            # 那是要花配额（1000 个/账号）且不可退还的操作。
-            # video_id 从目录名取（本函数的入参是 video_dir）。
-            video_id = os.path.basename(video_dir.rstrip(os.sep))
-            logger.error(
-                f"[{video_id}] {CLONE_MAP_FILENAME} is corrupt ({e}); refusing to "
-                f"overwrite it. Speaker {speaker_id}'s voice was NOT persisted."
-            )
-            return
-
-    raw[speaker_id] = {
-        "voice_id": voice_id,
-        "target_model": target_model,
-        "created_at": int(time.time()),
-    }
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(raw, f, ensure_ascii=False, indent=2)
-
-    logger.info(
-        f"[Clone] Saved {speaker_id} -> {voice_id} "
-        f"(target_model={target_model}) to {path}"
-    )
-
-
-def _cached_voice_for_model(video_dir: str, speaker_id: str) -> Optional[str]:
-    """
-    Cached voice id for a speaker, but ONLY when it was created for the model
-    currently configured. Returns None otherwise, which triggers a re-clone.
-
-    Cheap on purpose (one small file read, no network): this runs once per
-    segment via `get_cloned_voice`.
-    """
-    entry = load_clone_map(video_dir).get(speaker_id)
-    if not entry:
-        return None
-
-    voice_id = entry.get("voice_id")
-    entry_model = entry.get("target_model")
-    current_model = clone_target_model()
-
-    if not entry_model:
-        logger.info(
-            f"[Clone] Cached voice for {speaker_id} predates model tracking; "
-            f"re-cloning against '{current_model}'."
-        )
-        return None
-
-    if entry_model != current_model:
-        logger.info(
-            f"[Clone] Cached voice for {speaker_id} was created for "
-            f"'{entry_model}' but the TTS model is now '{current_model}'; "
-            "re-cloning (cloned voices cannot be used across models)."
-        )
-        return None
-
-    return voice_id
 
 
 # Sample constraints, aligned with the official 声音复刻 docs for
@@ -368,8 +222,6 @@ def _ffmpeg_build_sample(
     segments until minimum is met.
     Returns total output duration.
     """
-    import subprocess
-
     voice_dur = sum(s.end_time - s.start_time for s in selected)
     n_gaps = max(0, len(selected) - 1)
     gap_total = n_gaps * GAP_DURATION
@@ -485,464 +337,246 @@ def _ffmpeg_build_sample(
     return accumulated
 
 
-async def clone_voice_for_speaker(
+def candidate_lines(segments: list[Segment], speaker_id: str) -> list[Segment]:
+    """该说话人可作参考的行：语音、够长、不与别人重叠。"""
+    pool = [s for s in segments if s.kind == "speech" and (s.end_time - s.start_time) >= 0.3]
+    return _filter_candidates(pool, speaker_id)
+
+
+def validate_chosen(
+    segments: list[Segment], speaker_id: str, chosen_ids: list[str]
+) -> list[Segment]:
+    """
+    校验 AI / 用户指定的样本行：必须存在、属于这个说话人、是语音、彼此不重叠、
+    总时长在 [1s, 60s]（官方硬上限 60s）。通过则按时间排序返回，否则抛带人话的错。
+    """
+    by_id = {s.id: s for s in segments}
+    unknown = [i for i in chosen_ids if i not in by_id]
+    if unknown:
+        raise ValueError(f"找不到这些行：{unknown}")
+    picked = [by_id[i] for i in dict.fromkeys(chosen_ids)]
+    foreign = [s.id for s in picked if s.speaker_id != speaker_id]
+    if foreign:
+        raise ValueError(f"这些行不属于说话人 {speaker_id}：{foreign}")
+    not_speech = [s.id for s in picked if s.kind != "speech"]
+    if not_speech:
+        raise ValueError(f"这些行不是语音（音乐/噪音）：{not_speech}")
+    picked.sort(key=lambda s: s.start_time)
+    for a, b in zip(picked, picked[1:]):
+        if a.end_time - b.start_time > 0.05:
+            raise ValueError(f"样本行互相重叠：{a.id} 与 {b.id}")
+    total = sum(s.end_time - s.start_time for s in picked)
+    if total < 1.0:
+        raise ValueError(f"样本总共只有 {total:.1f} 秒（至少 1 秒，建议 10~20 秒）")
+    if total > 60.0:
+        raise ValueError(f"样本总共 {total:.1f} 秒，超过官方上限 60 秒")
+    return picked
+
+
+async def pick_reference_lines(
     video_id: str,
-    speaker_id: str,
     segments: list[Segment],
-    server_url_base: str,
+    speaker_id: str,
+    audio_url: str,
+    smart: bool,
     emit: Optional[Callable] = None,
-) -> tuple[str, bool]:
+) -> list[Segment]:
     """
-    Clone voice for a speaker:
-    1. Use LLM to intelligently select the best audio segments
-    2. Extract and concatenate sample audio from vocals
-    3. Serve it via public URL
-    4. Call DashScope voice enrollment
-    5. Poll until ready
-    6. Return (voice_id, reused)
-
-    The cloned voice_id is cached and persisted to disk. `reused` is False only
-    when a NEW enrollment actually happened — the one path that consumes
-    enrollment quota; the two cache-hit paths log "ALREADY EXISTS" and are free.
-
-    `emit` (optional) reports the 智能选材 step to the UI: which segments omni
-    picked, or that it fell back to the rules. Without it the picker is
-    invisible — the user turns the switch on and nothing anywhere says whether
-    it ran.
+    选参考行：`smart` 时先让 omni 听着挑，任何失败都回退规则（最长优先 + 去重叠）。
+    返回至少一行，否则抛 RuntimeError。
     """
-    logger.info(
-        f"[Clone] ========== Start voice cloning for {speaker_id} (video={video_id}) =========="
-    )
-    logger.info(f"[Clone] Total segments in video: {len(segments)}")
+    async def say(status: str, **kw):
+        if emit is not None:
+            await emit({"phase": "voice_clone", "status": status, "speaker_id": speaker_id, **kw})
 
-    # Check cache first
-    if video_id in _cloned_voice_map and speaker_id in _cloned_voice_map[video_id]:
-        voice_id = _cloned_voice_map[video_id][speaker_id]
-        logger.info(f"[Clone] {speaker_id}: voice ALREADY EXISTS (memory cache): {voice_id}")
-        return voice_id, True
-
-    video_dir = get_video_dir(video_id)
-
-    # Check disk cache. The model-mismatch check happens first because it is a
-    # cheap local read; the remote liveness probe is only worth paying for a
-    # voice that is actually usable with the current model.
-    cached_voice_id = _cached_voice_for_model(video_dir, speaker_id)
-    if cached_voice_id:
-        logger.info(
-            f"[Clone] Disk cache hit for {speaker_id}: {cached_voice_id}, verifying..."
-        )
-        try:
-            service = VoiceEnrollmentService()
-            # Blocking SDK call with no timeout of its own: run it in a worker
-            # thread and bound the wait, or one unresponsive DashScope request
-            # freezes the whole event loop (every other request and SSE stream).
-            info = await asyncio.wait_for(
-                asyncio.get_running_loop().run_in_executor(
-                    None, lambda: service.query_voice(voice_id=cached_voice_id)
-                ),
-                timeout=config.CLONE_POLL_CALL_TIMEOUT,
-            )
-            status = info.get("status", "UNKNOWN")
-            logger.info(f"[Clone] Voice {cached_voice_id} status={status}")
-            if status == "OK":
-                _cloned_voice_map.setdefault(video_id, {})[speaker_id] = cached_voice_id
-                logger.info(
-                    f"[Clone] {speaker_id}: voice ALREADY EXISTS on server "
-                    f"(disk cache, verified): {cached_voice_id}"
-                )
-                return cached_voice_id, True
-            # Voices idle for over a year are deleted server-side, so a
-            # non-OK status is expected occasionally and means re-clone.
-            logger.warning(
-                f"[Clone] Cached voice {cached_voice_id} status={status}, re-cloning..."
-            )
-        except Exception as e:
-            logger.warning(
-                f"[Clone] Failed to verify cached voice {cached_voice_id}: {e}, "
-                "re-cloning..."
-            )
-
-    # Step 1: Select segments and build sample audio
-    vocals_path = os.path.join(video_dir, "vocals.wav")
-    if not os.path.exists(vocals_path):
-        vocals_path = os.path.join(video_dir, "extracted_audio.wav")
-    if not os.path.exists(vocals_path):
-        raise RuntimeError("No audio file found for voice cloning")
-
-    logger.info(f"[Clone] Step 1: Source audio = {vocals_path}")
-    speaker_clone_dir = os.path.join(video_dir, "voice_clone", speaker_id)
-    os.makedirs(speaker_clone_dir, exist_ok=True)
-    sample_path = os.path.join(speaker_clone_dir, "sample.wav")
-    logger.info(f"[Clone] Output sample path = {sample_path}")
-
-    # Select segments (longest-first, 20s cap, 1s gaps — see the constraints
-    # block at the top of this module)
-    logger.info(f"[Clone] Step 1a: Selecting segments for {speaker_id}...")
-    selected: list[Segment] | None = None
-    # 唯一的控制是这个工程的开关（用户点出来的那个），没有全局闸门。
-    # 读不到 state 时按关处理：配置未知就不擅自花一次 omni 调用。
-    _state = get_state(video_id)
-    smart_enabled = bool(_state is not None and _state.clone_smart_pick)
-    if smart_enabled and emit is not None:
-        await emit({
-            "phase": "voice_clone",
-            "status": "picking",
-            "speaker_id": speaker_id,
-        })
-    if smart_enabled:
-        # 智能选材：omni 听音频挑参考段。任何失败都回退规则 —— 这是增强，
-        # 不是依赖。
+    pool = candidate_lines(segments, speaker_id)
+    if smart:
+        await say("picking")
         try:
             from app.services import omni_service
-            candidates = [
-                {"id": s.id, "start": s.start_time, "end": s.end_time,
-                 "duration": s.end_time - s.start_time, "text": s.text or ""}
-                for s in segments
-                if s.speaker_id == speaker_id and (s.end_time - s.start_time) >= 0.3
-            ]
-            audio_url = f"{server_url_base}/api/videos/{video_id}/audio"
-            picks, pick_reason = await omni_service.pick_samples(
-                video_id, speaker_id, candidates, audio_url
+            picks, reason = await omni_service.pick_samples(
+                video_id, speaker_id,
+                [{"id": s.id, "start": s.start_time, "end": s.end_time,
+                  "duration": s.end_time - s.start_time, "text": s.text or ""} for s in pool],
+                audio_url,
             )
-            if picks:
-                picked_set = set(picks)
-                selected = sorted(
-                    (s for s in segments
-                     if s.speaker_id == speaker_id and s.id in picked_set),
-                    key=lambda s: s.start_time,
-                )
-                if selected:
-                    logger.info(f"[Clone] Step 1a: omni picked {len(selected)} segment(s)")
-                    if emit is not None:
-                        await emit({
-                            "phase": "voice_clone",
-                            "status": "picked",
-                            "speaker_id": speaker_id,
-                            "picked": [s.id for s in selected],
-                        })
-                else:
-                    # picks 非空但一个都对不上本说话人（pick_samples 自带校验，
-                    # 这里是兜底）：当作挑选失败回退规则，而不是让后面
-                    # "no suitable segments" 硬失败。
-                    logger.warning(
-                        f"[Clone] Step 1a: omni picked {len(picks)} id(s), none "
-                        f"matched {speaker_id} — falling back to rule-based selection"
-                    )
-                    selected = None
-                    if emit is not None:
-                        await emit({
-                            "phase": "voice_clone",
-                            "status": "pick_failed",
-                            "speaker_id": speaker_id,
-                            "error": "omni 挑出的 id 都不属于该说话人",
-                        })
-            else:
-                logger.warning(
-                    f"[Clone] Step 1a: omni picker returned nothing ({pick_reason}) "
-                    f"— falling back to rule-based selection"
-                )
-                if emit is not None:
-                    await emit({
-                        "phase": "voice_clone",
-                        "status": "pick_failed",
-                        "speaker_id": speaker_id,
-                        # 具体原因（候选不足 / API 失败 / 超轮数）原样带出去：
-                        # 界面上这一句是用户唯一能看到的解释。
-                        "error": pick_reason or "omni 没有挑出任何段",
-                    })
-        except Exception as e:
-            logger.warning(
-                f"[Clone] Step 1a: omni picker failed ({e}) — "
-                f"falling back to rule-based selection"
-            )
-            if emit is not None:
-                await emit({
-                    "phase": "voice_clone",
-                    "status": "pick_failed",
-                    "speaker_id": speaker_id,
-                    "error": str(e)[:120],
-                })
-    if selected is None:
-        candidates = _filter_candidates(segments, speaker_id)
-        selected = _select_segments_for_speaker(segments, speaker_id, candidates=candidates)
+            chosen = [s for s in pool if picks and s.id in set(picks)]
+            if chosen:
+                await say("picked", picked=[s.id for s in chosen])
+                return sorted(chosen, key=lambda s: s.start_time)
+            await say("pick_failed", error=reason or "omni 挑出的行都不在候选里")
+        except Exception as e:  # 增强不是依赖：失败回退规则
+            logger.warning(f"[Clone] omni picker failed ({e}) — using the rules")
+            await say("pick_failed", error=str(e)[:120])
+
+    selected = _select_segments_for_speaker(segments, speaker_id, candidates=pool)
     if not selected:
-        raise RuntimeError(f"No suitable segments found for speaker {speaker_id}")
+        raise RuntimeError(f"说话人 {speaker_id} 没有可用于克隆的素材")
+    return selected
 
-    total_voice = sum(s.end_time - s.start_time for s in selected)
-    logger.info(
-        f"[Clone] Step 1a result: {len(selected)} segments, "
-        f"voice={total_voice:.2f}s"
-    )
 
-    if total_voice < 1.0:
-        raise RuntimeError(
-            f"Insufficient audio for speaker {speaker_id}: only {total_voice:.1f}s (need ≥1s)"
-        )
+def sample_source(video_id: str) -> str:
+    """参考音频来源：优先全频带人声（vocals.wav），否则抽出的整条音频。"""
+    base = video_dir_path(video_id)
+    for name in ("vocals.wav", "extracted_audio.wav"):
+        path = os.path.join(base, name)
+        if os.path.exists(path):
+            return path
+    raise RuntimeError("没有可用于克隆的音频文件")
 
-    # Build sample with ffmpeg (segments + 1s gaps)
-    logger.info("[Clone] Step 1b: Building sample with ffmpeg...")
+
+async def enroll_voice(
+    video_id: str,
+    speaker_id: str,
+    selected: list[Segment],
+    server_url_base: str,
+    emit: Optional[Callable] = None,
+) -> str:
+    """
+    拼样本 → 注册音色 → 轮询到就绪，返回 voice_id。每一步都有各自的超时上限
+    （一个挂住的请求不能永久占住线程池里的 worker）。
+
+    新建音色是计费/配额动作（0.01 元/个，账号 1000 个免费额度，删除不返还），所以
+    记账点只放在"创建成功"这一行。
+    """
+    async def say(status: str, **kw):
+        if emit is not None:
+            await emit({"phase": "voice_clone", "status": status, "speaker_id": speaker_id, **kw})
+
     loop = asyncio.get_running_loop()
-    if emit is not None:
-        await emit({
-            "phase": "voice_clone",
-            "status": "sampling",
-            "speaker_id": speaker_id,
-            "seconds": round(total_voice, 1),
-        })
+    total_voice = sum(s.end_time - s.start_time for s in selected)
+    if total_voice < 1.0:
+        raise RuntimeError(f"说话人 {speaker_id} 的素材只有 {total_voice:.1f}s（至少 1s）")
+
+    # —— 拼样本 ——
+    speaker_dir = os.path.join(get_video_dir(video_id), "voice_clone", speaker_id)
+    os.makedirs(speaker_dir, exist_ok=True)
+    sample_path = os.path.join(speaker_dir, "sample.wav")
+    await say("sampling", seconds=round(total_voice, 1))
     try:
-        sample_dur = await asyncio.wait_for(
+        await asyncio.wait_for(
             loop.run_in_executor(
-                None,
-                lambda: _ffmpeg_build_sample(vocals_path, selected, sample_path),
+                None, lambda: _ffmpeg_build_sample(sample_source(video_id), selected, sample_path)
             ),
             timeout=config.CLONE_SAMPLE_TIMEOUT,
         )
     except asyncio.TimeoutError:
-        raise RuntimeError(
-            f"参考音频拼接超时（>{config.CLONE_SAMPLE_TIMEOUT}s）"
-        ) from None
-    logger.info(f"[Clone] Step 1b done: sample ready, duration={sample_dur:.2f}s")
+        raise RuntimeError(f"参考音频拼接超时（>{config.CLONE_SAMPLE_TIMEOUT}s）") from None
 
-    # Step 2: Public URL for the sample
-    # Serve via our API endpoint
-    sample_url = f"{server_url_base}/api/videos/{video_id}/voice-sample/{speaker_id}"
-    logger.info(f"[Clone] Step 2: Sample URL = {sample_url}")
-
-    # Step 3: Call DashScope voice enrollment
-    safe_video_prefix = video_id[:8]
-    safe_speaker = speaker_id.replace(" ", "").lower()[:6]
-    prefix = f"v{safe_video_prefix}{safe_speaker}"
-    # Prefix: only lowercase letters and digits, max 10 chars
-    prefix = "".join(c for c in prefix if c.isalnum())[:10]
-
-    # Enroll against the current TTS model: the id returned here can only be
-    # synthesized by that exact model.
+    # —— 注册 ——
+    sample_url = f"{server_url_base}/api/projects/{video_id}/voice-sample/{speaker_id}"
+    prefix = "".join(
+        c for c in f"v{video_id[:8]}{speaker_id.replace(' ', '').lower()[:6]}" if c.isalnum()
+    )[:10]
     target_model = clone_target_model()
-    logger.info(
-        f"[Clone] Step 3: DashScope voice enrollment — "
-        f"model={target_model}, prefix={prefix}, url={sample_url}"
-    )
+    logger.info(f"[Clone] enrolling {speaker_id}: model={target_model} prefix={prefix} url={sample_url}")
 
-    def _create_voice():
-        service = VoiceEnrollmentService()
-        voice_id = service.create_voice(
-            target_model=target_model,
-            prefix=prefix,
-            url=sample_url,
+    def _create() -> str:
+        return VoiceEnrollmentService().create_voice(
+            target_model=target_model, prefix=prefix, url=sample_url
         )
-        return voice_id
 
-    # Retry create_voice when DashScope reports download issues
-    max_create_attempts = 3
-    voice_id = None
-    for attempt in range(1, max_create_attempts + 1):
+    voice_id: Optional[str] = None
+    attempts = 3
+    for attempt in range(1, attempts + 1):
         try:
-            if attempt == 1 and emit is not None:
-                await emit({
-                    "phase": "voice_clone",
-                    "status": "enrolling",
-                    "speaker_id": speaker_id,
-                    "timeout_s": config.CLONE_ENROLL_TIMEOUT,
-                })
+            if attempt == 1:
+                await say("enrolling", timeout_s=config.CLONE_ENROLL_TIMEOUT)
             try:
                 voice_id = await asyncio.wait_for(
-                    loop.run_in_executor(None, _create_voice),
-                    timeout=config.CLONE_ENROLL_TIMEOUT,
+                    loop.run_in_executor(None, _create), timeout=config.CLONE_ENROLL_TIMEOUT
                 )
             except asyncio.TimeoutError:
-                # asyncio 的超时是"放弃等待"，不是"杀掉那个调用"：线程里的
-                # DashScope 请求会自己跑完（结果被丢弃）。消息要说人话，
-                # 否则日志里只剩一个空白的 TimeoutError。
+                # asyncio 的超时是"放弃等待"而不是"杀掉那个调用"：线程里的请求会自己
+                # 跑完，结果丢弃。消息要说人话，否则日志里只剩一个空白的 TimeoutError。
                 raise RuntimeError(
-                    f"注册音色超时（>{config.CLONE_ENROLL_TIMEOUT}s，"
-                    f"DashScope 无响应或正在排队）"
+                    f"注册音色超时（>{config.CLONE_ENROLL_TIMEOUT}s，DashScope 无响应或正在排队）"
                 ) from None
-            logger.info(
-                f"[Clone] Step 3 done: enrollment submitted, voice_id={voice_id} (attempt {attempt}/{max_create_attempts})"
-            )
-            # 新建音色是计费/配额动作（0.01 元/个 + 账号 1000 个免费额度，删除
-            # 不返还）。记账点只能是"创建成功"的这一行：上面两条缓存命中路径
-            # （ALREADY EXISTS）不花钱，重试失败的分支也没花。以前这里没有记账，
-            # 价格表里的 ("clone", "qwen-voice-enrollment") 规则从未被使用。
             usage_service.record(
-                video_id=video_id,
-                step="clone",
-                model="qwen-voice-enrollment",
-                detail=f"{speaker_id} -> {target_model}",
-                usage={"voices": 1},
+                video_id=video_id, step="clone", model="qwen-voice-enrollment",
+                detail=f"{speaker_id} -> {target_model}", usage={"voices": 1},
             )
             break
         except Exception as e:
             msg = str(e)
-            transient = any(
-                keyword in msg
-                for keyword in [
-                    "InputDownloadFailed",
-                    "download audio failed",
-                    "HTTP 415",
-                ]
-            )
-            logger.warning(
-                f"[Clone] create_voice failed on attempt {attempt}/{max_create_attempts}: {msg}"
-            )
-            if attempt == max_create_attempts or not transient:
+            transient = any(k in msg for k in ("InputDownloadFailed", "download audio failed", "HTTP 415"))
+            logger.warning(f"[Clone] create_voice attempt {attempt}/{attempts} failed: {msg}")
+            if attempt == attempts or not transient:
                 raise
-            await asyncio.sleep(3)   # not time.sleep: that stalls the event loop
-
+            await asyncio.sleep(3)
     if voice_id is None:
-        raise RuntimeError(f"Failed to create voice for {speaker_id} after retries")
+        raise RuntimeError(f"为 {speaker_id} 创建音色失败（已重试）")
 
-    # Step 4: Poll until voice is ready.
-    #
-    # ⚠️ 上限必须落在**单次调用**上，不是整个轮询窗口。
-    # 曾经我把 CLONE_POLL_CALL_TIMEOUT（本意是单次 query_voice 的天花板）套在
-    # 整个循环外面，等于把 30×10s 的等待压成 30s：enrollment 稍慢的说话人就整段
-    # 判死并报"查询音色状态超时（>30s）"，而同一批里快的说话人正常 —— 看起来
-    # 像"失败了一个、没有重试"。现在每次调用各自有上限，挂住的那次放弃、继续等。
-    max_attempts = config.CLONE_POLL_MAX_ATTEMPTS
-    poll_interval = config.CLONE_POLL_INTERVAL_S
-    logger.info(
-        f"[Clone] Step 4: Polling voice status (max {max_attempts} polls, "
-        f"interval {poll_interval}s, per-call timeout {config.CLONE_POLL_CALL_TIMEOUT}s)"
-    )
-
+    # —— 轮询 ——
+    # 上限落在**单次调用**上，不是整个窗口：曾经把单次上限套在整个循环外面，等于把
+    # 30×10s 压成 30s，enrollment 稍慢的说话人就整段判死。
     service = VoiceEnrollmentService()
-    last_status = "UNKNOWN"
-
-    def _query_once():
-        return service.query_voice(voice_id=voice_id)
-
-    for attempt in range(1, max_attempts + 1):
+    last = "UNKNOWN"
+    for i in range(1, config.CLONE_POLL_MAX_ATTEMPTS + 1):
         try:
             info = await asyncio.wait_for(
-                loop.run_in_executor(None, _query_once),
+                loop.run_in_executor(None, lambda: service.query_voice(voice_id=voice_id)),
                 timeout=config.CLONE_POLL_CALL_TIMEOUT,
             )
-        except asyncio.TimeoutError:
-            # 单次挂住：只放弃这一次。线程里那个请求会自己跑完（结果被丢弃）。
-            logger.warning(
-                f"[Clone] Poll {attempt}/{max_attempts}: query_voice timed out "
-                f"(>{config.CLONE_POLL_CALL_TIMEOUT}s); retrying"
-            )
-            await asyncio.sleep(poll_interval)
+        except Exception as e:  # noqa: BLE001 - 单次挂住/抖动：记一行继续等（TimeoutError 也在内）
+            logger.warning(f"[Clone] poll {i}/{config.CLONE_POLL_MAX_ATTEMPTS}: {e or 'timeout'}")
+            await asyncio.sleep(config.CLONE_POLL_INTERVAL_S)
             continue
-        except Exception as e:
-            # 网络/接口抖动：记一行继续等（与旧行为一致）。
-            logger.warning(f"[Clone] Poll {attempt}/{max_attempts} error: {e}")
-            await asyncio.sleep(poll_interval)
-            continue
-
-        last_status = (info or {}).get("status", "UNKNOWN")
-        logger.info(
-            f"[Clone] Poll {attempt}/{max_attempts}: voice={voice_id}, status={last_status}"
-        )
-        if last_status == "OK":
-            break
-        if last_status == "UNDEPLOYED":
-            raise RuntimeError(
-                f"Voice clone failed (UNDEPLOYED) for {speaker_id}. "
-                "Audio quality may be insufficient."
-            )
-        await asyncio.sleep(poll_interval)
-    else:
-        raise RuntimeError(
-            f"Voice clone timed out for {speaker_id}: still {last_status} after "
-            f"{max_attempts} polls (~{max_attempts * poll_interval}s)"
-        )
-    logger.info(f"[Clone] Step 4 done: voice ready! voice_id={voice_id}")
-
-    # Step 5: Cache and persist, tagged with the model it was created for
-    logger.info("[Clone] Step 5: Saving voice_id to cache and disk")
-    _cloned_voice_map.setdefault(video_id, {})[speaker_id] = voice_id
-    save_clone_entry(video_dir, speaker_id, voice_id, target_model)
-    logger.info(
-        f"[Clone] ========== Voice cloning COMPLETE for {speaker_id}: "
-        f"voice_id={voice_id} (target_model={target_model}) =========="
+        last = (info or {}).get("status", "UNKNOWN")
+        if last == "OK":
+            return voice_id
+        if last == "UNDEPLOYED":
+            raise RuntimeError(f"为 {speaker_id} 克隆失败（UNDEPLOYED），素材质量可能不足")
+        await asyncio.sleep(config.CLONE_POLL_INTERVAL_S)
+    raise RuntimeError(
+        f"为 {speaker_id} 克隆超时：{config.CLONE_POLL_MAX_ATTEMPTS} 次轮询后仍是 {last}"
     )
 
-    # A genuinely new enrollment — the one path that consumes quota (0.01 元/音色,
-    # 1000 free per account in Beijing). Cache hits above are free.
-    return voice_id, False
 
-
-def forget_cloned_voices(video_id: str) -> None:
-    """丢弃这个工程的内存音色映射（删除工程时调用）。
-
-    磁盘上的 voice_clones.json 随目录一起被删，但内存里的 dict 不会 —— 留着
-    它，重新上传同一段视频时会直接命中"已克隆"，让一个已经被删掉的工程在内存
-    里留下痕迹。
-    """
-    _cloned_voice_map.pop(video_id, None)
-
-
-def get_cloned_voice(video_id: str, speaker_id: str) -> Optional[str]:
-    """
-    Cached cloned voice_id for a speaker, or None.
-
-    Only returns a voice that was enrolled against the *current* TTS model:
-    cloned voices cannot cross models, so a stale id would be rejected at
-    synthesis time. Deliberately a cheap disk lookup with no network call —
-    the pipeline calls this once per segment.
-    """
-    if video_id in _cloned_voice_map and speaker_id in _cloned_voice_map[video_id]:
-        return _cloned_voice_map[video_id][speaker_id]
-
-    voice_id = _cached_voice_for_model(get_video_dir(video_id), speaker_id)
-    if voice_id:
-        _cloned_voice_map.setdefault(video_id, {})[speaker_id] = voice_id
-    return voice_id
-
-
-async def preview_cloned_voice(
-    video_id: str,
-    speaker_id: str,
-    target_language: str = "Chinese",
-) -> Optional[str]:
-    """
-    Generate a short preview TTS using the cloned voice.
-    Returns path to the preview audio file, or None if no cloned voice.
-    """
-    voice_id = get_cloned_voice(video_id, speaker_id)
-    if not voice_id:
-        return None
-
-    # Multi-language preview text
-    preview_texts = {
-        "Chinese": "你好，这是克隆后的声音效果展示。",
-        "English": "Hello, this is a demonstration of the cloned voice.",
-        "Japanese": "こんにちは、これはクローンされた音声のデモです。",
-        "Korean": "안녕하세요, 이것은 복제된 음성의 데모입니다.",
-        "French": "Bonjour, ceci est une démonstration de la voix clonée.",
-        "German": "Hallo, dies ist eine Demonstration der geklonten Stimme.",
-        "Spanish": "Hola, esta es una demostración de la voz clonada.",
-    }
-    text = preview_texts.get(target_language, preview_texts["English"])
-
-    video_dir = get_video_dir(video_id)
-    speaker_clone_dir = os.path.join(video_dir, "voice_clone", speaker_id)
-    os.makedirs(speaker_clone_dir, exist_ok=True)
-    preview_path = os.path.join(speaker_clone_dir, "preview.mp3")
-
-    loop = asyncio.get_running_loop()
-
-    def _synthesize():
-        # 走 tts_service 的唯一构造点，而不是自己 new 一个 SpeechSynthesizer：
-        # 两份实现里必有一份会漏掉后来加的规则 —— 原来这份就既不记账，也不受
-        # instruction 能力探测的保护（旧版 SDK 下会以另一种方式炸）。
-        from app.services import tts_service
-        audio = tts_service._synth_audio(
-            clone_target_model(),
-            voice_id,
-            text,
-            video_id=video_id,
-            detail=f"preview({speaker_id})",
+async def verify_voice(voice_id: str) -> bool:
+    """已登记的音色在服务端是否还活着（闲置超过一年会被删）。网络问题按"不确定"返回 False。"""
+    try:
+        info = await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(
+                None, lambda: VoiceEnrollmentService().query_voice(voice_id=voice_id)
+            ),
+            timeout=config.CLONE_POLL_CALL_TIMEOUT,
         )
-        if not audio:
-            raise RuntimeError("Preview TTS returned empty audio")
-        with open(preview_path, "wb") as f:
-            f.write(audio)
-        return preview_path
+        return (info or {}).get("status") == "OK"
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[Clone] could not verify {voice_id}: {e}")
+        return False
 
-    result = await loop.run_in_executor(None, _synthesize)
-    logger.info(f"[{video_id}] Preview audio generated for {speaker_id}: {result}")
-    return result
+
+_PREVIEW_TEXTS = {
+    "Chinese": "你好，这是克隆后的声音效果展示。",
+    "English": "Hello, this is a demonstration of the cloned voice.",
+    "Japanese": "こんにちは、これはクローンされた音声のデモです。",
+    "Korean": "안녕하세요, 이것은 복제된 음성의 데모입니다.",
+    "French": "Bonjour, ceci est une démonstration de la voix clonée.",
+    "German": "Hallo, dies ist eine Demonstration der geklonten Stimme.",
+    "Spanish": "Hola, esta es una demostración de la voz clonada.",
+}
+
+
+def preview_path(video_id: str, label: str) -> str:
+    """只读：被 GET 路由调用，所以不能建目录（`get_video_dir` 会 makedirs）。写入处自己建。"""
+    return os.path.join(video_dir_path(video_id), "voice_clone", label, "preview.mp3")
+
+
+async def preview_voice(video_id: str, voice: str, model: str, language: str, label: str) -> str:
+    """用某个音色（克隆或系统）合成一句固定的试听语，返回 mp3 路径。"""
+    from app.services import tts_service
+    text = _PREVIEW_TEXTS.get(language, _PREVIEW_TEXTS["English"])
+    path = preview_path(video_id, label)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+
+    def _go() -> str:
+        audio = tts_service._synth_audio(model, voice, text, video_id=video_id, detail=f"preview({label})")
+        if not audio:
+            raise RuntimeError("试听合成返回了空音频")
+        with open(path, "wb") as f:
+            f.write(audio)
+        return path
+
+    return await asyncio.get_running_loop().run_in_executor(None, _go)

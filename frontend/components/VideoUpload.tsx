@@ -1,9 +1,8 @@
 
 import React, { useEffect, useRef, useState } from 'react';
-import SeparationModeSelector from './SeparationModeSelector';
 import ProcessingSettings from './ProcessingSettings';
-import { getAsrLanguages, getLanguageVoices } from '../services/apiService';
-import type { SeparationMode, SeparationBackends, VoiceOption } from '../services/apiService';
+import { getAsrLanguages, getLanguageVoices } from '../net/client';
+import type { SeparationMode, SeparationBackends, VoiceOption } from '../net/types';
 import {
   ALL_LANGUAGES,
   CHINESE_ACCENTS,

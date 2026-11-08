@@ -13,7 +13,7 @@ export default {
   content: [
     './index.html',
     './*.{ts,tsx}',
-    './{components,services,utils,hooks,pages,contexts}/**/*.{js,ts,jsx,tsx}',
+    './{components,services,utils,hooks,pages,contexts,features,store,net}/**/*.{js,ts,jsx,tsx}',
   ],
   theme: {
     // `extend`, not a replacement: the default palette and scales stay, which

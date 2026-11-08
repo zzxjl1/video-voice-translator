@@ -176,7 +176,7 @@ def _segment_entries(state: VideoState) -> list[dict]:
     for seg in state.segments:
         if not seg.audio_path or not os.path.exists(seg.audio_path):
             continue
-        if getattr(seg, "muted", False):
+        if getattr(seg, "muted", False) or getattr(seg, "kind", "speech") != "speech":
             continue
         slot = max(0.0, (seg.end_time or 0.0) - (seg.start_time or 0.0))
         if slot <= 0:

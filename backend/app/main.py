@@ -1,107 +1,78 @@
-"""
-FastAPI application entry point.
-"""
+"""FastAPI 入口。"""
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, APIRouter
+from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app import commands  # noqa: F401  - 导入即注册全部命令
 from app import config
-from app.models import repair_interrupted_states
-from app.routers import models, subtitles, video
+from app.bus import bus
+from app.routers import meta, models, projects, subtitles
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
-    force=True,  # Override any existing logging config (e.g. from uvicorn)
+    force=True,       # 覆盖 uvicorn 已经装好的日志配置
 )
-logging.getLogger().setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup / shutdown tasks."""
-    logger.info("Running startup tasks...")
+    # 线程池里的命令/任务要回到事件循环线程去投递事件，得知道循环是哪个。
+    bus.bind(asyncio.get_running_loop())
 
-    # Nothing to preload: vocal separation runs either in the browser (the
-    # server only hands over the ONNX weights). There is no local
-    # model to warm up, which is exactly the point on a small host.
-    parts = []
-    for name, info in config.separation_capabilities().items():
-        if info["available"]:
-            parts.append(f"{name}=available")
-        else:
-            parts.append(f"{name}=unavailable ({info['reason']})")
-    logger.info(
-        "Vocal separation backends: %s (default mode: %s)",
-        ", ".join(parts),
-        config.SEPARATION_MODE,
-    )
-
-    # A process that died mid-run (deploy, OOM, Ctrl-C) leaves projects whose
-    # status is still "transcribing"/"synthesizing". Nothing is running them now,
-    # and the UI would show them as in progress forever.
-    repaired = repair_interrupted_states()
-    if repaired:
-        logger.info("Marked %d interrupted project(s) as cancelled (resumable)", repaired)
-
-    logger.info("Startup tasks complete.")
+    parts = [
+        f"{name}={'available' if info['available'] else 'unavailable (' + info['reason'] + ')'}"
+        for name, info in config.separation_capabilities().items()
+    ]
+    logger.info("Vocal separation backends: %s (default mode: %s)", ", ".join(parts), config.SEPARATION_MODE)
+    logger.info("Commands registered: %d", len(commands.registry.all_commands()))
     yield
     logger.info("Shutting down.")
 
 
 app = FastAPI(
     title="Video Voice Translator API",
-    description="Backend API for video transcription, translation, and TTS",
-    version="1.0.0",
+    description="Chat-driven video dubbing: one project document, one command set shared by the UI and the AI.",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=config.CORS_ORIGINS,
-    # allow_credentials 与通配来源不能同时成立：浏览器会拒绝这种组合，而且
-    # CORS_ORIGINS 默认就是 "*"，等于开着"任意站点都能带凭据驱动这个后端"。
-    # 本服务没有 cookie/登录态（路径令牌才是凭据），所以通配时关掉它。
+    # 通配来源与 credentials 不能同时成立（浏览器会拒绝）。本服务没有 cookie 登录态，
+    # 路径令牌才是凭据，所以通配时关掉它。
     allow_credentials="*" not in config.CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# API Router to wrap everything under /api
-api_router = APIRouter(prefix="/api")
+api = APIRouter(prefix="/api")
 
 
-@api_router.get("/")
-async def root():
-    return {"message": "Video Voice Translator API", "version": "1.0.0"}
-
-
-@api_router.get("/health")
+@api.get("/health")
 async def health():
     return {
         "status": "ok",
         "asr_model": config.ASR_MODEL,
         "tts_model": config.TTS_MODEL,
         "llm_model": config.LLM_MODEL,
+        "omni_model": config.OMNI_MODEL,
         "separation_mode_default": config.SEPARATION_MODE,
-        # Per-backend availability + the reason an option is unusable, so the
-        # UI never has to guess (see GET /api/models/separator for the same
-        # data alongside the browser model's parameters).
         "separation_backends": config.separation_capabilities(),
     }
 
 
-api_router.include_router(video.router)
-api_router.include_router(video.tts_router)
-api_router.include_router(video.asr_router)
-api_router.include_router(models.router)
-api_router.include_router(subtitles.router)
-api_router.include_router(subtitles.video_router)
+# upload 没有 {video_id}，所以在带校验依赖的 router 之外
+api.include_router(projects.upload_router)
+api.include_router(projects.router)
+api.include_router(meta.router)
+api.include_router(models.router)
+api.include_router(subtitles.router)
 
-app.include_router(api_router)
+app.include_router(api)

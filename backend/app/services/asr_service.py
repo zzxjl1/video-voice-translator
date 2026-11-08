@@ -36,8 +36,6 @@ from app import config
 from app.services import usage_service
 # 复用时长的探测（ffprobe）：subtitle_service 只依赖 config，不会成环。
 from app.services.subtitle_service import probe_duration
-from app.models import Segment
-from app.models import _atomic_write_json
 
 logger = logging.getLogger(__name__)
 
@@ -150,12 +148,14 @@ async def poll_transcription_result(
     raise TimeoutError("ASR task did not complete within timeout")
 
 
-async def parse_asr_results(results: list[dict]) -> list[Segment]:
+async def parse_asr_results(results: list[dict]) -> list[dict]:
     """
-    Parse Ali ASR result JSON into Segment list.
+    Parse Ali ASR result JSON into a list of plain line dicts
+    (`id, speaker_id, start_time, end_time, text`). Persisting them is the
+    caller's job (`store.mutate`): this service only talks to the provider.
     Each result contains a transcription_url that we need to fetch.
     """
-    segments: list[Segment] = []
+    segments: list[dict] = []
 
     async with httpx.AsyncClient(timeout=config.API_GENERAL_TIMEOUT) as client:
         for result in results:
@@ -176,19 +176,15 @@ async def parse_asr_results(results: list[dict]) -> list[Segment]:
                 for sentence in sentences:
                     seg_id = f"seg-{uuid.uuid4().hex[:8]}"
                     speaker_id = str(sentence.get("speaker_id", "0"))
-                    segments.append(Segment(
-                        id=seg_id,
-                        speaker_id=speaker_id,
-                        speaker_label=f"Speaker {speaker_id}",
-                        start_time=sentence.get("begin_time", 0) / 1000.0,  # ms -> seconds
-                        end_time=sentence.get("end_time", 0) / 1000.0,
-                        text=sentence.get("text", ""),
-                    ))
+                    segments.append({
+                        "id": seg_id,
+                        "speaker_id": speaker_id,
+                        "start_time": sentence.get("begin_time", 0) / 1000.0,  # ms -> seconds
+                        "end_time": sentence.get("end_time", 0) / 1000.0,
+                        "text": sentence.get("text", ""),
+                    })
 
     return segments
-
-
-from app.models import Segment, get_video_dir
 
 
 def _build_attempt_plan() -> list[tuple[str, bool]]:
@@ -231,14 +227,13 @@ async def _run_transcription(
     return results, usage
 
 
-async def transcribe_video(video_id: str, video_path: str, audio_path: str, file_serve_url: str) -> list[Segment]:
+async def transcribe_video(video_id: str, video_path: str, audio_path: str, file_serve_url: str) -> list[dict]:
     """
     Full transcription pipeline:
     1. Extract audio from video
     2. Submit to Ali ASR (with graceful degradation if diarization fails)
     3. Poll for results
-    4. Parse into Segments
-    5. Save result to disk
+    4. Parse into line dicts and return them (the caller stores them)
     """
     # Extract audio if not already done
     if not os.path.exists(audio_path):
@@ -311,28 +306,4 @@ async def transcribe_video(video_id: str, video_path: str, audio_path: str, file
     segments = await parse_asr_results(results)
     logger.info(f"--- [ASR] Step 4: Parsing complete. Generated {len(segments)} segments. ---")
     
-    # Save PROCESSED segments to disk (for easy recovery, ASR ONLY)
-    video_dir = get_video_dir(video_id)
-    result_path = os.path.join(video_dir, "asr_result.json")
-    try:
-        # Use explicit dict literal to include only ASR-relevant fields
-        asr_only_segments = [
-            {
-                "id": s.id,
-                "speaker_id": s.speaker_id,
-                "speaker_label": s.speaker_label,
-                "start_time": s.start_time,
-                "end_time": s.end_time,
-                "text": s.text,
-            }
-            for s in segments
-        ]
-            
-        # 原子写：asr_result.json 是"分段已就绪"的凭据，写一半被杀会让工程
-        # 下次打开时分段全部消失（load_state 只能降级）。
-        _atomic_write_json(result_path, asr_only_segments)
-        logger.info(f"Saved processed ASR segments to {result_path}")
-    except Exception as e:
-        logger.warning(f"Failed to save processed ASR segments: {e}")
-        
     return segments

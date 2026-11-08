@@ -519,9 +519,11 @@ def build_cues(
     """
     # 隐藏的行不进字幕：预览叠加、SRT 下载、导出内嵌三条路都走这里，所以在这
     # 一处过滤就够。它的配音在时间轴上照常 —— 隐藏只管画面上的字。
+    # 标成音乐/噪音的行（ASR 把非语音误识成了话）同理不出字幕。
     ordered = sorted(
         (s for s in segments
          if not getattr(s, "hidden", False)
+         and getattr(s, "kind", "speech") == "speech"
          and ((getattr(s, "translated_text", "") or "").strip()
               or (getattr(s, "text", "") or "").strip())),
         key=lambda s: getattr(s, "start_time", 0.0) or 0.0,
@@ -539,11 +541,12 @@ def build_cues(
         # Cover the real dub. Speech-rate fitting can leave the audio longer
         # than the ASR slot, and a cue that ends early looks like a bug.
         if probe_audio:
+            audio_duration = getattr(seg, "actual_duration", None)
             audio_path = getattr(seg, "audio_path", None)
-            if audio_path and os.path.exists(audio_path):
+            if not audio_duration and audio_path and os.path.exists(audio_path):
                 audio_duration = probe_duration(audio_path)
-                if audio_duration:
-                    end = max(end, start + audio_duration)
+            if audio_duration:
+                end = max(end, start + audio_duration)
 
         # Never overlap the next cue.
         if index + 1 < len(ordered):
