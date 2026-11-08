@@ -37,7 +37,7 @@ export class EventClient {
 
   constructor(opts: EventClientOptions) {
     this.opts = {
-      fetchImpl: opts.fetchImpl ?? ((...a) => fetch(...a)),
+      fetchImpl: opts.fetchImpl ?? ((...a: Parameters<typeof fetch>) => fetch(...a)),
       backoff: opts.backoff ?? { initial: 500, max: 8000 },
       ...opts,
     };

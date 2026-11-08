@@ -67,6 +67,10 @@ async def retranslate(ctx: Ctx, lines: Optional[list] = None, length: Optional[s
         lambda job: jobs.translate_lines(ctx.video_id, job, ids=ids, length_hint=length, extra_prompt=instruction),
     )
     failed = await job.task
+    # 任务内部已经把异常记进 job.error（wrapper 不抛）：不看它，"全部失败"会被
+    # 当成 failed=0 上报，AI 和界面都以为成功了。
+    if job.error:
+        raise CommandError(f"翻译任务失败：{job.error}")
     after = store.require_state(ctx.video_id)
     shown = [after.segments.index(after.segment(i)) + 1 for i in (ids or []) if after.segment(i)]
     return {"retranslated": shown or "全部缺失/过期的行", "failed": len(failed or []),

@@ -90,6 +90,8 @@ async def redub(ctx: Ctx, lines: Optional[list] = None, force: bool = False):
         lambda job: jobs.dub_lines(ctx.video_id, job, ids=ids, force=force),
     )
     failed = await job.task
+    if job.error:                                   # 见 retranslate 里的说明
+        raise CommandError(f"配音任务失败：{job.error}")
     after = store.require_state(ctx.video_id)
     rows = []
     for i in (ids or []):

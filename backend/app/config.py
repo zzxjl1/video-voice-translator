@@ -193,6 +193,12 @@ LLM_SOURCE_CHARS_PER_TOKEN = _env_float("LLM_SOURCE_CHARS_PER_TOKEN", 1.5)
 # separate limit someone has to keep in sync with it.
 LLM_CHUNK_CONTEXT_SEGMENTS = _env_int("LLM_CHUNK_CONTEXT_SEGMENTS", 3)
 LLM_CHUNK_MAX_RETRIES = _env_int("LLM_CHUNK_MAX_RETRIES", 2)
+# 建连超时。读/写仍用 LLM_TIMEOUT；分开是因为"服务端根本连不上"要在十几秒内
+# 暴露出来进重试，而不是挂满 180 秒才失败。
+LLM_CONNECT_TIMEOUT = _env_int("LLM_CONNECT_TIMEOUT", 15)
+# 重试之间的固定等待。连接类错误（网络抖动、对端限流）通常几秒内自愈；此前
+# attempts 之间没有任何等待，一整轮 3 次全灭只用了 10 秒。
+LLM_RETRY_SECONDS = _env_float("LLM_RETRY_SECONDS", 3.0)
 
 # Extract a glossary (names, jargon, product terms) from the full source script
 # before translating, so terminology stays consistent across chunks.

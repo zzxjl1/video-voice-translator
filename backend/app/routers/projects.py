@@ -195,12 +195,13 @@ async def setup_and_start(video_id: str, body: SetupBody):
 
 
 def _after_init(video_id: str, job) -> None:
-    """初始化任务结束后：成功就发第一条聊天消息。"""
+    """初始化任务结束后：进了编辑器（stage=ready）就发第一条聊天消息 —— 成功与失败都要发，
+    失败的那条会说明缺什么、怎么补（见 agent.welcome_text）。没有转写结果的失败不算。"""
     async def watch():
         try:
             await job.task
         except Exception:
-            return
+            pass                          # 原因已写进 init_report（见 jobs.initialize）
         if store.exists(video_id) and store.require_state(video_id).stage == "ready":
             agent.post_welcome(video_id)
     asyncio.create_task(watch())

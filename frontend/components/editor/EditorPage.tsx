@@ -204,7 +204,9 @@ const EditorPage: React.FC<Props> = ({ project: api_, file, onHome }) => {
 
   const fill = useCallback(async () => {
     if (project!.needs.translate) { const r = await run('retranslate', {}); if (!r.ok) { setNotice(r.error ?? '翻译失败'); return; } }
-    if (dubbing && project!.needs.dub) { const r = await run('redub', {}); if (!r.ok) setNotice(r.error ?? '配音失败'); }
+    // 不看 needs.dub 的快照：翻译刚完成时它还是旧值（新译出的句子会变成"配音过期"），
+    // redub 自己按当前指纹只补缺的，没有可补的就空跑一次。
+    if (dubbing) { const r = await run('redub', {}); if (!r.ok) setNotice(r.error ?? '配音失败'); }
   }, [project, dubbing, run]);
 
   // 顶栏的语言切换：会让译文/配音大面积过期，所以先问一下

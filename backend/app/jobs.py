@@ -51,6 +51,9 @@ class Job:
     done: int = 0
     total: int = 0
     task: Optional[asyncio.Task] = None
+    # body 抛出的异常会记在这里（wrapper 自己不抛）。调用方 `await job.task` 拿到的
+    # 返回值里看不出失败 —— 不看这个字段，就会把"全军覆没"当成"0 句失败"报成功。
+    error: Optional[str] = None
 
     def snapshot(self) -> dict:
         return {
@@ -137,6 +140,7 @@ async def run(
             raise
         except Exception as e:
             outcome, error = "failed", str(e)
+            job.error = str(e)
             logger.error(f"[{video_id}] job {kind} failed: {e}", exc_info=True)
         finally:
             _jobs.get(video_id, {}).pop(job.id, None)
@@ -505,7 +509,13 @@ async def initialize(video_id: str, job: Job, server_url: str) -> dict:
         has_lines = bool(store.require_state(video_id).segments)
         # 有转写结果就进编辑器（剩下的缺口在聊天里补），否则才算失败
         stage(STAGE_READY if has_lines else STAGE_FAILED, None if has_lines else str(e))
-        report.update({"error": str(e)})
+        report.update({"error": str(e)[:300]})
+        if has_lines:
+            # 失败也把报告写回：欢迎消息和界面要从 init_report.error 读原因，
+            # 只改局部变量的话，用户看到的是"没有解释的半成品"。
+            def failed(s):
+                s.init_report = report
+            store.mutate(video_id, failed, actor="system", cmd="init_report", summary="初始化未全部完成", undoable=False)
         raise
 
 

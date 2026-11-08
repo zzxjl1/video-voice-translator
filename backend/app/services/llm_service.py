@@ -18,12 +18,14 @@ Two dubbing-specific pieces are layered on top:
   language. This is what keeps the dubbed audio roughly aligned with the video
   instead of being time-stretched on playback.
 """
+import asyncio
 import datetime
 import json
 import logging
 import os
 from typing import Any, Optional
 
+import httpx
 from openai import AsyncOpenAI
 
 from app import config
@@ -32,11 +34,24 @@ from app.services import speech_timing, usage_service
 
 logger = logging.getLogger(__name__)
 
+# max_retries=0：重试策略完全归业务层。openai 客户端自带的 2 次内部重试间隔
+# 不到 1 秒，和业务层的重试叠在一起时，日志里同一件事会出现两套计数。
 _client = AsyncOpenAI(
     api_key=config.LLM_API_KEY,
     base_url=config.LLM_BASE_URL,
-    timeout=config.LLM_TIMEOUT,
+    timeout=httpx.Timeout(float(config.LLM_TIMEOUT), connect=float(config.LLM_CONNECT_TIMEOUT)),
+    max_retries=0,
 )
+
+
+def _is_connection_error(e: Optional[BaseException]) -> bool:
+    from openai import APIConnectionError, APITimeoutError
+    return isinstance(e, (APIConnectionError, APITimeoutError)) or "connection" in str(e).lower()
+
+
+def _is_auth_error(e: Optional[BaseException]) -> bool:
+    from openai import AuthenticationError, PermissionDeniedError, NotFoundError
+    return isinstance(e, (AuthenticationError, PermissionDeniedError, NotFoundError))
 
 _SYSTEM_PROMPT = (
     "You are a professional dubbing translator. "
@@ -292,21 +307,27 @@ Script:
 {source}
 """
 
-    try:
-        raw, _ = await _chat(prompt, video_id=video_id, detail="glossary")
-        clean = raw.replace("```json", "").replace("```", "").lstrip("\ufeff").strip()
-        start, end = clean.find("{"), clean.rfind("}")
-        if start == -1 or end == -1:
-            raise ValueError("no JSON object found")
-        data = json.loads(clean[start : end + 1])
-        glossary = {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
-        glossary = dict(list(glossary.items())[: config.GLOSSARY_MAX_TERMS])
-        logger.info(f"Extracted glossary with {len(glossary)} terms")
-        _dump(os.path.join(llm_dir, "glossary_extracted.json"), glossary, "glossary")
-        return glossary
-    except Exception as e:
-        logger.warning(f"Glossary extraction failed, continuing without it: {e}")
-        return {}
+    # 两次机会、中间退避一次：术语表虽是尽力而为，但一次网络抖动就丢掉它，
+    # 会让整批翻译的术语一致性跟着受损 —— 值得等 2 秒再试一次。
+    for attempt in (1, 2):
+        if attempt > 1:
+            await asyncio.sleep(config.LLM_RETRY_SECONDS)
+        try:
+            raw, _ = await _chat(prompt, video_id=video_id, detail="glossary")
+            clean = raw.replace("```json", "").replace("```", "").lstrip("\ufeff").strip()
+            start, end = clean.find("{"), clean.rfind("}")
+            if start == -1 or end == -1:
+                raise ValueError("no JSON object found")
+            data = json.loads(clean[start : end + 1])
+            glossary = {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+            glossary = dict(list(glossary.items())[: config.GLOSSARY_MAX_TERMS])
+            logger.info(f"Extracted glossary with {len(glossary)} terms")
+            _dump(os.path.join(llm_dir, "glossary_extracted.json"), glossary, "glossary")
+            return glossary
+        except Exception as e:
+            if attempt == 2:
+                logger.warning(f"Glossary extraction failed, continuing without it: {e}")
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -558,13 +579,19 @@ async def _translate_chunk(
     with_tags: bool = False,
     custom_prompt: str = "",
     length_hint: str | None = None,
+    error_sink: dict | None = None,
+    log_name: str = "",
 ) -> tuple[dict[str, str], set[str]]:
     """
     Translate one chunk. Returns (id -> translation, failed ids).
 
     Retries the whole chunk on parse/transport errors; any segment still
     missing after the retries is reported as failed instead of aborting.
+    `error_sink["last"]`（给了 sink 时）带出最后一次失败的原因，供"全军覆没"
+    的最终报错使用；`log_name` 是日志里的名字（补翻阶段用"补翻 N"，否则日志
+    里的 chunk_index=900+ 会被读成"有 900 个分块"）。
     """
+    name = log_name or f"Chunk {chunk_index}"
     prompt = _build_chunk_prompt(
         chunk, context, glossary, target_language, with_tags, custom_prompt, length_hint)
     _dump(os.path.join(llm_dir, f"prompt_chunk{chunk_index:03d}.txt"), prompt, "prompt")
@@ -576,6 +603,11 @@ async def _translate_chunk(
     result: dict[str, str] = {}
 
     for attempt in range(1, config.LLM_CHUNK_MAX_RETRIES + 2):
+        if attempt > 1:
+            # 失败后的固定间隔（覆盖下面全部三条失败路径：连不上、不可解析、缺 id）。
+            # 之前 attempts 之间零等待：一整轮重试 10 秒内全灭，对网络抖动毫无意义。
+            logger.info(f"{name}: retrying in {config.LLM_RETRY_SECONDS:.0f}s (attempt {attempt})")
+            await asyncio.sleep(config.LLM_RETRY_SECONDS)
         try:
             raw, _ = await _chat(prompt, video_id=video_id, detail=f"chunk{chunk_index:03d}")
             _dump(
@@ -590,7 +622,7 @@ async def _translate_chunk(
                 # 同一段中文 3/3 次返回同样形状（NDJSON），三次机会全灭。
                 last_error = e
                 logger.warning(
-                    f"Chunk {chunk_index} attempt {attempt} unparseable: {e}"
+                    f"{name} attempt {attempt} unparseable: {e}"
                 )
                 prompt = (
                     _build_chunk_prompt(
@@ -620,7 +652,7 @@ async def _translate_chunk(
                 result[key] = str(entry.get("translatedText", "")).strip()
             if duplicates:
                 logger.warning(
-                    f"Chunk {chunk_index}: model returned duplicate ids "
+                    f"{name}: model returned duplicate ids "
                     f"{sorted(set(duplicates))} — keeping the last answer"
                 )
             result = {k: v for k, v in result.items() if v}
@@ -630,7 +662,7 @@ async def _translate_chunk(
 
             last_error = ValueError(f"missing ids: {sorted(missing)[:5]}")
             logger.warning(
-                f"Chunk {chunk_index} attempt {attempt} incomplete "
+                f"{name} attempt {attempt} incomplete "
                 f"({len(missing)} ids missing), retrying"
             )
             # Give the model another go, this time demanding the missing ids.
@@ -644,9 +676,15 @@ async def _translate_chunk(
             )
         except Exception as e:
             last_error = e
-            logger.warning(f"Chunk {chunk_index} attempt {attempt} failed: {e}")
+            logger.warning(f"{name} attempt {attempt} failed: {e}")
+            if _is_auth_error(e):
+                # 401/403/404/400 不会因为多等几秒就变好：立刻放弃这个 chunk，
+                # 把失败原因带出去，而不是把同样的请求原样打满 3 次。
+                break
 
-    logger.error(f"Chunk {chunk_index} failed after retries: {last_error}")
+    logger.error(f"{name} failed after retries: {last_error}")
+    if error_sink is not None:
+        error_sink["last"] = last_error
     # Never throw away what the last attempt DID produce: a truncated response
     # often yields most of the chunk, and dropping it would send every one of
     # those lines to the second pass — or out of the dub entirely.
@@ -750,6 +788,7 @@ async def translate_script(
         f"[{video_id}] Translating {len(items)} segments to {target_language} "
         f"({config.LLM_MODEL}, temp={config.LLM_TEMPERATURE})"
     )
+    chunk_errors: dict = {}          # 各分块最后一次失败的原因，给最终报错用
 
     # ---- Glossary: local file wins, then auto-extraction ----
     glossary = _load_local_glossary(video_dir)
@@ -807,6 +846,7 @@ async def translate_script(
             with_tags=bool(text_overrides),
             custom_prompt=custom_prompt,
             length_hint=length_hint,
+            error_sink=chunk_errors,
             )
         translations.update(chunk_result)
         failed_ids |= chunk_failed
@@ -850,11 +890,13 @@ async def translate_script(
                 glossary=glossary,
                 target_language=target_language,
                 llm_dir=llm_dir,
-                chunk_index=900 + index,  # distinct prefix in the saved diagnostics
+                chunk_index=900 + index,  # 诊断文件用 900+ 前缀，与正片区分开
                 video_id=video_id,
                 with_tags=bool(text_overrides),
                 custom_prompt=custom_prompt,
                 length_hint=length_hint,
+                error_sink=chunk_errors,
+                log_name=f"补翻 {index + 1}",
             )
             recovered += len(result)
             translations.update(result)
@@ -872,9 +914,15 @@ async def translate_script(
     if not translations:
         # The raise sits AFTER the second pass on purpose: a first pass that
         # failed entirely still gets its repair chance before this is an error.
+        reason = str(chunk_errors.get("last") or "unknown")
+        hint = (
+            "连接失败（网络/代理/DNS 或服务端暂时不可达）" if _is_connection_error(chunk_errors.get("last"))
+            else "鉴权失败（检查 LLM_API_KEY）" if _is_auth_error(chunk_errors.get("last"))
+            else "请求被拒绝（原因见上）"
+        )
         raise RuntimeError(
-            "Translation produced no results at all — check the LLM credentials "
-            f"and the saved prompts in {llm_dir}"
+            f"翻译一条结果都没产出：{hint} — 最后的错误：{reason}；"
+            f"端点 {config.LLM_BASE_URL}，完整请求与响应已存到 {llm_dir}"
         )
 
     # ---- Length report: where did the model overshoot its slot? ----

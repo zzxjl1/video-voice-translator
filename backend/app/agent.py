@@ -444,8 +444,18 @@ def welcome_text(video_id: str) -> str:
     rep = state.init_report or {}
     s = view.settings_view(state)
     lang = s.get("targetLanguage") or "目标语言"
-    parts = [f"初始化完成：共 {len(state.segments)} 句，{len(state.speakers)} 位说话人，翻译成 **{lang}**"
+    error = rep.get("error")
+    parts = [f"初始化{'没有全部完成' if error else '完成'}：共 {len(state.segments)} 句，{len(state.speakers)} 位说话人，翻译成 **{lang}**"
              + (f"（{s['accent']}）" if s.get("accent") else "") + "。"]
+    if error:
+        # 报告只在失败时才有 error；缺多少直接按当前状态数（失败中途的报告是半份）。
+        from app import status as _status
+        needs = _status.needs(state)
+        parts.append(
+            f"中途出错：{error}。已完成的部分都在，缺 {needs['translate']} 句译文"
+            + (f"、{needs['dub']} 句配音" if state.enable_dubbing else "")
+            + "。跟我说「补齐」就会只补缺的，不用重跑。"
+        )
     mode = []
     mode.append("配音" if state.enable_dubbing else "仅字幕（不配音）")
     if state.enable_dubbing and state.enable_voice_clone:
