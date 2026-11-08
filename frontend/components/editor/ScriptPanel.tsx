@@ -84,7 +84,7 @@ const ScriptPanel: React.FC<Props> = ({
         <span className="text-[10px] font-bold uppercase tracking-widest text-gray-400">{lines.length} 句</span>
       </div>
 
-      <div ref={listRef} className="flex-grow overflow-y-auto p-5 space-y-4">
+      <div ref={listRef} className="flex-grow overflow-y-auto p-6 space-y-6 scroll-smooth">
         {lines.length === 0 ? (
           <div className="h-full flex items-center justify-center text-xs text-gray-400">还没有转写结果</div>
         ) : (
@@ -134,13 +134,13 @@ const LineCard = memo(({ line, speaker, color, active, flashBy, mixEntry, busy, 
     : flashBy
       ? 'ring-2 ring-sky-300 border-sky-300'
       : active
-        ? 'ring-2 ring-claude-accent/30 border-claude-accent shadow-lg'
+        ? 'ring-2 ring-claude-accent/30 border-claude-accent shadow-lg scale-[1.01]'
         : line.muted || nonSpeech
           ? 'border-dashed border-[#d8d8d2] opacity-70'
-          : 'border-[#e5e5e0] hover:border-[#d1d1cc] shadow-sm';
+          : 'border-[#e5e5e0] hover:border-[#d1d1cc] shadow-sm hover:shadow-md';
 
   return (
-    <div id={`line-${line.id}`} className={`relative p-5 rounded-2xl border bg-white space-y-4 transition-all duration-500 ${ring}`}>
+    <div id={`line-${line.id}`} className={`relative p-6 rounded-2xl border bg-white space-y-5 transition-all duration-500 ${ring}`}>
       {flashBy === 'ai' && (
         <span className="absolute -top-2.5 left-5 px-2 py-px rounded-full bg-claude-accent text-white text-[9px] font-bold uppercase tracking-widest shadow-sm">
           AI 刚改过

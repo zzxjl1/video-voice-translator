@@ -30,11 +30,23 @@ interface Props {
   draft?: string;
   onDraftConsumed?: () => void;
   suggestions?: string[];
+  /** 悬浮窗口的关闭按钮。 */
+  onClose?: () => void;
+  /** 由 FloatingChat 注入：标题栏同时是窗口的拖动区。 */
+  dragProps?: {
+    onPointerDown: (e: React.PointerEvent) => void;
+    onPointerMove: (e: React.PointerEvent) => void;
+    onPointerUp: (e: React.PointerEvent) => void;
+    onPointerCancel: (e: React.PointerEvent) => void;
+    style?: React.CSSProperties;
+    className?: string;
+    title?: string;
+  };
 }
 
 const ChatPanel: React.FC<Props> = ({
   chat, lineCount, disabled, disabledReason, onSend, onStop, onConfirm, onFocusLine,
-  draft, onDraftConsumed, suggestions = [],
+  draft, onDraftConsumed, suggestions = [], onClose, dragProps,
 }) => {
   const [text, setText] = useState('');
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -80,17 +92,31 @@ const ChatPanel: React.FC<Props> = ({
   const empty = chat.messages.length === 0 && !chat.streaming;
 
   return (
-    <div className="flex flex-col h-full bg-[#fbfbf9] border border-[#e5e5e0] rounded-3xl overflow-hidden shadow-sm">
-      <div className="px-6 py-5 border-b border-[#e5e5e0] flex items-center justify-between bg-white/60 backdrop-blur-md">
+    <div className="flex flex-col h-full bg-[#fbfbf9] overflow-hidden">
+      <div
+        {...dragProps}
+        className={`px-5 py-3.5 border-b border-[#e5e5e0] flex items-center justify-between bg-white/60 backdrop-blur-md shrink-0 ${dragProps?.className ?? ''}`}
+      >
         <h3 className="text-xs font-serif font-bold text-gray-700 flex items-center gap-2 tracking-wide">
           <span className={`w-1.5 h-1.5 rounded-full ${chat.busy ? 'bg-claude-accent animate-pulse' : 'bg-claude-accent'}`} />
           ASSISTANT
         </h3>
-        {chat.busy && (
-          <span className="text-[10px] uppercase font-bold tracking-tighter text-claude-accent/80">
-            {waiting ? '等你确认' : '处理中'}
-          </span>
-        )}
+        <div className="flex items-center gap-3">
+          {chat.busy && (
+            <span className="text-[10px] uppercase font-bold tracking-tighter text-claude-accent/80">
+              {waiting ? '等你确认' : '处理中'}
+            </span>
+          )}
+          {onClose && (
+            <button
+              onClick={onClose}
+              title="收起助手"
+              className="p-1 rounded-md text-gray-300 hover:text-gray-600 hover:bg-claude-paper transition-colors"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" /></svg>
+            </button>
+          )}
+        </div>
       </div>
 
       <div ref={scrollerRef} onScroll={onScroll} className="flex-grow overflow-y-auto px-5 py-5 space-y-4">

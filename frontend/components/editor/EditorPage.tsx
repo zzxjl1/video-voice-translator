@@ -17,6 +17,7 @@ import { DEFAULT_SUBTITLE_STYLE } from '../../net/types';
 import type { Line, SubtitleCapabilities, SubtitleCue, SubtitleStyle } from '../../net/types';
 import { containRect, overlayContainerStyle, overlayLineStyle, stripSubtitleTags, type Rect } from '../../utils/subtitleStyle';
 import ChatPanel from '../chat/ChatPanel';
+import FloatingChat from '../chat/FloatingChat';
 import ScriptPanel, { type ScriptActions } from './ScriptPanel';
 import TopBar from '../shell/TopBar';
 import SettingsPanel from './SettingsPanel';
@@ -241,72 +242,87 @@ const EditorPage: React.FC<Props> = ({ project: api_, file, onHome }) => {
       />
 
       {notice && (
-        <div className="shrink-0 bg-amber-50 border-b border-amber-200 px-6 py-2 flex items-center justify-between text-[12px] text-amber-800">
+        <div className="shrink-0 mt-8 bg-amber-50 border-b border-amber-200 px-6 py-2 flex items-center justify-between text-[12px] text-amber-800">
           <span>{notice}</span>
           <button onClick={() => setNotice(null)} className="font-bold hover:text-amber-950">知道了</button>
         </div>
       )}
 
-      <main className={`flex-grow min-h-0 grid gap-5 p-5 lg:p-6 ${chatOpen ? 'lg:grid-cols-[minmax(0,5fr)_minmax(0,4fr)_minmax(0,3.4fr)]' : 'lg:grid-cols-[minmax(0,5fr)_minmax(0,4fr)]'}`}>
-        {/* 左：视频 + 时间轴 */}
+      {/* 顶栏是 fixed 的（悬停展开时浮在画面上方），内容要给它让出顶部空间。
+          助手是悬浮卡片（不占栅格），所以这里始终是「视频 | 脚本」两栏。 */}
+      <main className="flex-grow min-h-0 grid gap-5 p-5 lg:p-6 pt-10 lg:pt-11 lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]">
+        {/* 左：视频撑满剩余高度 + 时间轴贴底 —— 不再留出空白 */}
         <section className="flex flex-col gap-4 min-h-0 min-w-0">
-          <div ref={boxRef} className="relative rounded-3xl overflow-hidden bg-black shadow-lg ring-1 ring-black/5 flex-shrink-0 h-[min(52vh,520px)]">
+          {/*
+            这里刻意**没有** `overflow-hidden`：字幕样式的挂耳标签要伸到左边缘之外，
+            裁掉就看不见了。圆角由 video 自己裁（rounded-2xl）。
+          */}
+          <div ref={boxRef} className="relative flex-grow min-h-[220px] rounded-2xl bg-black shadow-xl border border-gray-800">
             <video
               ref={videoRef}
               src={api.videoUrl(id)}
               controls
-              className="w-full h-full object-contain bg-black"
+              className="w-full h-full object-contain rounded-2xl bg-black"
               {...videoHandlers}
               onLoadedMetadata={(e) => { videoHandlers.onLoadedMetadata(e); measure(); }}
             />
-            {backgroundUrl && <audio ref={backgroundRef} src={backgroundUrl} preload="auto" />}
+            {backgroundUrl && <audio ref={backgroundRef} src={backgroundUrl} preload="auto" className="hidden" />}
             {videoRect && activeCue && (
               <div style={overlayContainerStyle(style, videoRect)}>
                 {activeCue.lines.map((line, i) => <div key={i} style={overlayLineStyle(style, videoRect)}>{line}</div>)}
               </div>
             )}
+
+            {/* 字幕样式：原版那枚竖排挂耳，贴在画面左边缘**外侧**，像书签一样 */}
+            <button
+              type="button"
+              onClick={() => setPanel(panel === 'subtitle' ? 'script' : 'subtitle')}
+              title="调整字幕的字体、大小、颜色和位置，画面上的字幕会实时跟着变"
+              style={{ writingMode: 'vertical-rl' }}
+              className={[
+                'absolute left-0 top-1/2 -translate-y-1/2 -translate-x-full z-20',
+                'px-1 py-3 rounded-l-lg border transition-colors cursor-pointer',
+                'text-[10px] font-bold tracking-[0.25em]',
+                panel === 'subtitle'
+                  ? 'bg-claude-accent text-white border-claude-accent shadow-md shadow-claude-accent/25'
+                  : 'bg-white text-claude-accent border-claude-accent shadow-sm hover:bg-claude-accent/10',
+              ].join(' ')}
+            >
+              字幕样式
+            </button>
           </div>
-          <Timeline
-            segments={lines.map((l) => ({ id: l.id, speakerId: l.speakerId, startTime: l.start, endTime: l.end, originalText: l.text, translatedText: l.translation, audioPath: l.audioUrl ?? undefined, muted: l.muted, hidden: l.hidden } as never))}
-            speakers={project!.speakers.map((s) => ({ id: s.id, name: s.name }) as never)}
-            duration={duration}
-            currentTime={currentTime}
-            onSeek={seek}
-            waveform={waveform}
-          />
+
+          <div className="shrink-0">
+            <Timeline
+              segments={lines.map((l) => ({ id: l.id, speakerId: l.speakerId, startTime: l.start, endTime: l.end, originalText: l.text, translatedText: l.translation, audioPath: l.audioUrl ?? undefined, muted: l.muted, hidden: l.hidden } as never))}
+              speakers={project!.speakers.map((s) => ({ id: s.id, name: s.name }) as never)}
+              duration={duration}
+              currentTime={currentTime}
+              onSeek={seek}
+              waveform={waveform}
+            />
+          </div>
         </section>
 
-        {/* 中：脚本 / 字幕样式 */}
+        {/* 右：脚本（点挂耳时切成字幕样式面板） */}
         <section className="flex flex-col min-h-0 min-w-0">
-          <div className="flex gap-1 mb-3 shrink-0">
-            {([['script', '脚本'], ['subtitle', '字幕样式']] as const).map(([key, label]) => (
-              <button
-                key={key}
-                onClick={() => setPanel(key)}
-                className={`px-4 py-2 rounded-xl text-[11px] font-bold uppercase tracking-widest transition-colors ${panel === key ? 'bg-white text-claude-accent border border-claude-border shadow-sm' : 'text-gray-400 hover:text-gray-600'}`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          <div className="flex-grow min-h-0">
-            {panel === 'script' ? (
-              <ScriptPanel
-                lines={lines} speakers={project!.speakers} colorOf={colorOf} currentTime={currentTime} flash={flash}
-                mix={mixEntries} busyIds={busyIds} dubbing={dubbing} actions={actions}
-                focusLine={focusLine} onFocusHandled={() => setFocusLine(null)}
-              />
-            ) : (
-              <div className="h-full overflow-y-auto">
-                <SubtitleStylePanel style={style} onStyleChange={onStyleChange} onClose={() => setPanel('script')} />
-              </div>
-            )}
-          </div>
+          {panel === 'script' ? (
+            <ScriptPanel
+              lines={lines} speakers={project!.speakers} colorOf={colorOf} currentTime={currentTime} flash={flash}
+              mix={mixEntries} busyIds={busyIds} dubbing={dubbing} actions={actions}
+              focusLine={focusLine} onFocusHandled={() => setFocusLine(null)}
+            />
+          ) : (
+            <SubtitleStylePanel style={style} onStyleChange={onStyleChange} onClose={() => setPanel('script')} />
+          )}
         </section>
+      </main>
 
-        {/* 右：AI 助手。只渲染一份：宽屏是第三栏，窄屏用 CSS 变成底部抽屉（两份会各有一个输入框和滚动） */}
-        {chatOpen && (
-          <section className="min-h-0 min-w-0 max-lg:fixed max-lg:inset-x-0 max-lg:bottom-0 max-lg:h-[62vh] max-lg:z-40 max-lg:p-3 max-lg:bg-gradient-to-t max-lg:from-claude-bg max-lg:to-transparent">
+      {/* AI 助手：桌面应用式的浮动窗口 —— 拖标题栏移动、拖右下角改大小。
+          不占布局空间，挡到哪里拖开即可。 */}
+      {chatOpen && (
+        <FloatingChat onClose={() => setChatOpen(false)}>
+          {(dragProps) => (
             <ChatPanel
               chat={chat}
               lineCount={lines.length}
@@ -317,10 +333,12 @@ const EditorPage: React.FC<Props> = ({ project: api_, file, onHome }) => {
               draft={draft}
               onDraftConsumed={() => setDraft('')}
               suggestions={SUGGESTIONS}
+              onClose={() => setChatOpen(false)}
+              dragProps={dragProps}
             />
-          </section>
-        )}
-      </main>
+          )}
+        </FloatingChat>
+      )}
 
       <ExportModal
         isOpen={showExport}
