@@ -1,8 +1,10 @@
 """
 聊天会话（历史 / 新对话）：一个 chat.jsonl 里按 conv 分开，切换只是换个过滤条件。
-同时盯住两件容易回归的事：
-  · 会话切换是**静默**写（不进事件流、不进撤销栈），否则它会出现在 AI 读的"发生了什么"里；
-  · 升级前的老记录没有 conv 字段，必须仍落在默认会话里，不能凭空消失。
+同时盯住三件容易回归的事：
+  · 会话切换是**静默**写（不进 change 流、不推进 rev、不进撤销栈），否则下一条
+    真实 change 事件会被前端判成 rev 空洞而整份重取；
+  · 不做后向兼容：升级前没有 conv 字段的老记录不属于任何会话；
+  · 新建的空会话必须可枚举、可选回（不能只从聊天记录行反推）。
 """
 import os, sys, tempfile
 BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -70,10 +72,32 @@ check("⑥ 它也不会在列表里造出一个空 id 的会话", all(c["id"] fo
 # ------------------------------------------------------------------ ⑥ 确认卡片状态按会话折叠
 store.new_conv(VID)
 store.append_chat(VID, {"role": "confirm", "id": "card1", "cmd": "redub", "ts": 300})
-store.resolve_confirm_card(VID, "card1", True)
+store.resolve_confirm_card(VID, "card1", True, store.current_conv(VID))
 cards = [m for m in store.read_chat(VID) if m["role"] == "confirm"]
 check("⑦ 确认卡片的最终状态在所属会话里还原", cards and cards[0]["status"] == "approved", cards)
 check("⑦ confirm_state 行不会作为消息冒出来", all(m["role"] != "confirm_state" for m in store.read_chat(VID)))
+
+# ------------------------------------------------------------------ ⑧ 确认卡片按"卡片所属会话" settle
+c3 = store.new_conv(VID)
+store.append_chat(VID, {"conv": c1, "role": "confirm", "id": "cardA", "command": "redub", "ts": 400})
+store.resolve_confirm_card(VID, "cardA", True, c1)     # 当前会话是 c3，但卡片属于 c1
+cards1 = [m for m in store.read_chat(VID, conv=c1) if m.get("id") == "cardA"]
+check("⑧ 跨会话点确认：状态落回卡片所属会话", cards1 and cards1[0].get("status") == "approved", cards1)
+check("⑧ 当前会话里没有无主的 confirm_state 行",
+      all(m["role"] != "confirm_state" for m in store.read_chat(VID, conv=c3)))
+
+# ------------------------------------------------------------------ ⑨ 欢迎消息按会话判定（所有初始化入口走 jobs._post_welcome）
+from app import agent
+store.new_conv(VID)
+agent.post_welcome(VID)
+w1 = [m for m in store.read_chat(VID) if m.get("system")]
+check("⑨ 新会话发一条欢迎消息", len(w1) == 1, len(w1))
+agent.post_welcome(VID)
+check("⑨ 同一会话不重复发", len([m for m in store.read_chat(VID) if m.get("system")]) == 1)
+c4 = store.new_conv(VID)
+agent.post_welcome(VID)
+check("⑨ 切到新会话后欢迎消息重新出现（会话隔离）",
+      len([m for m in store.read_chat(VID, conv=c4) if m.get("system")]) == 1)
 
 print(f"\n合计 {'全部通过' if not fails else str(len(fails)) + ' 项失败: ' + ', '.join(fails)}")
 sys.exit(1 if fails else 0)

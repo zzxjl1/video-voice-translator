@@ -43,7 +43,7 @@ export function applyPatch(state: ProjectView, patch: ViewPatch): ProjectView {
 
   // 其余顶层块：整块替换
   const blocks: (keyof ViewPatch)[] = [
-    'stage', 'initError', 'initReport', 'settings', 'speakers', 'subtitle', 'needs', 'hasStems', 'filename',
+    'stage', 'initError', 'initReport', 'settings', 'speakers', 'subtitle', 'needs', 'hasStems', 'filename', 'chatConv',
   ];
   for (const key of blocks) {
     if (key in patch) (next as unknown as Record<string, unknown>)[key] = patch[key];

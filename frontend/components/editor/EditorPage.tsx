@@ -29,14 +29,13 @@ type RightPanel = 'script' | 'subtitle';
 
 interface Props {
   project: ReturnType<typeof useProject>;
-  file?: File;
   onHome: () => void;
 }
 
 const SUGGESTIONS = ['这个项目现在什么情况？', '检查一下有没有被误识别成话的音乐', '哪些句子的配音比时间槽长？'];
 
-const EditorPage: React.FC<Props> = ({ project: api_, file, onHome }) => {
-  const { project, chat, flash, ui, clearUi, run, say, stop, confirm, connection } = api_;
+const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
+  const { project, chat, flash, ui, clearUi, run, say, stop, confirm } = api_;
   const id = project!.id;
   const lines = project!.segments;
   const dubbing = project!.settings.enableDubbing;
@@ -46,6 +45,7 @@ const EditorPage: React.FC<Props> = ({ project: api_, file, onHome }) => {
   const [showExport, setShowExport] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [draft, setDraft] = useState('');
+  const onDraftConsumed = useCallback(() => setDraft(''), []);
   const [waveform, setWaveform] = useState<number[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -98,12 +98,22 @@ const EditorPage: React.FC<Props> = ({ project: api_, file, onHome }) => {
 
   // 字幕预览 cue：用服务端算（时间随配音时长调整，与导出一致）
   const [cues, setCues] = useState<SubtitleCue[]>([]);
-  const cueKey = useMemo(() => lines.map((l) => `${l.id}:${l.translation}:${l.hidden}:${l.kind}:${l.audioDuration}`).join('|') + style.track, [lines, style.track]);
+  // 字号/每行字数/行数/最小时长都会改变服务端的断行结果，改样式必须重算 cue，
+  // 否则画面断行和导出的 ASS 会对不上。滑块拖动期间做一点防抖。
+  const cueKey = useMemo(() => lines.map((l) =>
+    `${l.id}:${l.translation}:${l.hidden}:${l.kind}:${l.audioDuration}`).join('|')
+    + JSON.stringify([style.track, style.font_size_percent, style.max_chars_per_line,
+                      style.max_lines, style.min_duration]), [lines, style]);
   useEffect(() => {
     let cancelled = false;
-    api.previewSubtitleCues(id, { track: style.track }).then((r) => { if (!cancelled) setCues(r.cues); }).catch(() => { if (!cancelled) setCues([]); });
-    return () => { cancelled = true; };
-  }, [id, cueKey]);
+    const timer = setTimeout(() => {
+      api.previewSubtitleCues(id, { track: style.track, style: {
+        font_size_percent: style.font_size_percent, max_chars_per_line: style.max_chars_per_line,
+        max_lines: style.max_lines, min_duration: style.min_duration, font_family: style.font_family,
+      } }).then((r) => { if (!cancelled) setCues(r.cues); }).catch(() => { if (!cancelled) setCues([]); });
+    }, 180);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [id, cueKey, style]);
   // 语气标签（[sad] / [gasp]）是给 TTS 的，不该出现在画面上；预览和烧录读同一份 cues，所以只在这一处剥
   const visibleCues = useMemo(
     () => cues.map((c) => ({ ...c, text: stripSubtitleTags(c.text), secondary: stripSubtitleTags(c.secondary),
@@ -121,9 +131,10 @@ const EditorPage: React.FC<Props> = ({ project: api_, file, onHome }) => {
       setPanel('script');
       const seg = lines.find((l) => l.line === ui.line);
       if (seg) {
-        requestAnimationFrame(() => {
+        // 可能刚从字幕样式面板切回脚本：等 React 提交后再查 DOM，单帧不够。
+        requestAnimationFrame(() => requestAnimationFrame(() => {
           document.getElementById(`line-${seg.id}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
-        });
+        }));
       }
       if (ui.play) play(ui.start as number); else seek(ui.start as number);
     } else if (ui.action === 'open_panel') {
@@ -136,7 +147,7 @@ const EditorPage: React.FC<Props> = ({ project: api_, file, onHome }) => {
     } else if (ui.action === 'export_ready') {
       downloadFile(ui.url as string, `translated_${id.slice(0, 8)}.mp4`);
     } else if (ui.action === 'browser_action') {
-      setNotice(`AI 请求：${ui.action === 'browser_action' && ui.reason ? ui.reason : '需要在浏览器里完成一个操作'}（${ui.action}）`);
+      setNotice(`AI 请求：${ui.reason ? String(ui.reason) : '需要在浏览器里完成一个操作'}（${ui.action}）`);
     }
     clearUi();
   }, [ui, clearUi, play, seek, id]);
@@ -167,7 +178,9 @@ const EditorPage: React.FC<Props> = ({ project: api_, file, onHome }) => {
         downloadFile(blob, `translated_${id.slice(0, 8)}.mp4`);
         setShowExport(false);
       } else {
-        const format = delivery === 'external' || delivery === 'off' ? (delivery === 'off' ? 'off' : 'soft') : 'styled';
+        const format = delivery === 'off' ? 'off'
+          : delivery === 'external' ? 'soft'
+            : keepStyle ? 'styled' : 'soft';
         const r = await run('export_video', { format });
         if (!r.ok) throw new Error(r.error);
         downloadFile(api.getExportDownloadUrl(id), `translated_${id.slice(0, 8)}.${format === 'styled' ? 'mkv' : 'mp4'}`);
@@ -179,7 +192,7 @@ const EditorPage: React.FC<Props> = ({ project: api_, file, onHome }) => {
       setExporting(false);
       setBurnProgress(null);
     }
-  }, [delivery, visibleCues, id, run, style]);
+  }, [delivery, keepStyle, visibleCues, id, run, style]);
 
   // 脚本里的操作：全都是命令
   const actions = useMemo<ScriptActions>(() => ({
@@ -198,14 +211,17 @@ const EditorPage: React.FC<Props> = ({ project: api_, file, onHome }) => {
     askAbout: (l: Line) => { setChatOpen(true); setDraft(`第 ${l.line} 句`); },
   }), [run, seek]);
 
-  const busyIds = useMemo(() => new Set<string>(), []);   // 行锁由服务端判断并在命令里说明原因
   const colorOf = useCallback((sid: string) => speakerColor(project!, sid), [project]);
 
   const fill = useCallback(async () => {
-    if (project!.needs.translate) { const r = await run('retranslate', {}); if (!r.ok) { setNotice(r.error ?? '翻译失败'); return; } }
-    // 不看 needs.dub 的快照：翻译刚完成时它还是旧值（新译出的句子会变成"配音过期"），
-    // redub 自己按当前指纹只补缺的，没有可补的就空跑一次。
-    if (dubbing) { const r = await run('redub', {}); if (!r.ok) setNotice(r.error ?? '配音失败'); }
+    const translated = project!.needs.translate > 0;
+    if (translated) { const r = await run('retranslate', {}); if (!r.ok) { setNotice(r.error ?? '翻译失败'); return; } }
+    // needs.dub 是点击时的快照，翻译刚跑完时还是旧值，所以按"这次是否译过 +
+    // 是否本来就有缺口"判断；两者都否就别起一个 0 工作量的空任务。
+    if (dubbing && (translated || project!.needs.dub > 0)) {
+      const r = await run('redub', {});
+      if (!r.ok) setNotice(r.error ?? '配音失败');
+    }
   }, [project, dubbing, run]);
 
   // 顶栏的语言切换：会让译文/配音大面积过期，所以先问一下
@@ -233,7 +249,6 @@ const EditorPage: React.FC<Props> = ({ project: api_, file, onHome }) => {
         onOpenSettings={() => setShowSettings(true)}
         onExport={() => setShowExport(true)}
         onHome={onHome}
-        connection={connection}
         exporting={exporting}
         toggleChat={() => setChatOpen((v) => !v)}
         chatOpen={chatOpen}
@@ -307,7 +322,7 @@ const EditorPage: React.FC<Props> = ({ project: api_, file, onHome }) => {
           {panel === 'script' ? (
             <ScriptPanel
               lines={lines} speakers={project!.speakers} colorOf={colorOf} currentTime={currentTime} flash={flash}
-              mix={mixEntries} busyIds={busyIds} dubbing={dubbing} actions={actions}
+              mix={mixEntries} dubbing={dubbing} actions={actions}
             />
           ) : (
             <SubtitleStylePanel style={style} onStyleChange={onStyleChange} onClose={() => setPanel('script')} />
@@ -318,7 +333,7 @@ const EditorPage: React.FC<Props> = ({ project: api_, file, onHome }) => {
       {/* AI 助手：桌面应用式的浮动窗口 —— 拖标题栏移动、拖右下角改大小。
           不占布局空间，挡到哪里拖开即可。 */}
       {chatOpen && (
-        <FloatingChat onClose={() => setChatOpen(false)}>
+        <FloatingChat>
           {(dragProps) => (
             <ChatPanel
               chat={chat}
@@ -326,10 +341,11 @@ const EditorPage: React.FC<Props> = ({ project: api_, file, onHome }) => {
               onStop={() => void stop()}
               onConfirm={(cid, ok) => void confirm(cid, ok)}
               draft={draft}
-              onDraftConsumed={() => setDraft('')}
+              onDraftConsumed={onDraftConsumed}
               suggestions={SUGGESTIONS}
               onClose={() => setChatOpen(false)}
               dragProps={dragProps}
+              error={api_.chatError}
               conversations={api_.conversations}
               currentConv={api_.currentConv}
               onNewChat={() => void api_.startNewChat()}
@@ -373,7 +389,6 @@ const EditorPage: React.FC<Props> = ({ project: api_, file, onHome }) => {
         }}
         hasContent={lines.some((l) => l.translation)}
       />
-      {file && null}
     </div>
   );
 };

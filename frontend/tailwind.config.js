@@ -45,6 +45,7 @@ export default {
         muted: '#F2F0E9',
         'muted-foreground': '#6B7280',
         primary: '#DA7756',
+        'primary-foreground': '#FFFFFF',
         sidebar: '#FBFAF7',
         claude: {
           bg: '#FDFBF9',

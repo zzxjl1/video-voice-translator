@@ -6,7 +6,7 @@
  *        缓动用 cubic-bezier(0.175,0.885,0.32,1.275)、700ms —— 就是原来那条"弹出来"的手感。
  *
  * 与旧 Header 的差别只在内容：旧的「Reprocess / 从头开始」是整条管线重跑的概念，
- * 现在换成「补齐缺口 / 运行中（可取消）」；另外多了撤销、连接状态、AI 助手开关。
+ * 现在换成「补齐缺口 / 运行中（可取消）」；另外多了撤销和 AI 助手开关。
  *
  * 顶栏是 fixed 的（展开时要浮在画面上方），所以编辑页的 main 要留出顶部空间。
  */
@@ -28,7 +28,6 @@ interface Props {
   onOpenSettings: () => void;
   onExport: () => void;
   onHome: () => void;
-  connection: 'connecting' | 'open' | 'reconnecting' | 'closed';
   exporting: boolean;
   toggleChat: () => void;
   chatOpen: boolean;
@@ -40,7 +39,7 @@ const GEAR = 'M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l
 
 const TopBar: React.FC<Props> = ({
   filename, targetLanguage, onLanguageChange, needs, dubbing, jobs, undoSummary, onUndo, onFill,
-  onCancelJobs, onOpenSettings, onExport, onHome, connection, exporting, toggleChat, chatOpen,
+  onCancelJobs, onOpenSettings, onExport, onHome, exporting, toggleChat, chatOpen,
 }) => {
   const [expanded, setExpanded] = useState(false);
   const running = jobs.length > 0;

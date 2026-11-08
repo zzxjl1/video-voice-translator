@@ -34,6 +34,8 @@ interface Props {
   currentConv?: string;
   onNewChat?: () => void;
   onOpenChat?: (conv: string) => void;
+  /** 会话接口失败的原因（例如后端版本过旧）；不能让新对话看起来像没反应。 */
+  error?: string | null;
   /** 由 FloatingChat 注入：标题栏同时是窗口的拖动区。 */
   dragProps?: {
     onPointerDown: (e: React.PointerEvent) => void;
@@ -49,7 +51,7 @@ interface Props {
 const ChatPanel: React.FC<Props> = ({
   chat, disabled, disabledReason, onSend, onStop, onConfirm,
   draft, onDraftConsumed, suggestions = [], onClose, dragProps,
-  conversations = [], currentConv = '', onNewChat, onOpenChat,
+  conversations = [], currentConv = '', onNewChat, onOpenChat, error,
 }) => {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [text, setText] = useState('');
@@ -99,7 +101,7 @@ const ChatPanel: React.FC<Props> = ({
     <div className="flex flex-col h-full bg-[#fbfbf9] overflow-hidden">
       <div
         {...dragProps}
-        className={`px-5 py-3.5 border-b border-[#e5e5e0] flex items-center justify-between bg-white/60 backdrop-blur-md shrink-0 ${dragProps?.className ?? ''}`}
+        className={`relative z-20 px-5 py-3.5 border-b border-[#e5e5e0] flex items-center justify-between bg-white/60 backdrop-blur-md shrink-0 ${dragProps?.className ?? ''}`}
       >
         <h3 className="text-xs font-serif font-bold text-gray-700 flex items-center gap-2 tracking-wide">
           <span className={`w-1.5 h-1.5 rounded-full ${chat.busy ? 'bg-claude-accent animate-pulse' : 'bg-claude-accent'}`} />
@@ -115,6 +117,7 @@ const ChatPanel: React.FC<Props> = ({
             <div className="relative">
               <button
                 onClick={() => setHistoryOpen((v) => !v)}
+                data-chat-menu-trigger
                 title="历史对话"
                 className={`p-1 rounded-md transition-colors ${historyOpen ? 'text-claude-accent bg-claude-accent/10' : 'text-gray-300 hover:text-gray-600 hover:bg-claude-paper'}`}
               >
@@ -144,6 +147,12 @@ const ChatPanel: React.FC<Props> = ({
           )}
         </div>
       </div>
+
+      {error && (
+        <div className="shrink-0 px-4 py-2 bg-red-50 border-b border-red-100 text-[11px] leading-relaxed text-red-600">
+          {error}
+        </div>
+      )}
 
       <div ref={scrollerRef} onScroll={onScroll} className="flex-grow overflow-y-auto px-5 py-5 space-y-4">
         {empty && (
@@ -300,7 +309,13 @@ const HistoryMenu: React.FC<{
 }> = ({ conversations, currentConv, onNew, onPick, onClose }) => {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const onDown = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) onClose(); };
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as HTMLElement;
+      // 触发器也在"内部"：否则点已打开的按钮时，mousedown 先关、click 又 toggle 开，
+      // 菜单永远关不掉。
+      if (ref.current?.contains(t) || t.closest('[data-chat-menu-trigger]')) return;
+      onClose();
+    };
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     document.addEventListener('mousedown', onDown);
     document.addEventListener('keydown', onKey);
@@ -317,6 +332,7 @@ const HistoryMenu: React.FC<{
     return `${Math.floor(hours / 24)} 天前`;
   };
 
+  const visible = conversations;          // 空会话也要显示：否则看不出自己在新对话里
   return (
     <div ref={ref} className="absolute right-0 top-full mt-1.5 w-64 bg-white border border-claude-border rounded-xl shadow-xl z-30 overflow-hidden">
       <button
@@ -327,10 +343,10 @@ const HistoryMenu: React.FC<{
         新对话
       </button>
       <div className="max-h-64 overflow-y-auto py-1">
-        {conversations.filter((c) => c.count > 0).length === 0 && (
+        {visible.length === 0 && (
           <div className="px-3.5 py-3 text-[11px] text-gray-400">还没有历史对话</div>
         )}
-        {conversations.filter((c) => c.count > 0).map((c) => (
+        {visible.map((c) => (
           <button
             key={c.id}
             onClick={() => onPick(c.id)}

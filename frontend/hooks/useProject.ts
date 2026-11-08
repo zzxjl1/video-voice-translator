@@ -12,9 +12,9 @@ import { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import * as api from '../net/client';
 import type { ChatSummary } from '../net/client';
 import { EventClient } from '../net/events';
-import type { ChangeEvent, CommandResult, JobEvent, ProjectView, ServerEvent, UiEvent } from '../net/types';
+import type { ChatEvent, ChangeEvent, CommandResult, ConversationEvent, JobEvent, ProjectView, ServerEvent, UiEvent } from '../net/types';
 import { applyChange } from '../store/project';
-import { emptyChat, loadChat, reduceChat, type ChatState } from '../store/chat';
+import { chatEventMatches, emptyChat, loadChat, reduceChat, type ChatState } from '../store/chat';
 import { emptyInit, failInit, reduceInit, type InitState } from '../store/init';
 
 export type ConnectionState = 'connecting' | 'open' | 'reconnecting' | 'closed';
@@ -24,9 +24,21 @@ export type Flash = Record<string, 'user' | 'ai' | 'system'>;
 
 const FLASH_MS = 2600;
 
+function chatErrorText(e: unknown): string {
+  if (e instanceof api.ApiError && e.status === 404) {
+    // 后端进程比前端旧（没有 /chats）时最常见的症状：点"新对话"毫无反应。
+    return '后端没有会话接口（/chats 404）。请重启后端服务，让新代码生效后重试。';
+  }
+  return `会话操作失败：${e instanceof Error ? e.message : String(e)}`;
+}
+
 export interface ProjectApi {
   project: ProjectView | null;
   loadError: string | null;
+  /** 只有 `getProject` 明确 404 才为 true；可选接口失败不能把用户踢回首页。 */
+  notFound: boolean;
+  /** 会话接口的失败原因（例如后端版本过旧）；聊天面板里直接显示。 */
+  chatError: string | null;
   chat: ChatState;
   init: InitState;
   connection: ConnectionState;
@@ -39,7 +51,7 @@ export interface ProjectApi {
   say: (text: string) => Promise<void>;
   stop: () => Promise<void>;
   confirm: (cardId: string, approve: boolean) => Promise<void>;
-  reload: () => Promise<void>;
+  reload: () => Promise<ProjectView | null>;
   /** 会话列表（新的在前）与当前会话。 */
   conversations: ChatSummary[];
   currentConv: string;
@@ -52,6 +64,8 @@ export interface ProjectApi {
 export function useProject(id: string | null): ProjectApi {
   const [project, setProject] = useState<ProjectView | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [notFound, setNotFound] = useState(false);
+  const [chatError, setChatError] = useState<string | null>(null);
   const [chat, dispatchChat] = useReducer(reduceChatAction, undefined, emptyChat);
   const [init, setInit] = useState<InitState>(emptyInit);
   const [connection, setConnection] = useState<ConnectionState>('closed');
@@ -59,6 +73,12 @@ export function useProject(id: string | null): ProjectApi {
   const [ui, setUi] = useState<UiEvent | null>(null);
   const [conversations, setConversations] = useState<ChatSummary[]>([]);
   const [currentConv, setCurrentConv] = useState('');
+  // 事件回调要知道"此刻界面在看哪个会话"，又不能因它变化而重建 SSE 订阅。
+  const currentConvRef = useRef('');
+  const setConv = useCallback((conv: string) => {
+    currentConvRef.current = conv;
+    setCurrentConv(conv);
+  }, []);
 
   // 事件回调要读到"最新的 project"，又不想因为它变化而重建订阅 → ref
   const projectRef = useRef<ProjectView | null>(null);
@@ -82,20 +102,55 @@ export function useProject(id: string | null): ProjectApi {
     }
   }, []);
 
-  /** 整份重取：首次加载、漏了事件、重连之后。 */
-  const reload = useCallback(async () => {
-    if (!id) return;
+  /**
+   * 整份重取：首次加载、漏了事件、重连之后。
+   *
+   * 只有 `getProject` 是必需的。聊天记录/会话列表是**可选**的附加信息：某个接口
+   * 暂时失败（旧后端没有 /chats、服务器重启窗口、网络抖动）不能让整个工程视图
+   * 加载失败，更不能因为一句 "Not Found" 就把用户踢回首页 —— 真实复现过：
+   * 上传后 `/chats` 404 → Promise.all reject → 页面回落地页，而后端 job 还在刷进度。
+   */
+  const reload = useCallback(async (): Promise<ProjectView | null> => {
+    if (!id) return null;
+    let view: ProjectView;
     try {
-      const [view, history, chats] = await Promise.all([api.getProject(id), api.getChat(id), api.listChats(id)]);
-      setProject(view);
-      dispatchChat({ type: 'load', messages: history.messages, running: history.running });
-      setConversations(chats.conversations);
-      setCurrentConv(chats.current || history.conv || '');
-      setLoadError(null);
+      view = await api.getProject(id);
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : String(e));
+      setNotFound(e instanceof api.ApiError && e.status === 404);
+      return null;                       // 不清空已加载的视图，避免闪回"加载中"
     }
-  }, [id]);
+    setProject(view);
+    setLoadError(null);
+    setNotFound(false);
+
+    const [history, chats] = await Promise.all([
+      api.getChat(id).catch(() => null),
+      api.listChats(id).catch((e) => { setChatError(chatErrorText(e)); return null; }),
+    ]);
+    if (history) dispatchChat({ type: 'load', messages: history.messages, running: history.running });
+    if (chats) {
+      setChatError(null);
+      setConversations(chats.conversations);
+      setConv(chats.current || view.chatConv || '');
+    } else {
+      setConv(view.chatConv || '');
+    }
+    return view;
+  }, [id, setConv]);
+
+  /** 重新拉会话列表（标题/条数/顺序都会变）。 */
+  const refreshChats = useCallback(async () => {
+    if (!id) return;
+    try {
+      const r = await api.listChats(id);
+      setConversations(r.conversations);
+      if (r.current) setConv(r.current);
+      setChatError(null);
+    } catch (e) {
+      setChatError(chatErrorText(e));
+    }
+  }, [id, setConv]);
 
   useEffect(() => {
     setProject(null);
@@ -105,7 +160,9 @@ export function useProject(id: string | null): ProjectApi {
     setFlash({});
     setUi(null);
     setConversations([]);
-    setCurrentConv('');
+    setNotFound(false);
+    setChatError(null);
+    setConv('');
     if (!id) {
       setConnection('closed');
       return;
@@ -150,9 +207,26 @@ export function useProject(id: string | null): ProjectApi {
         case 'progress':
           setInit((s) => reduceInit(s, event as never));
           return;
-        case 'chat':
-          dispatchChat({ type: 'event', event });
+        case 'chat': {
+          const e = event as ChatEvent;
+          // 切会话后旧一轮的 delta/message/idle 不能污染新会话（服务端已给事件打上
+          // 所属 conv）。没有 conv 的老事件按当前会话处理，保持兼容。
+          if (!chatEventMatches(e, currentConvRef.current)) return;
+          dispatchChat({ type: 'event', event: e });
           return;
+        }
+        case 'conversation': {
+          // 服务端切换会话（含别的标签页）：同步当前会话、消息与列表。
+          const conv = (event as ConversationEvent).conv;
+          setConv(conv);
+          void api.getChat(id, conv).then((h) => {
+            if (currentConvRef.current === conv) {
+              dispatchChat({ type: 'load', messages: h.messages, running: h.running });
+            }
+          }).catch(() => {});
+          void refreshChats();
+          return;
+        }
         case 'ui':
           setUi(event as UiEvent);
           return;
@@ -160,14 +234,16 @@ export function useProject(id: string | null): ProjectApi {
     };
 
     void (async () => {
-      await reload();
+      const view = await reload();
       if (cancelled) return;
-      const startSeq = projectRef.current?.seq ?? 0;
+      // 用这次重取拿到的 seq，而不是 render 里才赋值的 ref —— 首帧它是 null，
+      // 会让 SSE 以 since=0 连上，把历史事件（含 export_ready 下载）重放一遍。
+      const startSeq = view?.seq ?? projectRef.current?.seq ?? 0;
       client = new EventClient({
         url: (since) => `${api.API_BASE}/projects/${id}/events?since=${since}`,
         onEvent: handle,
         onState: (s) => !cancelled && setConnection(s),
-        onGone: () => !cancelled && setLoadError('这个工程已经不存在了'),
+        onGone: () => { if (!cancelled) { setLoadError('这个工程已经不存在了'); setNotFound(true); } },
         startSeq,
       });
       void client.run();
@@ -179,7 +255,7 @@ export function useProject(id: string | null): ProjectApi {
       for (const t of flashTimers.current.values()) clearTimeout(t);
       flashTimers.current.clear();
     };
-  }, [id, markFlash, reload]);
+  }, [id, markFlash, reload, refreshChats, setConv]);
 
   // 断线重连成功后，事件可能漏了：保险起见按 rev 再核对一次
   const wasReconnecting = useRef(false);
@@ -205,34 +281,37 @@ export function useProject(id: string | null): ProjectApi {
 
   const startNewChat = useCallback(async () => {
     if (!id) return;
-    const { conv } = await api.newChat(id);
-    dispatchChat({ type: 'load', messages: [], running: false });
-    setCurrentConv(conv);
-    const chats = await api.listChats(id).catch(() => null);
-    if (chats) setConversations(chats.conversations);
-  }, [id]);
+    try {
+      const { conv } = await api.newChat(id);
+      dispatchChat({ type: 'load', messages: [], running: false });
+      setConv(conv);
+      setChatError(null);
+      await refreshChats();
+    } catch (e) {
+      // 不能在本地假装开了一个新会话：消息随后仍会落到服务端的旧会话里。
+      setChatError(chatErrorText(e));
+    }
+  }, [id, setConv, refreshChats]);
 
   const openChat = useCallback(async (conv: string) => {
     if (!id || conv === currentConv) return;
-    const r = await api.selectChat(id, conv);
-    dispatchChat({ type: 'load', messages: r.messages, running: false });
-    setCurrentConv(r.conv);
-  }, [id, currentConv]);
-
-  /** 重新拉会话列表（标题/条数/顺序都会变）。 */
-  const refreshChats = useCallback(async () => {
-    if (!id) return;
-    const r = await api.listChats(id).catch(() => null);
-    if (!r) return;
-    setConversations(r.conversations);
-    setCurrentConv((prev) => prev || r.current || '');
-  }, [id]);
+    try {
+      const r = await api.selectChat(id, conv);
+      dispatchChat({ type: 'load', messages: r.messages, running: false });
+      setConv(r.conv);
+      setChatError(null);
+    } catch (e) {
+      setChatError(chatErrorText(e));
+    }
+  }, [id, currentConv, setConv]);
 
   // 一轮对话结束时刷新：新会话的第一个问题、以及条数/标题都只有这时候才会变，
   // 不刷新的话历史菜单里会一直是打开页面时的旧列表（刚发的消息看不到）。
   useEffect(() => {
     if (!chat.busy) void refreshChats();
   }, [chat.busy, refreshChats]);
+
+  const clearUi = useCallback(() => setUi(null), []);
 
   const say = useCallback(async (text: string) => {
     if (id) await api.sendChat(id, text);
@@ -243,7 +322,7 @@ export function useProject(id: string | null): ProjectApi {
   }, [id]);
 
   return {
-    project, loadError, chat, init, connection, flash, ui, clearUi: () => setUi(null), run, say, stop, confirm, reload,
+    project, loadError, notFound, chatError, chat, init, connection, flash, ui, clearUi, run, say, stop, confirm, reload,
     conversations, currentConv, startNewChat, openChat,
   };
 }

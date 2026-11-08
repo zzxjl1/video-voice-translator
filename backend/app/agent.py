@@ -90,9 +90,12 @@ class Chat:
     def __init__(self, video_id: str):
         self.video_id = video_id
         self.lock = asyncio.Lock()
-        self.pending: dict[str, asyncio.Future] = {}
+        # 每张确认卡片记住自己属于哪个会话：用户可能切到别的会话后才点确认，
+        # 落盘的 confirm_state 必须回到卡片所属会话，而不是"当时"的当前会话。
+        self.pending: dict[str, tuple[asyncio.Future, str]] = {}
         self.cancel = asyncio.Event()
         self.running = False
+        self.conv = ""                    # 正在进行的这一轮属于哪个会话
 
 
 _chats: dict[str, Chat] = {}
@@ -106,7 +109,7 @@ def forget(video_id: str) -> None:
     chat = _chats.pop(video_id, None)
     if chat:
         chat.cancel.set()
-        for fut in chat.pending.values():
+        for fut, _conv in chat.pending.values():
             if not fut.done():
                 fut.set_result(False)
 
@@ -116,27 +119,39 @@ def forget(video_id: str) -> None:
 # ----------------------------------------------------------------------------
 
 def _msg(video_id: str, role: str, **fields) -> dict:
-    """落盘一条聊天记录，并作为 chat 事件推给前端。"""
-    record = {"id": uuid.uuid4().hex[:10], "role": role, "ts": time.time(), **fields}
+    """
+    落盘一条聊天记录，并作为 chat 事件推给前端。
+
+    每条消息/每个事件都带 `conv`：会话切换后旧一轮的事件必须能被前端过滤掉，
+    否则旧回答会显示在新会话里，assistant 消息还会物理写进新会话文件。
+    """
+    conv = fields.pop("conv", None) or chat_for(video_id).conv or store.current_conv(video_id)
+    record = {"id": uuid.uuid4().hex[:10], "conv": conv, "role": role, "ts": time.time(), **fields}
     store.append_chat(video_id, record)
-    bus.publish(video_id, {"type": "chat", "kind": "message", "message": record})
+    bus.publish(video_id, {"type": "chat", "kind": "message", "message": record, "conv": conv})
     return record
 
 
 def _delta(video_id: str, message_id: str, text: str) -> None:
-    bus.publish(video_id, {"type": "chat", "kind": "delta", "id": message_id, "text": text})
+    bus.publish(video_id, {"type": "chat", "kind": "delta", "id": message_id,
+                           "text": text, "conv": chat_for(video_id).conv})
 
 
 # ----------------------------------------------------------------------------
 # 上下文拼装
 # ----------------------------------------------------------------------------
 
-def _last_seen_seq(video_id: str) -> int:
-    """AI 上一次回复结束时看到的事件序号（存在对话记录里）。"""
-    for m in reversed(store.read_chat(video_id, 400)):
+def _last_seen_seq(video_id: str, conv: str) -> int:
+    """
+    AI 上一次回复结束时看到的事件序号（存在**这个会话**的对话记录里）。
+
+    新会话没有历史回复时返回"当前序号"而不是 0：从 0 开始会把工程自建立起
+    的全部改动都当成"自你上次回复以来发生的事"塞进 system prompt。
+    """
+    for m in reversed(store.read_chat(video_id, 400, conv=conv)):
         if m.get("role") == "assistant" and m.get("seen_seq") is not None:
             return int(m["seen_seq"])
-    return 0
+    return store.current_seq(video_id)
 
 
 def changes_digest(video_id: str, since: int) -> str:
@@ -157,9 +172,9 @@ def changes_digest(video_id: str, since: int) -> str:
     return "【自你上次回复以来发生的事】\n" + "\n".join(lines)
 
 
-def _history_messages(video_id: str) -> list[dict]:
-    """把落盘的聊天记录还原成 API 消息。tool 调用只保留最近一轮的细节，更早的折叠成文字。"""
-    records = store.read_chat(video_id, 400)
+def _history_messages(video_id: str, conv: str) -> list[dict]:
+    """把**这个会话**的聊天记录还原成 API 消息。tool 调用只保留最近一轮的细节。"""
+    records = store.read_chat(video_id, 400, conv=conv)
     out: list[dict] = []
     for m in records:
         role = m["role"]
@@ -255,31 +270,33 @@ async def _confirm(chat: Chat, video_id: str, call: dict, args: dict, level: str
     cmd = R.get(call["name"])
     card_id = uuid.uuid4().hex[:10]
     fut: asyncio.Future = asyncio.get_running_loop().create_future()
-    chat.pending[card_id] = fut
-    _msg(video_id, "confirm", id=card_id, command=call["name"], description=cmd.description,
+    conv = chat.conv
+    chat.pending[card_id] = (fut, conv)
+    _msg(video_id, "confirm", conv=conv, id=card_id, command=call["name"], description=cmd.description,
          args=args, level=level, status="pending")
     try:
         return bool(await asyncio.wait_for(fut, timeout=CONFIRM_TIMEOUT_S))
     except asyncio.TimeoutError:
-        _settle_card(video_id, card_id, False)          # 超时按拒绝处理，卡片不能永远停在"待确认"
+        _settle_card(video_id, card_id, False, conv)     # 超时按拒绝处理，卡片不能永远停在"待确认"
         return False
     finally:
         chat.pending.pop(card_id, None)
 
 
-def _settle_card(video_id: str, card_id: str, approved: bool) -> None:
-    """卡片的最终状态：落盘（刷新后还在）并通知前端。超时 / 取消导致的拒绝也走这里。"""
-    store.resolve_confirm_card(video_id, card_id, approved)
-    bus.publish(video_id, {"type": "chat", "kind": "confirm_resolved", "id": card_id, "approved": approved})
+def _settle_card(video_id: str, card_id: str, approved: bool, conv: str) -> None:
+    """卡片的最终状态：落回卡片所属会话并通知前端。超时 / 取消导致的拒绝也走这里。"""
+    store.resolve_confirm_card(video_id, card_id, approved, conv)
+    bus.publish(video_id, {"type": "chat", "kind": "confirm_resolved", "id": card_id,
+                           "approved": approved, "conv": conv})
 
 
 def resolve_confirmation(video_id: str, card_id: str, approve: bool) -> bool:
     chat = _chats.get(video_id)
-    fut = chat.pending.get(card_id) if chat else None
-    if fut is None or fut.done():
+    entry = chat.pending.get(card_id) if chat else None
+    if entry is None or entry[0].done():
         return False
-    fut.set_result(approve)
-    _settle_card(video_id, card_id, approve)
+    entry[0].set_result(approve)
+    _settle_card(video_id, card_id, approve, entry[1])
     return True
 
 
@@ -299,13 +316,15 @@ async def _run_tool(chat: Chat, video_id: str, call: dict) -> tuple[dict, Option
         if not approved:
             return {"ok": False, "error": "用户没有确认这个操作，已取消。不要重复请求，问问用户想怎么办。"}, None
 
-    bus.publish(video_id, {"type": "chat", "kind": "tool_call", "id": call["id"], "name": name, "args": args})
+    bus.publish(video_id, {"type": "chat", "kind": "tool_call", "id": call["id"], "name": name,
+                           "args": args, "conv": chat.conv})
     outcome = await R.execute(video_id, name, args, actor="ai", call_id=call["id"])
 
     audio = None
     if outcome.get("ok") and isinstance(outcome.get("result"), dict) and "_audio" in outcome["result"]:
         audio = outcome["result"].pop("_audio")
     bus.publish(video_id, {"type": "chat", "kind": "tool_result", "id": call["id"], "name": name,
+                           "conv": chat.conv,
                            "ok": bool(outcome.get("ok")),
                            "error": outcome.get("error") if not outcome.get("ok") else None})
     return outcome, audio
@@ -323,39 +342,47 @@ def _action_summary(name: str, args: dict, outcome: dict) -> Optional[dict]:
     return {"name": name, "label": label[:80], "summary": f"{name}({brief})"[:140]}
 
 
-async def handle_user_message(video_id: str, text: str) -> None:
-    """处理一条用户消息。串行：上一条没处理完时新消息排队。"""
+async def handle_user_message(video_id: str, text: str, conv: Optional[str] = None) -> None:
+    """
+    处理一条用户消息。串行：上一条没处理完时新消息排队。
+
+    `conv` 在请求进入时就固定下来：这一轮的所有落盘消息和事件都属于它，即使用户
+    中途切到别的会话，旧轮也不会把回答写进新会话。
+    """
     chat = chat_for(video_id)
     async with chat.lock:
+        conv = conv or store.current_conv(video_id)
+        chat.conv = conv
         chat.running = True
         chat.cancel.clear()
         try:
-            await _respond(chat, video_id, text)
+            await _respond(chat, video_id, text, conv)
         except asyncio.CancelledError:
             raise
         except Exception as e:
             logger.error(f"[{video_id}] chat failed: {e}", exc_info=True)
-            _msg(video_id, "error", text=f"出错了：{e}")
+            _msg(video_id, "error", conv=conv, text=f"出错了：{e}")
         finally:
             chat.running = False
-            bus.publish(video_id, {"type": "chat", "kind": "idle"})
+            chat.conv = ""
+            bus.publish(video_id, {"type": "chat", "kind": "idle", "conv": conv})
 
 
-async def _respond(chat: Chat, video_id: str, user_text: str) -> None:
-    since = _last_seen_seq(video_id)
+async def _respond(chat: Chat, video_id: str, user_text: str, conv: str) -> None:
+    since = _last_seen_seq(video_id, conv)
     digest = changes_digest(video_id, since)
-    _msg(video_id, "user", text=user_text)
+    _msg(video_id, "user", conv=conv, text=user_text)
 
     system = SYSTEM_PROMPT + "\n" + _context_block(video_id)
     messages: list[dict] = [{"role": "system", "content": system}]
-    messages += _history_messages(video_id)[:-1]          # 最后一条就是刚落盘的用户消息，下面单独拼
+    messages += _history_messages(video_id, conv)[:-1]          # 最后一条就是刚落盘的用户消息，下面单独拼
     final_user = user_text if not digest else f"{digest}\n\n【用户说】\n{user_text}"
     messages.append({"role": "user", "content": final_user})
 
     actions: list[dict] = []
     answer = ""
     message_id = uuid.uuid4().hex[:10]
-    bus.publish(video_id, {"type": "chat", "kind": "start", "id": message_id})
+    bus.publish(video_id, {"type": "chat", "kind": "start", "id": message_id, "conv": conv})
 
     stopped = False
     for step in range(MAX_STEPS):
@@ -418,17 +445,17 @@ async def _respond(chat: Chat, video_id: str, user_text: str) -> None:
         answer = (answer.rstrip() + "\n" if answer.strip() else "") + "（已停止）"
 
     seen = store.current_seq(video_id)
-    _msg(video_id, "assistant", id=message_id, text=answer.strip(), actions=actions, seen_seq=seen)
+    _msg(video_id, "assistant", conv=conv, id=message_id, text=answer.strip(), actions=actions, seen_seq=seen)
 
 
 def cancel_chat(video_id: str) -> None:
     chat = _chats.get(video_id)
     if chat:
         chat.cancel.set()
-        for card_id, fut in list(chat.pending.items()):
+        for card_id, (fut, conv) in list(chat.pending.items()):
             if not fut.done():
                 fut.set_result(False)
-                _settle_card(video_id, card_id, False)
+                _settle_card(video_id, card_id, False, conv)
 
 
 # ----------------------------------------------------------------------------
@@ -487,7 +514,9 @@ def welcome_text(video_id: str) -> str:
 
 
 def post_welcome(video_id: str) -> None:
-    """初始化成功后写入第一条消息（已经有消息就不重复）。"""
-    if store.read_chat(video_id, 1):
+    """初始化结束后写入第一条消息（当前会话已经有消息就不重复）。"""
+    conv = store.current_conv(video_id)
+    if store.read_chat(video_id, 1, conv=conv):
         return
-    _msg(video_id, "assistant", text=welcome_text(video_id), actions=[], seen_seq=store.current_seq(video_id), system=True)
+    _msg(video_id, "assistant", conv=conv, text=welcome_text(video_id), actions=[],
+         seen_seq=store.current_seq(video_id), system=True)

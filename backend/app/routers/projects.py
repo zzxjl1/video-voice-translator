@@ -190,21 +190,8 @@ async def setup_and_start(video_id: str, body: SetupBody):
     from app.commands.project import start_initialize
     ctx = R.Ctx(video_id=video_id, actor="system", cmd="setup")
     job = await start_initialize(ctx)
-    _after_init(video_id, job)
     return {"job": job.id}
 
-
-def _after_init(video_id: str, job) -> None:
-    """初始化任务结束后：进了编辑器（stage=ready）就发第一条聊天消息 —— 成功与失败都要发，
-    失败的那条会说明缺什么、怎么补（见 agent.welcome_text）。没有转写结果的失败不算。"""
-    async def watch():
-        try:
-            await job.task
-        except Exception:
-            pass                          # 原因已写进 init_report（见 jobs.initialize）
-        if store.exists(video_id) and store.require_state(video_id).stage == "ready":
-            agent.post_welcome(video_id)
-    asyncio.create_task(watch())
 
 
 # ----------------------------------------------------------------------------
@@ -302,14 +289,17 @@ class ConfirmBody(BaseModel):
 
 @router.get("/{video_id}/chat")
 def get_chat(video_id: str, conv: Optional[str] = None):
-    """当前会话（或 `?conv=` 指定的那个）的消息。"""
+    """当前会话（或 `?conv=` 指定的那个）的消息。纯读：不分配会话、不写盘。"""
     _need(video_id)
-    if conv and not any(c["id"] == conv for c in store.list_convs(video_id)):
+    wanted = conv if conv is not None else store.current_conv(video_id, create=False)
+    if wanted and not any(c["id"] == wanted for c in store.list_convs(video_id)):
         raise HTTPException(status_code=404, detail="没有这个会话")
+    chat = agent.chat_for(video_id)
     return {
-        "messages": store.read_chat(video_id, 300, conv=conv),
-        "running": agent.chat_for(video_id).running,
-        "conv": conv or store.current_conv(video_id),
+        "messages": store.read_chat(video_id, 300, conv=wanted),
+        # running 是"这一轮"的状态，不是工程级的：显示别的会话时不该显示停止按钮。
+        "running": chat.running and chat.conv == wanted,
+        "conv": wanted,
     }
 
 
@@ -318,7 +308,7 @@ def get_chat(video_id: str, conv: Optional[str] = None):
 @router.get("/{video_id}/chats")
 def list_chats(video_id: str):
     _need(video_id)
-    return {"current": store.current_conv(video_id), "conversations": store.list_convs(video_id)}
+    return {"current": store.current_conv(video_id, create=False), "conversations": store.list_convs(video_id)}
 
 
 @router.post("/{video_id}/chats")
@@ -329,15 +319,12 @@ def create_chat(video_id: str):
 
 
 class SelectConvBody(BaseModel):
-    conv: str = ""
+    conv: str
 
 
 @router.post("/{video_id}/chats/select")
 def select_chat(video_id: str, body: SelectConvBody):
-    """
-    切到某个会话。id 走 body 而不是路径：默认会话的 id 是**空串**，放进路径会变成
-    `/chats//select`，那一层路由匹配不到，只能 404。
-    """
+    """切到某个会话。id 走 body 而不是路径，避免空值/特殊字符拼进 URL。"""
     _need(video_id)
     if not store.select_conv(video_id, body.conv):
         raise HTTPException(status_code=404, detail="没有这个会话")
@@ -352,7 +339,8 @@ async def post_chat(video_id: str, body: ChatBody):
         raise HTTPException(status_code=400, detail="消息不能为空")
     if len(text) > 4000:
         raise HTTPException(status_code=400, detail="消息太长（最多 4000 字）")
-    asyncio.create_task(agent.handle_user_message(video_id, text))
+    # 请求进入时就锁定会话：用户可能在排队期间切了会话，这一轮仍属于原来的那个。
+    asyncio.create_task(agent.handle_user_message(video_id, text, store.current_conv(video_id, create=False)))
     return {"accepted": True}
 
 

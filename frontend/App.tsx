@@ -56,7 +56,7 @@ const App: React.FC = () => {
   const [recent, setRecent] = useState<RecentProject[]>([]);
 
   const project = useProject(videoId);
-  const { project: view, loadError } = project;
+  const { project: view, loadError, notFound } = project;
 
   // 浏览器端分离的进度（在服务端初始化之前发生，所以不走事件流）
   const [prep, setPrep] = useState<InitState>(emptyInit);
@@ -98,14 +98,16 @@ const App: React.FC = () => {
     setVideoId(id);
   }, []);
 
-  // 工程不存在：回到落地页
+  // 只有"工程本身 404"才回落地页。以前用错误文案匹配（/不存在|not found/），
+  // 任何一个可选接口返回 Not Found 都会把正在初始化的用户踢回首页 —— 而后端
+  // 的 job 还在跑、日志还在刷进度。
   useEffect(() => {
-    if (loadError && videoId && /不存在|not found/i.test(loadError)) {
+    if (notFound && videoId) {
       forgetRecentProject(videoId);
       fileRef.current = undefined;
       open(null, true);
     }
-  }, [loadError, videoId, open]);
+  }, [notFound, videoId, open]);
 
   // —— 开始：上传 → （浏览器分离）→ setup ——
   const start = useCallback(async () => {
@@ -114,10 +116,11 @@ const App: React.FC = () => {
     setStarting(true);
     setStartError(null);
     setPrep(emptyInit());
+    let uploadedId: string | null = null;
     try {
       const uploaded = await api.upload(file);
+      uploadedId = uploaded.id;
       touchRecentProject(uploaded.id, uploaded.filename);
-      open(uploaded.id);                       // 先切到初始化页，分离的进度在那里显示
 
       let mode: SeparationMode = enableDubbing ? separationMode : 'off';
       if (mode === 'client') {
@@ -150,8 +153,11 @@ const App: React.FC = () => {
     } catch (e) {
       setPreparing(false);
       setStartError(e instanceof Error ? e.message : String(e));
-      if (!readId()) return;
     } finally {
+      // 必须在 setup 之后才切到工程页：setup 会先把 stage 改成 initializing。
+      // 以前先切页，若这个 id 是一个已经 ready 的工程（上传按 MD5 复用），
+      // 界面会先用旧的 ready 渲染出编辑器，随后才跳回初始化页。
+      if (uploadedId) open(uploadedId);
       setStarting(false);
     }
   }, [targetLanguage, targetAccent, enableDubbing, enableVoiceClone, cloneSmartPick, mmEnhance, customPrompt, separationMode, open]);
@@ -186,6 +192,7 @@ const App: React.FC = () => {
   // —— 页面 ——
   if (!videoId) {
     return (
+      <>
       <VideoUpload
         onFilePicked={(f) => { fileRef.current = f; setPickedName(f.name); setStartError(null); }}
         pendingFileName={pickedName}
@@ -213,6 +220,20 @@ const App: React.FC = () => {
         onOpenProject={(id) => open(id)}
         onDeleteProject={(id, name) => void deleteProject(id, name)}
       />
+      {/* 浏览器端人声分离发生在切页之前（要赶在 init 任务开始前上传音轨），
+          这一步的进度和上传/启动失败都要在落地页上可见。 */}
+      {(starting || preparing || startError) && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 w-[min(560px,90vw)] bg-white border border-claude-border rounded-2xl shadow-xl px-5 py-4 space-y-1.5">
+          <div className="text-xs font-bold text-gray-700">
+            {startError ? '没能开始处理' : preparing ? '正在浏览器里分离人声…' : '正在上传并准备…'}
+          </div>
+          {startError && <div className="text-[12px] text-red-500">{startError}</div>}
+          {!startError && prep.log.slice(-3).map((l) => (
+            <div key={l.key} className="text-[11px] text-gray-400 truncate">{l.text}</div>
+          ))}
+        </div>
+      )}
+      </>
     );
   }
 
@@ -222,7 +243,10 @@ const App: React.FC = () => {
         {loadError ? (
           <div className="text-center space-y-3">
             <p className="text-red-500">{loadError}</p>
-            <button onClick={() => open(null)} className="px-4 py-2 rounded-xl border border-claude-border text-xs font-bold text-gray-500 hover:bg-white">返回</button>
+            <div className="flex items-center justify-center gap-2">
+              <button onClick={() => void project.reload()} className="px-4 py-2 rounded-xl bg-claude-accent text-white text-xs font-bold hover:bg-claude-accentHover">重试</button>
+              <button onClick={() => open(null)} className="px-4 py-2 rounded-xl border border-claude-border text-xs font-bold text-gray-500 hover:bg-white">返回</button>
+            </div>
           </div>
         ) : '加载中…'}
       </div>
@@ -255,7 +279,19 @@ const App: React.FC = () => {
     );
   }
 
-  return <EditorPage project={project} file={fileRef.current} onHome={() => open(null)} />;
+  return (
+    <>
+      <EditorPage project={project} onHome={() => open(null)} />
+      {/* 对已完成的工程重新点「开始处理」时，setup 可能在 stage=ready 上就失败；
+          初始化页不会出现，这条错误也得有地方显示。 */}
+      {startError && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 w-[min(520px,90vw)] bg-white border border-red-200 rounded-2xl shadow-xl px-5 py-3 flex items-center gap-4 text-xs">
+          <span className="text-red-500 flex-grow">{startError}</span>
+          <button onClick={() => setStartError(null)} className="px-3 py-1.5 rounded-lg border border-claude-border text-gray-500 font-bold hover:bg-white">关闭</button>
+        </div>
+      )}
+    </>
+  );
 };
 
 export default App;

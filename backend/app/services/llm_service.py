@@ -635,7 +635,7 @@ async def _translate_chunk(
                     "per line, and never with a BOM."
                 )
                 continue
-            result: dict[str, str] = {}
+            fresh: dict[str, str] = {}
             duplicates: list[str] = []
             for entry in parsed:
                 if not isinstance(entry, dict) or entry.get("id") is None:
@@ -643,19 +643,22 @@ async def _translate_chunk(
                 key = str(entry["id"])
                 if key not in chunk_ids:
                     continue
-                if key in result:
+                if key in fresh:
                     duplicates.append(key)
                 # An EMPTY translation is not a translation: downstream
                 # `to_synthesize` filters on `seg.translated_text`, so keeping
                 # "" here would make the line silently vanish from the dub.
                 # Dropped below by the same `v` filter as missing ids.
-                result[key] = str(entry.get("translatedText", "")).strip()
+                fresh[key] = str(entry.get("translatedText", "")).strip()
             if duplicates:
                 logger.warning(
                     f"{name}: model returned duplicate ids "
                     f"{sorted(set(duplicates))} — keeping the last answer"
                 )
-            result = {k: v for k, v in result.items() if v}
+            fresh = {k: v for k, v in fresh.items() if v}
+            # Best-effort：这一轮只补了缺的几句时，之前 attempt 已经拿到的行必须
+            # 保留。整体替换成 fresh 会把它们丢掉，白送进补翻轮甚至丢译文。
+            result.update(fresh)
             missing = chunk_ids - set(result.keys())
             if not missing:
                 return result, set()
@@ -684,7 +687,10 @@ async def _translate_chunk(
 
     logger.error(f"{name} failed after retries: {last_error}")
     if error_sink is not None:
+        error_sink.setdefault("first", last_error)
         error_sink["last"] = last_error
+        if _is_auth_error(last_error):
+            error_sink["auth"] = True
     # Never throw away what the last attempt DID produce: a truncated response
     # often yields most of the chunk, and dropping it would send every one of
     # those lines to the second pass — or out of the dub entirely.
@@ -871,7 +877,7 @@ async def translate_script(
     # giving up, re-request exactly the dropped ids — they are few, they can go
     # in one request, and the retry machinery inside _translate_chunk applies
     # to them as well.
-    if failed_ids:
+    if failed_ids and not chunk_errors.get("auth"):
         retry_items = [item for item in items if item["id"] in failed_ids]
         logger.info(
             f"[{video_id}] Second pass: re-translating {len(retry_items)} dropped segment(s)"
@@ -914,10 +920,11 @@ async def translate_script(
     if not translations:
         # The raise sits AFTER the second pass on purpose: a first pass that
         # failed entirely still gets its repair chance before this is an error.
-        reason = str(chunk_errors.get("last") or "unknown")
+        first_error = chunk_errors.get("first")
+        reason = str(first_error or chunk_errors.get("last") or "unknown")
         hint = (
-            "连接失败（网络/代理/DNS 或服务端暂时不可达）" if _is_connection_error(chunk_errors.get("last"))
-            else "鉴权失败（检查 LLM_API_KEY）" if _is_auth_error(chunk_errors.get("last"))
+            "连接失败（网络/代理/DNS 或服务端暂时不可达）" if _is_connection_error(first_error)
+            else "鉴权失败（检查 LLM_API_KEY）" if _is_auth_error(first_error)
             else "请求被拒绝（原因见上）"
         )
         raise RuntimeError(

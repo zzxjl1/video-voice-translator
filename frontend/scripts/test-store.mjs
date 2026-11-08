@@ -5,7 +5,7 @@
  *   node scripts/test-store.mjs
  */
 import { applyPatch, applyChange, speakerColor, summarize, lineAt } from '../store/project.ts';
-import { reduceChat, emptyChat, loadChat, pendingConfirms, stepLabel } from '../store/chat.ts';
+import { reduceChat, emptyChat, loadChat, pendingConfirms, stepLabel, chatEventMatches } from '../store/chat.ts';
 import { reduceInit, emptyInit, overallProgress, failInit } from '../store/init.ts';
 import { EventClient } from '../net/events.ts';
 
@@ -66,6 +66,8 @@ const base = () => ({
   const s2 = applyPatch(s1, { mix: null });
   check('④ mix: null 明确地清掉混音计划（没有可混的配音）', s2.mix === null);
   check('④ 空 patch = 原状', applyPatch(s0, {}).segments === s0.segments);
+  check('④ chatConv 通过增量同步（resync 时能拿回当前会话）',
+    applyPatch(s0, { chatConv: 'conv-new' }).chatConv === 'conv-new');
 }
 
 // ------------------------------------------------------------------ ③ applyChange：连续性
@@ -133,6 +135,11 @@ const base = () => ({
   const loaded = loadChat([{ id: 'a', role: 'user', ts: 1, text: 'hi' }], true);
   check('⑨ 从落盘记录恢复', loaded.messages.length === 1 && loaded.busy && loaded.streaming === null);
 
+  // 会话事件过滤：切会话后旧一轮事件不能污染新会话
+  check('⑨a 会话过滤：同 conv 放行、异 conv 丢弃、无 conv 兼容',
+    chatEventMatches({ conv: 'A' }, 'A') && !chatEventMatches({ conv: 'A' }, 'B')
+    && chatEventMatches({}, 'B') && chatEventMatches({ conv: 'A' }, ''));
+
   // 输出完还挂着"输出中 + 停止按钮"：GET /chat 的快照（running=true）比事件旧，
   // 落在 message/idle 之后会把 busy 覆盖成 true。判据要落在消息上。
   const asst = { id: 'm1', role: 'assistant', ts: 1, text: '说完了' };
@@ -154,6 +161,11 @@ const base = () => ({
   system = reduceChat(system, { type: 'chat', seq: 1, kind: 'start', id: 'r10' });
   system = reduceChat(system, { type: 'chat', seq: 2, kind: 'message', message: { id: 'w1', role: 'assistant', ts: 3, text: '欢迎', system: true } });
   check('⑨b 系统欢迎消息不算"这一轮结束"（不会误清进行中的流）', system.busy === true && system.streaming?.id === 'r10');
+  check('⑨b error 消息也是一轮结束（异常时后端不写 assistant）', loadChat([usr, { id: 'e1', role: 'error', ts: 3, text: '出错了' }], true).busy === false);
+  check('⑨b 快照里的 system 欢迎消息不该让进行中的轮次失去停止按钮',
+    loadChat([{ id: 'w1', role: 'assistant', ts: 1, text: '欢迎', system: true }], true).busy === true);
+  const errTurn = reduceChat(loadChat([usr], true), { type: 'chat', seq: 1, kind: 'message', message: { id: 'e2', role: 'error', ts: 2, text: '出错了' } });
+  check('⑨b error 事件也清掉流式气泡', errTurn.busy === false && errTurn.streaming === null);
 
   check('⑩ 步骤标签：带行号', stepLabel({ name: 'set_muted', args: { lines: [1, 2, 3] } }) === '静音（第 1、2、3 句）');
   check('⑩ 步骤标签：单句', stepLabel({ name: 'edit_source', args: { line: 4 } }) === '改原文（第 4 句）');

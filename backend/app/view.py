@@ -17,7 +17,7 @@ from app.models import Segment, Speaker, VideoState, video_dir_path
 # 增量里这些顶层键变了就整块发（体积小）；segments 单独按行比较。
 _BLOCK_KEYS = (
     "stage", "initError", "initReport", "settings", "speakers", "subtitle",
-    "needs", "hasStems", "filename",
+    "needs", "hasStems", "filename", "chatConv",
 )
 
 
@@ -99,6 +99,7 @@ def state_view(state: VideoState) -> dict:
         "subtitle": {"style": state.subtitle_style, "export": state.subtitle_export},
         "needs": status.needs(state),
         "hasStems": os.path.exists(os.path.join(base, "background.wav")),
+        "chatConv": state.chat_conv,
         "mix": mix_view(state),
     }
 

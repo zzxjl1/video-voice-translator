@@ -39,6 +39,14 @@ export interface ChatState {
 export const emptyChat = (): ChatState => ({ messages: [], streaming: null, busy: false });
 
 /**
+ * 事件是否属于界面当前看的会话。切换会话后旧一轮的 delta / message / idle
+ * 一律丢弃，否则旧回答会显示在新会话里。老事件没有 conv 时按当前会话处理。
+ */
+export function chatEventMatches(event: { conv?: string }, currentConv: string): boolean {
+  return !event.conv || !currentConv || event.conv === currentConv;
+}
+
+/**
  * 用服务端落盘的记录hydrate。
  *
  * `running` **不能**直接当成 busy：`GET /chat` 的这份快照可能比实时事件旧 —— 请求发出时
@@ -49,8 +57,12 @@ export const emptyChat = (): ChatState => ({ messages: [], streaming: null, busy
  * running 且最后一条消息不是 assistant。用消息本身判断，就不依赖快照与事件谁先到。
  */
 export function loadChat(messages: ChatMessage[], running: boolean): ChatState {
+  // 一轮结束的标志：assistant 消息（系统欢迎消息不算），或 error（异常时后端不写
+  // assistant）。user / confirm 结尾才是真正在进行中。
   const last = messages[messages.length - 1];
-  const midTurn = running && last?.role !== 'assistant';
+  const settled = last?.role === 'error'
+    || (last?.role === 'assistant' && !last.system);
+  const midTurn = running && !settled && last !== undefined;
   return { messages, streaming: null, busy: midTurn };
 }
 
@@ -93,7 +105,7 @@ export function reduceChat(state: ChatState, event: ChatEvent): ChatState {
       const m = event.message;
       // 后端的 assistant 消息只在整轮结束时写一次 —— 它一到，这一轮就结束了。
       // 不去只依赖 `idle`：事件流重连/丢帧时 idle 可能永远不来，界面会卡在"输出中"。
-      const finishesTurn = m.role === 'assistant' && !m.system;
+      const finishesTurn = m.role === 'error' || (m.role === 'assistant' && !m.system);
       if (state.messages.some((x) => x.id === m.id)) {
         // 同 id 的消息：用落盘版本替换（流式气泡用的就是这个 id）
         return {

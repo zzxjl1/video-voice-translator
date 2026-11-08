@@ -31,8 +31,6 @@ interface Props {
   currentTime: number;
   flash: Flash;
   mix: Map<string, MixPlanSegment>;
-  /** 正在被任务处理的行（不能编辑）。 */
-  busyIds: Set<string>;
   dubbing: boolean;
   actions: ScriptActions;
 }
@@ -43,7 +41,7 @@ const STATUS: Record<string, { text: string; tone: string }> = {
 };
 
 const ScriptPanel: React.FC<Props> = ({
-  lines, speakers, colorOf, currentTime, flash, mix, busyIds, dubbing, actions,
+  lines, speakers, colorOf, currentTime, flash, mix, dubbing, actions,
 }) => {
   const listRef = useRef<HTMLDivElement>(null);
   const speakerById = useMemo(() => new Map(speakers.map((s) => [s.id, s])), [speakers]);
@@ -82,7 +80,6 @@ const ScriptPanel: React.FC<Props> = ({
               active={line.id === activeId}
               flashBy={flash[line.id]}
               mixEntry={mix.get(line.id)}
-              busy={busyIds.has(line.id)}
               dubbing={dubbing}
               actions={actions}
             />
@@ -102,12 +99,11 @@ interface CardProps {
   active: boolean;
   flashBy?: 'user' | 'ai' | 'system';
   mixEntry?: MixPlanSegment;
-  busy: boolean;
   dubbing: boolean;
   actions: ScriptActions;
 }
 
-const LineCard = memo(({ line, speaker, color, active, flashBy, mixEntry, busy, dubbing, actions }: CardProps) => {
+const LineCard = memo(({ line, speaker, color, active, flashBy, mixEntry, dubbing, actions }: CardProps) => {
   const slot = line.end - line.start;
   const nonSpeech = line.kind !== 'speech';
   const ratio = line.audioDuration && slot > 0 ? line.audioDuration / slot : null;
@@ -144,7 +140,6 @@ const LineCard = memo(({ line, speaker, color, active, flashBy, mixEntry, busy, 
           {line.trSuspect && <Tag tone="bg-red-50 text-red-600 border-red-200" title="译文看起来还是原文的文字，可能根本没翻译">疑似未翻译</Tag>}
           {!nonSpeech && STATUS[line.trStatus] && <Tag tone={STATUS[line.trStatus].tone}>译文{STATUS[line.trStatus].text}</Tag>}
           {dubbing && !nonSpeech && !line.muted && STATUS[line.ttsStatus] && <Tag tone={STATUS[line.ttsStatus].tone}>配音{STATUS[line.ttsStatus].text}</Tag>}
-          {busy && <Tag tone="bg-claude-accent/10 text-claude-accent border-claude-accent/30">处理中</Tag>}
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
           <button
@@ -162,7 +157,7 @@ const LineCard = memo(({ line, speaker, color, active, flashBy, mixEntry, busy, 
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M21 12c0 4.4-4 8-9 8a9.9 9.9 0 01-4-.8L3 20l1.3-3.9A7.6 7.6 0 013 12c0-4.4 4-8 9-8s9 3.6 9 8z" /></svg>
           </button>
           <div className="relative">
-            <button onClick={() => setMenu((v) => !v)} className="p-1.5 rounded-md hover:bg-claude-paper text-gray-400 hover:text-gray-600 transition-colors" title="更多">
+            <button onClick={() => setMenu((v) => !v)} data-line-menu-trigger className="p-1.5 rounded-md hover:bg-claude-paper text-gray-400 hover:text-gray-600 transition-colors" title="更多">
               <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
             </button>
             {menu && <LineMenu line={line} dubbing={dubbing} actions={actions} onClose={() => setMenu(false)} />}
@@ -172,14 +167,14 @@ const LineCard = memo(({ line, speaker, color, active, flashBy, mixEntry, busy, 
 
       {/* 正文 */}
       <div className="space-y-4">
-        <Editable label="Original" value={line.text} secondary disabled={busy} onCommit={(v) => actions.edit(line.id, 'text', v, line.line)} />
+        <Editable label="Original" value={line.text} secondary onCommit={(v) => actions.edit(line.id, 'text', v, line.line)} />
         {line.reviewedText && line.reviewedText !== line.text && (
           <div className="text-[11px] text-gray-400 leading-relaxed -mt-2 pl-0.5">
             <span className="font-bold uppercase tracking-widest text-[9px] text-claude-accent/70 mr-1.5">审听版</span>{line.reviewedText}
           </div>
         )}
         {!nonSpeech && (
-          <Editable label="Translation" value={line.translation} placeholder="译文会出现在这里…" disabled={busy} onCommit={(v) => actions.edit(line.id, 'translation', v, line.line)} />
+          <Editable label="Translation" value={line.translation} placeholder="译文会出现在这里…" onCommit={(v) => actions.edit(line.id, 'translation', v, line.line)} />
         )}
       </div>
 
@@ -204,10 +199,9 @@ const LineCard = memo(({ line, speaker, color, active, flashBy, mixEntry, busy, 
           ) : line.translation && line.trStatus !== 'stale' ? (
             <button
               onClick={() => actions.redub(line)}
-              disabled={busy}
-              className="w-full py-2.5 rounded-xl text-[10px] font-bold uppercase tracking-[0.15em] border bg-white border-claude-border text-claude-accent hover:bg-claude-paper active:scale-[0.98] transition-all disabled:opacity-40"
+              className="w-full py-2.5 rounded-xl text-[10px] font-bold uppercase tracking-[0.15em] border bg-white border-claude-border text-claude-accent hover:bg-claude-paper active:scale-[0.98] transition-all"
             >
-              {busy ? '合成中…' : line.ttsStatus === 'stale' ? '重新生成配音' : '生成配音'}
+              {line.ttsStatus === 'stale' ? '重新生成配音' : '生成配音'}
             </button>
           ) : null}
         </div>
@@ -399,7 +393,11 @@ const Editable: React.FC<EditableProps> = ({ label, value, placeholder, secondar
 const LineMenu: React.FC<{ line: Line; dubbing: boolean; actions: ScriptActions; onClose: () => void }> = ({ line, dubbing, actions, onClose }) => {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    const onDown = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) onClose(); };
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as HTMLElement;
+      if (ref.current?.contains(t) || t.closest('[data-line-menu-trigger]')) return;
+      onClose();
+    };
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     document.addEventListener('mousedown', onDown);
     document.addEventListener('keydown', onKey);

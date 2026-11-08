@@ -86,8 +86,10 @@ async def clone_voice(ctx: Ctx, speaker: str, reference_lines: Optional[list] = 
 
     job = await jobs.run(ctx.video_id, "clone", f"克隆 {sp.name}", ctx.actor, body)
     result = await job.task
+    if job.error:
+        raise CommandError(f"克隆失败：{job.error}")
     if result is None:
-        raise CommandError("克隆没有完成（失败或被取消），详情见任务事件")
+        raise CommandError("克隆没有完成（可能被取消）")
     return {**result, "note": "该说话人的配音已过期；redub 补上"}
 
 

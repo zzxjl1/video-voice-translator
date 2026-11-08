@@ -106,6 +106,7 @@ export interface JobInfo {
   done: number;
   total: number;
   cancelling: boolean;
+  error?: string | null;
   elapsedS: number;
 }
 
@@ -128,6 +129,8 @@ export interface ProjectView {
   id: string;
   rev: number;
   seq: number;
+  /** 服务端当前会话 id（resync 时也能同步回来）。 */
+  chatConv: string;
   filename: string;
   stage: Stage;
   initError: string | null;
@@ -157,6 +160,7 @@ export interface ViewPatch {
   needs?: Needs;
   hasStems?: boolean;
   filename?: string;
+  chatConv?: string;
   mix?: Mix | null;
 }
 
@@ -233,16 +237,29 @@ export interface ChatMessage {
   status?: 'pending' | 'approved' | 'rejected';
 }
 
-export type ChatEvent =
-  | { type: 'chat'; seq: number; kind: 'start'; id: string }
-  | { type: 'chat'; seq: number; kind: 'delta'; id: string; text: string }
-  | { type: 'chat'; seq: number; kind: 'message'; message: ChatMessage }
-  | { type: 'chat'; seq: number; kind: 'tool_call'; id: string; name: string; args: Record<string, unknown> }
-  | { type: 'chat'; seq: number; kind: 'tool_result'; id: string; name: string; ok: boolean; error: string | null }
-  | { type: 'chat'; seq: number; kind: 'confirm_resolved'; id: string; approved: boolean }
-  | { type: 'chat'; seq: number; kind: 'idle' };
+/** `conv` 是事件所属会话；前端据此过滤掉"切换会话前那一轮"的迟到事件。 */
+type ChatEventBase = { type: 'chat'; seq: number; conv?: string };
 
-export type ServerEvent = ChangeEvent | JobEvent | ProgressEvent | UiEvent | ChatEvent;
+export type ChatEvent = ChatEventBase & (
+  | { kind: 'start'; id: string }
+  | { kind: 'delta'; id: string; text: string }
+  | { kind: 'message'; message: ChatMessage }
+  | { kind: 'tool_call'; id: string; name: string; args: Record<string, unknown> }
+  | { kind: 'tool_result'; id: string; name: string; ok: boolean; error: string | null }
+  | { kind: 'confirm_resolved'; id: string; approved: boolean }
+  | { kind: 'idle' }
+);
+
+/** 会话切换（静默写）：不是 change，不进 AI 的改动摘要，但要通知所有标签页。 */
+export interface ConversationEvent {
+  type: 'conversation';
+  seq: number;
+  ts?: number;
+  conv: string;
+}
+
+export type ServerEvent =
+  | ChangeEvent | JobEvent | ProgressEvent | UiEvent | ChatEvent | ConversationEvent;
 
 export interface CommandResult<T = Record<string, unknown>> {
   ok: boolean;

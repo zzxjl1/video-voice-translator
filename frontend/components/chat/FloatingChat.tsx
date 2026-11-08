@@ -70,11 +70,10 @@ function load(): Rect {
 }
 
 interface Props {
-  onClose: () => void;
   children: (dragProps: DragProps) => React.ReactNode;
 }
 
-const FloatingChat: React.FC<Props> = ({ onClose, children }) => {
+const FloatingChat: React.FC<Props> = ({ children }) => {
   const [rect, setRect] = useState<Rect>(load);
   const drag = useRef<{ mode: 'move' | 'resize'; sx: number; sy: number; from: Rect } | null>(null);
 

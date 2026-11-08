@@ -154,8 +154,10 @@ async def export_video(ctx: Ctx, format: Optional[str] = None):
 
     job = await jobs.run(ctx.video_id, "export", "导出", ctx.actor, body, exclusive=True)
     result = await job.task
+    if job.error:
+        raise CommandError(f"导出失败：{job.error}")
     if result is None:
-        raise CommandError("导出没有完成，详情见任务事件")
+        raise CommandError("导出没有完成（可能被取消）")
     ctx.ui("export_ready", url=f"/api/projects/{ctx.video_id}/export/download")
     return {"container": result.container, "size_mb": round(__import__("os").path.getsize(result.path) / 1048576, 1),
             "download": f"/api/projects/{ctx.video_id}/export/download"}

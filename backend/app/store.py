@@ -20,6 +20,7 @@ import logging
 import os
 import shutil
 import threading
+import time
 import uuid
 from collections import deque
 from dataclasses import dataclass
@@ -93,9 +94,13 @@ def create(video_id: str, filename: str, file_path: str) -> VideoState:
         if existing is not None:
             return copy.deepcopy(existing)
         get_video_dir(video_id)
-        state = VideoState(video_id=video_id, filename=filename, file_path=file_path)
+        # 会话 id 在工程创建时就定下：GET 永远不必为了"分配会话"去写盘。
+        conv = uuid.uuid4().hex[:10]
+        state = VideoState(video_id=video_id, filename=filename, file_path=file_path,
+                           chat_conv=conv)
         _write(state)
         _cache[video_id] = state
+        register_conv(video_id, conv)
         return copy.deepcopy(state)
 
 
@@ -249,11 +254,18 @@ def mutate(
         if after_dict == before_dict:
             return Mutation(value, False, current.rev)
 
-        work.rev = current.rev + 1
-        after_dict["rev"] = work.rev
+        if not silent:
+            work.rev = current.rev + 1
+            after_dict["rev"] = work.rev
         _write(work)
         _cache[video_id] = work
         if silent:
+            # 静默写不推 rev：客户端靠 rev 连续判增量，凭空跳号会让下一条真实
+            # change 被判成"漏了事件"而整份重取。会话切换单独发一个 conversation
+            # 事件（type 不是 change，AI 的改动摘要不会读它）。
+            pub = bus.publish(video_id, {"type": "conversation", "conv": work.chat_conv})
+            _persist_event(video_id, {"type": "conversation", "conv": work.chat_conv,
+                                      "seq": pub["seq"], "ts": pub["ts"]})
             return Mutation(value, True, work.rev)
 
         patch = view.diff(before_view, view.snapshot(work))
@@ -351,10 +363,16 @@ def _chat_path(video_id: str) -> str:
     return os.path.join(video_dir_path(video_id), CHAT_FILE)
 
 
-def current_conv(video_id: str) -> str:
-    """当前会话 id；还没开过就现开一个并写回工程（幂等）。"""
+def current_conv(video_id: str, create: bool = True) -> str:
+    """
+    当前会话 id。
+
+    `create=False` 给只读的 GET 用：工程还没有会话时直接返回空串，**不写盘**。
+    以前 GET 会顺手 mutate，纯读请求改文档、抬 rev，还会让两个并发 GET 抢着建
+    会话。新工程在 `create()` 时就分配好 id，只有升级前遗留的空值才走到 `create=True`。
+    """
     conv = require_state(video_id).chat_conv
-    if conv:
+    if conv or not create:
         return conv
     conv = uuid.uuid4().hex[:10]
 
@@ -362,7 +380,13 @@ def current_conv(video_id: str) -> str:
         if not s.chat_conv:
             s.chat_conv = conv
     mutate(video_id, apply, actor="system", cmd="chat_conv", summary="新会话", undoable=False, silent=True)
-    return require_state(video_id).chat_conv or conv
+    return require_state(video_id).chat_conv
+
+
+def register_conv(video_id: str, conv: str) -> None:
+    """登记一个会话。空会话也必须从这里可枚举 —— 只从消息行反推的话，新建后
+    先切走就再也选不回来。"""
+    append_chat(video_id, {"conv": conv, "role": "conv_meta", "ts": time.time()})
 
 
 def append_chat(video_id: str, message: dict) -> dict:
@@ -389,7 +413,9 @@ def read_chat(video_id: str, limit: int = 200, conv: Optional[str] = None) -> li
     path = _chat_path(video_id)
     if not os.path.isfile(path):
         return []
-    wanted = conv if conv is not None else current_conv(video_id)
+    wanted = conv if conv is not None else current_conv(video_id, create=False)
+    if not wanted:
+        return []                       # 没有会话：老工程的无 conv 行不迁移
     rows: list[dict] = []
     with lock_for(video_id):
         try:
@@ -407,7 +433,7 @@ def read_chat(video_id: str, limit: int = 200, conv: Optional[str] = None) -> li
     states = {r["ref"]: r["status"] for r in rows if r.get("role") == "confirm_state"}
     out = []
     for r in rows:
-        if r.get("role") == "confirm_state":
+        if r.get("role") in ("confirm_state", "conv_meta"):
             continue
         if r.get("role") == "confirm" and r["id"] in states:
             r = {**r, "status": states[r["id"]]}
@@ -423,8 +449,6 @@ def list_convs(video_id: str) -> list[dict]:
     扫整个文件：一个工程的聊天记录就是几百行量级，比起再维护一份索引，简单更可靠。
     """
     path = _chat_path(video_id)
-    if not os.path.isfile(path):
-        return []
     rows: list[dict] = []
     with lock_for(video_id):
         try:
@@ -438,7 +462,7 @@ def list_convs(video_id: str) -> list[dict]:
                     except json.JSONDecodeError:
                         continue
         except OSError:
-            return []
+            rows = []
     convs: dict[str, dict] = {}
     for r in rows:
         cid = r.get("conv")
@@ -451,6 +475,12 @@ def list_convs(video_id: str) -> list[dict]:
         if not entry["title"] and r.get("role") == "user" and r.get("text"):
             entry["title"] = " ".join(str(r["text"]).split())[:40]
     out = list(convs.values())
+    # 当前会话即使一条消息都没有，也必须是可枚举的 —— 否则"新对话"后先切走，
+    # 这个空会话就再也选不回来（GET /chat?conv= 也会 404）。
+    current = require_state(video_id).chat_conv
+    if current and current not in convs:
+        out.append({"id": current, "title": "新的对话",
+                    "updated": require_state(video_id).rev, "count": 0})
     for entry in out:
         entry["title"] = entry["title"] or "新的对话"
     out.sort(key=lambda e: e["updated"], reverse=True)
@@ -464,6 +494,7 @@ def new_conv(video_id: str) -> str:
     def apply(s):
         s.chat_conv = conv
     mutate(video_id, apply, actor="system", cmd="chat_conv", summary="新会话", undoable=False, silent=True)
+    register_conv(video_id, conv)
     return conv
 
 
@@ -478,8 +509,9 @@ def select_conv(video_id: str, conv: str) -> bool:
     return True
 
 
-def resolve_confirm_card(video_id: str, card_id: str, approved: bool) -> None:
-    append_chat(video_id, {"role": "confirm_state", "ref": card_id,
+def resolve_confirm_card(video_id: str, card_id: str, approved: bool, conv: str) -> None:
+    """卡片的最终状态落回**卡片所属**的会话，不是"点确认那一刻"的当前会话。"""
+    append_chat(video_id, {"conv": conv, "role": "confirm_state", "ref": card_id,
                            "status": "approved" if approved else "rejected"})
 
 

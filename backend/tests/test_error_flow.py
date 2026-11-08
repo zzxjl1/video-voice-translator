@@ -47,6 +47,8 @@ import app.services.llm_service as L
 async def dead_net(*a, **kw):
     raise APIConnectionError(request=req())
 L._chat = dead_net
+ORIGINAL_RETRY = config.LLM_RETRY_SECONDS
+ORIGINAL_CHAT = L._chat
 config.LLM_RETRY_SECONDS = 0.01
 
 r = run("retranslate", {})
@@ -65,7 +67,8 @@ async def no_key(*a, **kw):
 L._chat = no_key
 r = run("retranslate", {})
 # 术语表 1 次 + 正文 1 次（正文在第一次 401 后立即停止，不再退避重试两次）
-check("② 401 不重试：术语表 + 正文各 1 次（共 2 次，而不是 3×2=6 次）", auth_calls["n"] == 2, auth_calls)
+# 只有正文 1 次：1 行文本走缓存不抽术语表；永久性错误也不再走补翻轮。
+check("② 401 只发 1 次请求（不重试、不补翻）", auth_calls["n"] == 1, auth_calls)
 check("② 报错指明是鉴权问题", "鉴权" in (r.get("error") or ""), r.get("error"))
 
 # ------------------------------------------------------------------ ③ 连接错误走重试，最终报错给出网络提示和端点
@@ -106,6 +109,24 @@ async def main():
 j = asyncio.run(main())
 check("⑤ wrapper 吞掉异常但 job.error 记下原因", j.error == "炸了" and j.task.exception() is None,
       (j.error, j.task.exception()))
+
+# 跨 attempt 累积：第二次只补回缺的那句，前一次已拿到的行不能丢
+fresh()
+async def twice(prompt, **kw):
+    twice.n += 1
+    return ("[{\"id\": \"a\", \"translatedText\": \"A\"}]" if twice.n == 1
+            else "[{\"id\": \"a\", \"translatedText\": \"A\"}, {\"id\": \"b\", \"translatedText\": \"B\"}]"), {}
+twice.n = 0
+L._chat = twice
+import tempfile as _tf
+sink = {}
+res, missing = asyncio.run(L._translate_chunk([{"id": "a", "text": "x"}, {"id": "b", "text": "y"}], [], {}, "English",
+                                              _tf.mkdtemp(), 7, error_sink=sink, log_name="测试"))
+check("⑥ 跨 attempt 累积：补回缺的 id 时保留已有译文", res == {"a": "A", "b": "B"} and missing == set(), (res, missing))
+
+# 还原被本脚本改过的全局（脚本式测试跑完进程就退出，但别给后续用例留坑）
+config.LLM_RETRY_SECONDS = ORIGINAL_RETRY
+L._chat = ORIGINAL_CHAT
 
 print(f"\n合计 {'全部通过' if not fails else str(len(fails)) + ' 项失败: ' + ', '.join(fails)}")
 sys.exit(1 if fails else 0)

@@ -60,6 +60,7 @@ class Job:
             "id": self.id, "kind": self.kind, "label": self.label, "actor": self.actor,
             "step": self.step, "done": self.done, "total": self.total,
             "cancelling": self.cancel.is_set(),
+            "error": self.error,
             "elapsedS": round(time.time() - self.started_at, 1),
         }
 
@@ -500,23 +501,39 @@ async def initialize(video_id: str, job: Job, server_url: str) -> dict:
         store.mutate(video_id, finish, actor="system", cmd="init_report", summary="初始化完成", undoable=False)
         stage(STAGE_READY)
         _emit(video_id, job, {"phase": "init", "status": "done"})
+        _post_welcome(video_id)          # 所有初始化入口都从这里发第一条消息
         return report
     except JobCancelled:
-        stage(STAGE_READY if store.require_state(video_id).segments else STAGE_FAILED,
-              None if store.require_state(video_id).segments else "已取消")
+        has_lines = bool(store.require_state(video_id).segments)
+        stage(STAGE_READY if has_lines else STAGE_FAILED, None if has_lines else "已取消")
+        if has_lines:
+            _write_report(video_id, report, "初始化被取消")
+            _post_welcome(video_id)
         raise
     except Exception as e:
         has_lines = bool(store.require_state(video_id).segments)
         # 有转写结果就进编辑器（剩下的缺口在聊天里补），否则才算失败
         stage(STAGE_READY if has_lines else STAGE_FAILED, None if has_lines else str(e))
-        report.update({"error": str(e)[:300]})
         if has_lines:
             # 失败也把报告写回：欢迎消息和界面要从 init_report.error 读原因，
             # 只改局部变量的话，用户看到的是"没有解释的半成品"。
-            def failed(s):
-                s.init_report = report
-            store.mutate(video_id, failed, actor="system", cmd="init_report", summary="初始化未全部完成", undoable=False)
+            _write_report(video_id, report, str(e)[:300])
+            _post_welcome(video_id)
         raise
+
+
+def _write_report(video_id: str, report: dict, error: str) -> None:
+    report.update({"error": error})
+
+    def failed(s):
+        s.init_report = report
+    store.mutate(video_id, failed, actor="system", cmd="init_report", summary="初始化未全部完成", undoable=False)
+
+
+def _post_welcome(video_id: str) -> None:
+    """统一入口：任何方式跑完初始化（setup / run_initialize / rerun_asr）都会发欢迎消息。"""
+    from app import agent
+    agent.post_welcome(video_id)
 
 
 def view_settings(state) -> dict:
