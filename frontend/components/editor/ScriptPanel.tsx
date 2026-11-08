@@ -11,6 +11,7 @@ import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
 import type { Line, MixPlanSegment, SpeakerView } from '../../net/types';
 import type { Flash } from '../../hooks/useProject';
 import { formatTime } from '../../utils/helpers';
+import { splitSubtitleTags, SUBTITLE_TAG_RE } from '../../utils/subtitleStyle';
 
 export interface ScriptActions {
   edit: (id: string, field: 'text' | 'translation', value: string, line: number) => void;
@@ -253,10 +254,30 @@ interface EditableProps {
  * 失焦时提交。本地只存"正在输入的草稿"：外部值（服务端推来的）变了而用户没在编辑，
  * 就跟着变 —— 这是 AI 改了这一句之后，输入框里的字立刻更新的原因。
  */
+/**
+ * 可编辑的一段文字（原文 / 译文）。
+ *
+ * 两个细节是重构前就有的，别弄丢：
+ *
+ * 1. **情感标签高亮**：`[sarcastic]`、`【讽刺】` 这类标签是给合成器的指令，不是台词。
+ *    它们是**镜像层**画的色块 —— 底下那个 textarea 的文字被设成透明，只有光标可见。
+ *    为什么不用 contenteditable：镜像 + 透明 textarea 能保持原生输入法、撤销、选区的
+ *    全部行为，而画色块只需要一个绝对定位的 div 跟着排版走。
+ *    任何影响**宽度**的样式（padding / 边框 / 字号）都不能加在标签 span 上，
+ *    否则镜像文字会和下面的输入框错位。
+ *
+ * 2. **hover 才出现编辑入口**：平时是只读展示，鼠标移上去整块虚化、中间浮出「编辑」
+ *    药丸。点它才进入编辑，失焦即保存。这样一屏几十句不会全是输入框的样子。
+ */
 const Editable: React.FC<EditableProps> = ({ label, value, placeholder, secondary, disabled, onCommit }) => {
   const [draft, setDraft] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
   const shown = draft ?? value;
+  const parts = useMemo(() => splitSubtitleTags(shown), [shown]);
+  const hasTags = parts.some((p) => p.isTag);
+  const dirty = draft !== null && draft.trim() !== value.trim();
+
   /**
    * 页面正在被刷新 / 关闭 / 跳走。
    *
@@ -278,38 +299,113 @@ const Editable: React.FC<EditableProps> = ({ label, value, placeholder, secondar
       el.style.height = 'auto';
       el.style.height = `${el.scrollHeight}px`;
     }
-  }, [shown]);
+  }, [shown, editing]);
+
+  /** Esc 放弃：blur 也会触发 commit，所以要先立个旗子，否则"放弃"变成了"保存"。 */
+  const cancelling = useRef(false);
 
   const commit = () => {
-    if (leaving.current) return;
-    if (draft !== null && draft.trim() !== value.trim()) onCommit(draft.trim());
+    const discard = cancelling.current;
+    cancelling.current = false;
+    if (!discard && !leaving.current && dirty) onCommit(draft!.trim());
     setDraft(null);
+    setEditing(false);
   };
 
+  const typography = secondary ? 'font-serif italic text-[13px]' : 'text-[14px]';
+  const textColor = secondary ? 'text-gray-500' : 'text-claude-text';
+
   return (
-    <div className="group">
+    <div className="group/field">
       <div className="text-[9px] font-bold uppercase tracking-[0.15em] text-gray-300 mb-1.5 flex items-center gap-2">
         {label}
-        {draft !== null && draft.trim() !== value.trim() && (
-          <span className="normal-case tracking-normal font-normal text-amber-500">未保存 · 点击别处保存，Esc 放弃</span>
+        {dirty && <span className="normal-case tracking-normal font-normal text-amber-500">未保存 · 点击别处保存，Esc 放弃</span>}
+      </div>
+
+      <div
+        className={`relative rounded-xl border transition-all duration-300 ${
+          secondary ? 'bg-[#f9f9f8]' : 'bg-white'
+        } ${
+          editing
+            ? 'border-claude-accent/40 ring-2 ring-claude-accent/10'
+            : 'border-[#e5e5e0] hover:border-[#d1d1cc]'
+        } ${disabled ? 'opacity-50' : ''}`}
+      >
+        {/* 镜像层：标签画成色块；非编辑态 hover 时整块虚化 */}
+        {hasTags && (
+          <div
+            aria-hidden="true"
+            className={`pointer-events-none absolute inset-0 overflow-hidden px-3 py-2 leading-relaxed whitespace-pre-wrap break-words ${typography} ${textColor} transition-all duration-300 ${
+              editing ? '' : 'group-hover/field:blur-[2px]'
+            }`}
+          >
+            {parts.map((part, index) =>
+              part.isTag ? (
+                // 不影响宽度的样式才安全：颜色 + 圆角，不加 padding/边框/字号
+                <span key={index} className="rounded-[3px] bg-claude-accent/15 text-claude-accent">{part.text}</span>
+              ) : (
+                <span key={index}>{part.text}</span>
+              ),
+            )}
+          </div>
+        )}
+
+        <textarea
+          ref={ref}
+          value={shown}
+          rows={1}
+          readOnly={!editing || disabled}
+          disabled={disabled}
+          placeholder={placeholder}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') { cancelling.current = true; (e.target as HTMLTextAreaElement).blur(); return; }
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { (e.target as HTMLTextAreaElement).blur(); return; }
+            // 退格整块删标签：光标紧跟在 [sad] 后面时按一次退格删掉整个标签（连同分隔空格），
+            // 而不是先啃掉一个 "]" —— 半个标签留在那儿既不是标签也不是正文。
+            if (e.key === 'Backspace' && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey) {
+              const el = e.currentTarget;
+              if (el.selectionStart !== el.selectionEnd) return;
+              const caret = el.selectionStart;
+              const before = shown.slice(Math.max(0, caret - 40), caret);
+              const match = before.match(SUBTITLE_TAG_RE);
+              if (!match) return;
+              e.preventDefault();
+              const start = caret - match[0].length;
+              setDraft(shown.slice(0, start) + shown.slice(caret));
+              requestAnimationFrame(() => el.setSelectionRange(start, start));
+            }
+          }}
+          className={`relative w-full resize-none overflow-hidden bg-transparent outline-none px-3 py-2 leading-relaxed
+            whitespace-pre-wrap break-words ${typography}
+            ${hasTags ? 'text-transparent selection:bg-claude-accent/25' : `${textColor}`}
+            ${hasTags ? 'caret-claude-accent' : ''}
+            ${!editing ? 'cursor-default' : ''}
+            placeholder:text-gray-300`}
+        />
+
+        {/* 只读时：hover 浮出编辑入口（旧版的「Edit」药丸） */}
+        {!editing && !disabled && (
+          <button
+            type="button"
+            onClick={() => {
+              setEditing(true);
+              requestAnimationFrame(() => {
+                const el = ref.current;
+                if (!el) return;
+                el.focus();
+                el.setSelectionRange(el.value.length, el.value.length);
+              });
+            }}
+            className="absolute inset-0 flex items-center justify-center opacity-0 group-hover/field:opacity-100 transition-opacity duration-300 bg-white/10 backdrop-blur-[0.5px] cursor-text"
+          >
+            <span className="px-4 py-1.5 bg-white/90 border border-[#d1d1cc] rounded-full text-[10px] font-bold uppercase tracking-widest shadow-sm hover:scale-105 transition-transform text-gray-600">
+              编辑
+            </span>
+          </button>
         )}
       </div>
-      <textarea
-        ref={ref}
-        value={shown}
-        rows={1}
-        disabled={disabled}
-        placeholder={placeholder}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape') { setDraft(null); (e.target as HTMLTextAreaElement).blur(); }
-          if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) (e.target as HTMLTextAreaElement).blur();
-        }}
-        className={`w-full resize-none overflow-hidden bg-transparent outline-none rounded-lg -mx-2 px-2 py-1.5 leading-relaxed transition-colors
-          border border-transparent hover:bg-claude-paper/40 focus:bg-white focus:border-claude-accent/30 focus:ring-2 focus:ring-claude-accent/10
-          disabled:opacity-50 ${secondary ? 'font-serif italic text-[13px] text-gray-500' : 'text-[14px] text-claude-text'}`}
-      />
     </div>
   );
 };
