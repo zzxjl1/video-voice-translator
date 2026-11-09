@@ -130,15 +130,12 @@ def undo(ctx: Ctx):
     confirm=CONFIRM_COST, group="job",
 )
 async def export_video(ctx: Ctx, format: Optional[str] = None):
-    from app.services import export_service, subtitle_service
+    from app.services import export_service
     state = ctx.state
-    plan = None
-    if format is not None:
-        saved = subtitle_service.resolve_plan(state)
-        plan = subtitle_service.ExportPlan(
-            enabled=format != "off", format=format, tracks=saved.tracks,
-            default_track=saved.default_track, style=saved.style,
-        ).normalised()
+    # 只覆盖这一次导出的字幕方式；tracks/default_track/style 仍取项目保存的方案，
+    # 其中 style 由 resolve_plan 从 state.subtitle_style 合入（样式面板改的才是准的）。
+    plan = (export_service.resolve_plan(state, {"format": format, "enabled": format != "off"})
+            if format is not None else None)
     if not export_service.is_available():
         raise CommandError("服务器上没有 ffmpeg，无法导出")
     needs = status.needs(state)

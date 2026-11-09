@@ -282,6 +282,44 @@ from app import view
 check("⑱ 视图里同样标出（界面可以打徽标）", [s["trSuspect"] for s in view.snapshot(store.get_state(VID))["segments"]] == [False, True, False, False])
 check("⑱ 正常译文没有警告", "warning" not in run("get_lines", {"lines": [1]})["result"]["lines"][0])
 
+# ------------------------------------------------------------------ ⑲ 导出带 format 覆盖（曾因 resolve_plan 写错模块而全挂）
+from app.services import export_service
+import types
+
+fresh()
+def ready(s):
+    s.enable_dubbing = False                 # 不要求配音齐全
+    for seg in s.segments:
+        seg.translated_text = "Happy " + seg.text[:6]
+        seg.tr_fp = status.expected_tr_fp(s, seg)
+    s.subtitle_style = {**dict(s.subtitle_style or {}), "font_size_percent": 7.25}
+store.mutate(VID, ready, actor="system", cmd="seed", summary="seed")
+
+seen_plan = {}
+async def fake_export(video_id, emit=None, plan=None):
+    seen_plan["plan"] = plan
+    return types.SimpleNamespace(container="mkv", path=src)
+old_export, old_avail = export_service.export_video, export_service.is_available
+export_service.export_video, export_service.is_available = fake_export, lambda: True
+try:
+    r = run("export_video", {"format": "styled"}, actor="user")
+finally:
+    export_service.export_video, export_service.is_available = old_export, old_avail
+check("⑲ 带 format 的导出不再报 has no attribute 'resolve_plan'", r["ok"] and "resolve_plan" not in str(r.get("error", "")), r)
+plan = seen_plan.get("plan")
+check("⑲ 覆盖的是 format/styled，其余沿用项目方案",
+      plan is not None and plan.format == "styled" and plan.enabled is True and plan.tracks == ["translated"], plan)
+check("⑲ 样式取自项目保存的字幕样式（不是配置默认值）",
+      plan is not None and plan.style.font_size_percent == 7.25, plan.style.to_dict() if plan else None)
+# off：enabled 必须为 False，否则仍会带一轨字幕
+seen_plan.clear()
+export_service.export_video, export_service.is_available = fake_export, lambda: True
+try:
+    r2 = run("export_video", {"format": "off"}, actor="user")
+finally:
+    export_service.export_video, export_service.is_available = old_export, old_avail
+check("⑲ format=off 时字幕关闭", r2["ok"] and seen_plan["plan"].enabled is False, (r2, seen_plan.get("plan")))
+
 print(f"\n合计 {'全部通过' if not fails else str(len(fails)) + ' 项失败: ' + ', '.join(fails)}")
 sys.exit(1 if fails else 0)
 
