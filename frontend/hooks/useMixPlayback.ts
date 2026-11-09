@@ -75,6 +75,13 @@ export function useMixPlayback({ lines, plan, backgroundUrl, dubbing }: Options)
     const time = video.currentTime;
     setCurrentTime(time);
 
+    // 只跳转（点脚本里的 00:02 – 00:05、或点时间线）也会派发 timeupdate。
+    // 视频没在播时绝不能启动配音，否则用户只是想定位，却听到那句 TTS 单独响起来。
+    if (video.paused) {
+      stopAll();
+      return;
+    }
+
     const bg = backgroundRef.current;
     const hasBg = !!bg && !!backgroundUrl;
     if (hasBg) video.muted = true;
@@ -147,7 +154,7 @@ export function useMixPlayback({ lines, plan, backgroundUrl, dubbing }: Options)
       const gain = dubbing ? bedGainAt(plan, time) : null;
       video.volume = gain !== null ? clamp01(gain) : dubbing && anyDubPlaying ? 0.1 : 1.0;
     }
-  }, [lines, plan, mixEntries, backgroundUrl, dubbing]);
+  }, [lines, plan, mixEntries, backgroundUrl, dubbing, stopAll]);
 
   const seek = useCallback((time: number) => {
     const video = videoRef.current;
