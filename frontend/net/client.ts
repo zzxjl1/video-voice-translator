@@ -94,6 +94,10 @@ export const listChats = (id: string) => request<{ current: string; conversation
 /** 开一个新对话，旧的留在历史里。 */
 export const newChat = (id: string) => request<{ conv: string }>(`/projects/${id}/chats`, { method: 'POST' });
 
+/** 删掉一个会话；返回删除后服务端当前会话。 */
+export const deleteChat = (id: string, conv: string) =>
+  request<{ conv: string }>(`/projects/${id}/chats/${encodeURIComponent(conv)}`, { method: 'DELETE' });
+
 /** 切到某个历史会话，返回它的消息。 */
 export const selectChat = (id: string, conv: string) =>
   request<{ conv: string; messages: ChatMessage[] }>(`/projects/${id}/chats/select`, json({ conv }));

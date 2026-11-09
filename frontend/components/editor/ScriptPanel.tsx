@@ -133,7 +133,13 @@ const LineCard = memo(({ line, speaker, color, active, flashBy, mixEntry, dubbin
         <div className="flex items-center gap-2.5 min-w-0 flex-wrap">
           <span className="text-[10px] font-mono font-bold text-gray-300 tabular-nums w-5 text-right">{line.line}</span>
           <span className="w-2.5 h-2.5 rounded-full ring-2 ring-white shadow-sm shrink-0" style={{ backgroundColor: color }} />
-          <span className="text-[11px] font-bold uppercase tracking-[0.1em] text-gray-500 truncate">{speaker?.name ?? `Speaker ${line.speakerId}`}</span>
+          <button
+            onClick={() => actions.askAbout(line)}
+            title="就这一句问 AI"
+            className="text-[11px] font-bold uppercase tracking-[0.1em] text-gray-500 truncate hover:text-claude-accent transition-colors"
+          >
+            {speaker?.name ?? `Speaker ${line.speakerId}`}
+          </button>
           {nonSpeech && <Tag tone="bg-purple-50 text-purple-600 border-purple-200">{line.kind === 'music' ? '音乐' : '噪音'}</Tag>}
           {line.muted && <Tag tone="bg-gray-100 text-gray-500 border-gray-200">已静音</Tag>}
           {line.hidden && <Tag tone="bg-amber-50 text-amber-600 border-amber-200">字幕隐藏</Tag>}

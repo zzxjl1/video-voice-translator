@@ -44,8 +44,10 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
   const [chatOpen, setChatOpen] = useState(true);
   const [showExport, setShowExport] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [draft, setDraft] = useState('');
-  const onDraftConsumed = useCallback(() => setDraft(''), []);
+  // 从脚本引用到聊天的那一句：结构化值，不在输入框里拼字符串，
+  // 所以不会因为 StrictMode 双调用 effect 被追加两次。
+  const [quote, setQuote] = useState<{ line: number; label: string } | null>(null);
+  const onQuoteRemove = useCallback(() => setQuote(null), []);
   const [waveform, setWaveform] = useState<number[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -208,7 +210,7 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
     redub: async (l: Line) => { const r = await run('redub', { lines: [l.line], force: l.ttsStatus === 'fresh' }); if (!r.ok) setNotice(r.error ?? '配音失败'); },
     retranslate: async (l: Line, hint) => { const r = await run('retranslate', { lines: [l.line], ...(hint ? { length: hint } : {}) }); if (!r.ok) setNotice(r.error ?? '翻译失败'); },
     mark: async (l: Line, kind) => { const r = await run('mark_non_speech', { lines: [l.line], kind }); if (!r.ok) setNotice(r.error ?? '标记失败'); },
-    askAbout: (l: Line) => { setChatOpen(true); setDraft(`第 ${l.line} 句`); },
+    askAbout: (l: Line) => { setChatOpen(true); setQuote({ line: l.line, label: `第 ${l.line} 句` }); },
   }), [run, seek]);
 
   const colorOf = useCallback((sid: string) => speakerColor(project!, sid), [project]);
@@ -340,8 +342,8 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
               onSend={(t) => void say(t)}
               onStop={() => void stop()}
               onConfirm={(cid, ok) => void confirm(cid, ok)}
-              draft={draft}
-              onDraftConsumed={onDraftConsumed}
+              quote={quote}
+              onQuoteRemove={onQuoteRemove}
               suggestions={SUGGESTIONS}
               onClose={() => setChatOpen(false)}
               dragProps={dragProps}
@@ -350,6 +352,7 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
               currentConv={api_.currentConv}
               onNewChat={() => void api_.startNewChat()}
               onOpenChat={(c) => void api_.openChat(c)}
+              onDeleteChat={(c) => void api_.deleteChat(c)}
             />
           )}
         </FloatingChat>

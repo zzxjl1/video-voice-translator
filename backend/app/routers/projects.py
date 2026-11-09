@@ -313,13 +313,27 @@ def list_chats(video_id: str):
 
 @router.post("/{video_id}/chats")
 def create_chat(video_id: str):
-    """开一个新对话（旧的保留在历史里）。"""
+    """开一个新对话（旧的保留在历史里），并补上初始化报告那条默认消息。"""
     _need(video_id)
-    return {"conv": store.new_conv(video_id)}
+    conv = store.new_conv(video_id)
+    agent.post_welcome(video_id)       # 每个新会话都从同一句"初始化完成…"开始
+    return {"conv": conv}
 
 
 class SelectConvBody(BaseModel):
     conv: str
+
+
+@router.delete("/{video_id}/chats/{conv}")
+def delete_chat(video_id: str, conv: str):
+    """删掉一个会话。切到别的会话时由 store 顺带完成，返回新的当前会话。"""
+    _need(video_id)
+    if not store.delete_conv(video_id, conv):
+        raise HTTPException(status_code=404, detail="没有这个会话")
+    # post_welcome 自己判重：当前会话已有消息就不写；一个会话都不剩时 store
+    # 会新开一个，正好由它补上默认消息。
+    agent.post_welcome(video_id)
+    return {"conv": store.current_conv(video_id, create=False)}
 
 
 @router.post("/{video_id}/chats/select")

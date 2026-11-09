@@ -99,5 +99,24 @@ agent.post_welcome(VID)
 check("⑨ 切到新会话后欢迎消息重新出现（会话隔离）",
       len([m for m in store.read_chat(VID, conv=c4) if m.get("system")]) == 1)
 
+# ------------------------------------------------------------------ ⑩ 删除会话
+c5 = store.new_conv(VID)
+store.append_chat(VID, {"conv": c5, "role": "user", "text": "要被删掉的对话", "ts": 500})
+before = {c["id"] for c in store.list_convs(VID)}
+check("⑩ 删除会话成功", store.delete_conv(VID, c5) is True)
+check("⑩ 删掉的会话不再出现在列表里", c5 not in {c["id"] for c in store.list_convs(VID)})
+check("⑩ 删掉的会话读不到任何消息", store.read_chat(VID, conv=c5) == [])
+check("⑩ 其它会话原样保留", before - {c5} <= {c["id"] for c in store.list_convs(VID)})
+# 在途轮次：删除后仍按旧 conv 补写消息，不能让会话复活
+store.append_chat(VID, {"conv": c5, "role": "assistant", "text": "迟到的回答", "ts": 501})
+check("⑩ 在途轮次补写的消息不会让删掉的会话复活",
+      c5 not in {c["id"] for c in store.list_convs(VID)} and store.read_chat(VID, conv=c5) == [])
+check("⑩ 重复删除返回 False", store.delete_conv(VID, c5) is False)
+check("⑩ 删除后当前会话是有效会话", store.current_conv(VID, create=False) in {c["id"] for c in store.list_convs(VID)})
+# 删掉全部：自动新开一个
+for c in [x["id"] for x in store.list_convs(VID)]:
+    store.delete_conv(VID, c)
+check("⑩ 删光后自动新开且仍只有一个会话", len(store.list_convs(VID)) == 1)
+
 print(f"\n合计 {'全部通过' if not fails else str(len(fails)) + ' 项失败: ' + ', '.join(fails)}")
 sys.exit(1 if fails else 0)

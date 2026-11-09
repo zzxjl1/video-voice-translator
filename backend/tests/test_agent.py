@@ -321,7 +321,7 @@ fresh()
 store.append_chat(VID, {"id": "u1", "role": "user", "text": "静音第 1 句", "ts": 1})
 store.append_chat(VID, {"id": "a1", "role": "assistant", "text": "好了。", "ts": 2,
                         "actions": [{"name": "set_muted", "label": "静音/取消静音某些句：第 1 句", "summary": "set_muted(lines=[1], muted=True)"}]})
-hist = agent._history_messages(VID)
+hist = agent._history_messages(VID, store.current_conv(VID))
 joined = json.dumps(hist, ensure_ascii=False)
 check("⑭ 历史折叠用自然语言，不带 name(args) 的函数调用形态", "set_muted(" not in joined and "这一轮我做了" in joined and "第 1 句" in joined, joined)
 

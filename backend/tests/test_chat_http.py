@@ -40,10 +40,11 @@ r = c.post(f"{p}/chats")
 check("② POST /chats 返回新会话 id", r.status_code == 200 and r.json()["conv"] != before, r.json())
 new_conv = r.json()["conv"]
 lst = c.get(f"{p}/chats").json()
-check("② 新建的空会话可枚举（能选回来）", any(x["id"] == new_conv and x["count"] == 0 for x in lst["conversations"]), lst)
-check("② GET /chat?conv=<空会话> 200 且消息为空",
-      c.get(f"{p}/chat", params={"conv": new_conv}).status_code == 200
-      and c.get(f"{p}/chat", params={"conv": new_conv}).json()["messages"] == [])
+check("② 新建会话可枚举（能选回来）", any(x["id"] == new_conv for x in lst["conversations"]), lst)
+r = c.get(f"{p}/chat", params={"conv": new_conv})
+check("② GET /chat?conv=<新会话> 200，且带一条默认消息",
+      r.status_code == 200 and len(r.json()["messages"]) == 1
+      and "初始化" in r.json()["messages"][0].get("text", ""), r.json()["messages"])
 check("② 切回旧会话成功", c.post(f"{p}/chats/select", json={"conv": before}).status_code == 200)
 check("② 切回后 current 正确", c.get(f"{p}/chats").json()["current"] == before)
 check("② 不存在的会话 404", c.post(f"{p}/chats/select", json={"conv": "nope"}).status_code == 404)
@@ -66,6 +67,23 @@ chat.running, chat.conv = True, new_conv
 check("④ 请求别的会话时 running=false", c.get(f"{p}/chat", params={"conv": before}).json()["running"] is False)
 check("④ 请求该会话时 running=true", c.get(f"{p}/chat", params={"conv": new_conv}).json()["running"] is True)
 chat.running, chat.conv = False, ""
+
+# ------------------------------------------------------------------ ⑥ 新建会话带默认消息 / 删除会话
+r = c.post(f"{p}/chats")
+check("⑥ POST /chats 200", r.status_code == 200, r.text)
+new_conv = r.json()["conv"]
+welcome = c.get(f"{p}/chat", params={"conv": new_conv}).json()["messages"]
+check("⑥ 新会话里有一条初始化完成后的默认消息",
+      len(welcome) == 1 and "初始化" in welcome[0].get("text", ""), welcome)
+r = c.post(f"{p}/chats")
+check("⑥ 连续新建两个会话都各自带默认消息",
+      len(c.get(f"{p}/chat", params={"conv": r.json()["conv"]}).json()["messages"]) == 1)
+to_delete = r.json()["conv"]
+r = c.delete(f"{p}/chats/{to_delete}")
+check("⑥ DELETE /chats/{conv} 200 且返回新的当前会话", r.status_code == 200 and r.json()["conv"], r.text)
+check("⑥ 删掉的会话不在列表里", to_delete not in [x["id"] for x in c.get(f"{p}/chats").json()["conversations"]])
+check("⑥ 删掉的会话 GET /chat?conv= 返回 404", c.get(f"{p}/chat", params={"conv": to_delete}).status_code == 404)
+check("⑥ 重复删除 404", c.delete(f"{p}/chats/{to_delete}").status_code == 404)
 
 # ------------------------------------------------------------------ ⑤ POST /chat 锁定 conv
 seen = []

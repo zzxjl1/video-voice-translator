@@ -59,6 +59,8 @@ export interface ProjectApi {
   startNewChat: () => Promise<void>;
   /** 切到某个历史会话。 */
   openChat: (conv: string) => Promise<void>;
+  /** 删掉一个会话（服务端会切到剩下的会话，并给空会话补默认消息）。 */
+  deleteChat: (conv: string) => Promise<void>;
 }
 
 export function useProject(id: string | null): ProjectApi {
@@ -139,7 +141,6 @@ export function useProject(id: string | null): ProjectApi {
     return view;
   }, [id, setConv]);
 
-  /** 重新拉会话列表（标题/条数/顺序都会变）。 */
   const refreshChats = useCallback(async () => {
     if (!id) return;
     try {
@@ -151,6 +152,19 @@ export function useProject(id: string | null): ProjectApi {
       setChatError(chatErrorText(e));
     }
   }, [id, setConv]);
+
+  const deleteChat = useCallback(async (conv: string) => {
+    if (!id) return;
+    try {
+      await api.deleteChat(id, conv);
+      setChatError(null);
+      // 服务端可能把当前会话切到了另一个（或新开一个），消息与列表都要跟着换。
+      const [h] = await Promise.all([api.getChat(id), refreshChats()]);
+      dispatchChat({ type: 'load', messages: h.messages, running: h.running });
+    } catch (e) {
+      setChatError(chatErrorText(e));
+    }
+  }, [id, refreshChats]);
 
   useEffect(() => {
     setProject(null);
@@ -283,10 +297,12 @@ export function useProject(id: string | null): ProjectApi {
     if (!id) return;
     try {
       const { conv } = await api.newChat(id);
-      dispatchChat({ type: 'load', messages: [], running: false });
       setConv(conv);
       setChatError(null);
-      await refreshChats();
+      // 服务端会给新会话写一条"初始化完成…"；从服务端取回来，别用空数组
+      // 覆盖掉可能已经随 SSE 到达的那条消息。
+      const [h] = await Promise.all([api.getChat(id, conv), refreshChats()]);
+      dispatchChat({ type: 'load', messages: h.messages, running: h.running });
     } catch (e) {
       // 不能在本地假装开了一个新会话：消息随后仍会落到服务端的旧会话里。
       setChatError(chatErrorText(e));
@@ -323,7 +339,7 @@ export function useProject(id: string | null): ProjectApi {
 
   return {
     project, loadError, notFound, chatError, chat, init, connection, flash, ui, clearUi, run, say, stop, confirm, reload,
-    conversations, currentConv, startNewChat, openChat,
+    conversations, currentConv, startNewChat, openChat, deleteChat,
   };
 }
 

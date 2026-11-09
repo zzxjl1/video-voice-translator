@@ -429,6 +429,9 @@ def read_chat(video_id: str, limit: int = 200, conv: Optional[str] = None) -> li
                             continue
         except OSError:
             return []
+    # 删掉的会话：可能有在途轮次还在往里写，不能复活
+    if any(r.get("role") == "conv_deleted" and r.get("conv") == wanted for r in rows):
+        return []
     rows = [r for r in rows if r.get("conv") == wanted]
     states = {r["ref"]: r["status"] for r in rows if r.get("role") == "confirm_state"}
     out = []
@@ -463,11 +466,12 @@ def list_convs(video_id: str) -> list[dict]:
                         continue
         except OSError:
             rows = []
+    deleted = {r["conv"] for r in rows if r.get("role") == "conv_deleted" and r.get("conv")}
     convs: dict[str, dict] = {}
     for r in rows:
         cid = r.get("conv")
-        if not cid:                      # 没有会话 id 的行不属于任何会话
-            continue
+        if not cid or cid in deleted or r.get("role") == "conv_deleted":
+            continue                    # 没有会话 id 的行不属于任何会话；删掉的不恢复
         entry = convs.setdefault(cid, {"id": cid, "title": "", "updated": 0, "count": 0})
         entry["updated"] = max(entry["updated"], r.get("ts") or 0)
         if r.get("role") in ("user", "assistant", "confirm"):
@@ -478,7 +482,7 @@ def list_convs(video_id: str) -> list[dict]:
     # 当前会话即使一条消息都没有，也必须是可枚举的 —— 否则"新对话"后先切走，
     # 这个空会话就再也选不回来（GET /chat?conv= 也会 404）。
     current = require_state(video_id).chat_conv
-    if current and current not in convs:
+    if current and current not in deleted and current not in convs:
         out.append({"id": current, "title": "新的对话",
                     "updated": require_state(video_id).rev, "count": 0})
     for entry in out:
@@ -506,6 +510,26 @@ def select_conv(video_id: str, conv: str) -> bool:
     def apply(s):
         s.chat_conv = conv
     mutate(video_id, apply, actor="system", cmd="chat_conv", summary="切换会话", undoable=False, silent=True)
+    return True
+
+
+def delete_conv(video_id: str, conv: str) -> bool:
+    """
+    删除一个会话。用追加的墓碑行，不重写 chat.jsonl：正在进行的那一轮仍持有
+    conv，之后补写的消息即使落盘也读不出来，不会让删掉的会话"复活"。
+
+    删的是当前会话时切到最近的一个剩余会话；一个都不剩就新开一个（由调用方
+    给它补欢迎消息）。
+    """
+    if conv not in {c["id"] for c in list_convs(video_id)}:
+        return False
+    append_chat(video_id, {"conv": conv, "role": "conv_deleted", "ts": time.time()})
+    if require_state(video_id).chat_conv == conv:
+        remaining = [c["id"] for c in list_convs(video_id) if c["id"] != conv]
+        if remaining:
+            select_conv(video_id, remaining[0])
+        else:
+            new_conv(video_id)
     return True
 
 

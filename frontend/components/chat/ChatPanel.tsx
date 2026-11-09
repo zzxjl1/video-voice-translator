@@ -23,9 +23,9 @@ interface Props {
   onSend: (text: string) => void;
   onStop: () => void;
   onConfirm: (cardId: string, approve: boolean) => void;
-  /** 输入框里的预填内容（比如从脚本里"引用到聊天"）。 */
-  draft?: string;
-  onDraftConsumed?: () => void;
+  /** 从脚本里"引用到聊天"的那一句，作为不可编辑的色块挂在输入框上。 */
+  quote?: { line: number; label: string } | null;
+  onQuoteRemove?: () => void;
   suggestions?: string[];
   /** 悬浮窗口的关闭按钮。 */
   onClose?: () => void;
@@ -34,6 +34,7 @@ interface Props {
   currentConv?: string;
   onNewChat?: () => void;
   onOpenChat?: (conv: string) => void;
+  onDeleteChat?: (conv: string) => void;
   /** 会话接口失败的原因（例如后端版本过旧）；不能让新对话看起来像没反应。 */
   error?: string | null;
   /** 由 FloatingChat 注入：标题栏同时是窗口的拖动区。 */
@@ -50,8 +51,8 @@ interface Props {
 
 const ChatPanel: React.FC<Props> = ({
   chat, disabled, disabledReason, onSend, onStop, onConfirm,
-  draft, onDraftConsumed, suggestions = [], onClose, dragProps,
-  conversations = [], currentConv = '', onNewChat, onOpenChat, error,
+  quote, onQuoteRemove, suggestions = [], onClose, dragProps,
+  conversations = [], currentConv = '', onNewChat, onOpenChat, onDeleteChat, error,
 }) => {
   const [historyOpen, setHistoryOpen] = useState(false);
   const [text, setText] = useState('');
@@ -59,14 +60,6 @@ const ChatPanel: React.FC<Props> = ({
   const scrollerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const stickRef = useRef(true);                 // 用户没往上翻时，新内容自动滚到底
-
-  useEffect(() => {
-    if (draft) {
-      setText((prev) => (prev ? `${prev} ${draft}` : draft));
-      onDraftConsumed?.();
-      inputRef.current?.focus();
-    }
-  }, [draft, onDraftConsumed]);
 
   const onScroll = () => {
     const el = scrollerRef.current;
@@ -80,11 +73,14 @@ const ChatPanel: React.FC<Props> = ({
 
   const waiting = pendingConfirms(chat).length > 0;
   const submit = () => {
-    const value = text.trim();
+    const body = text.trim();
+    // 引用是个 chip，不进 textarea，所以不会像以前那样被 StrictMode 双调用追加两遍。
+    const value = [quote?.label, body].filter(Boolean).join(' ').trim();
     if (!value || disabled) return;
     stickRef.current = true;
     onSend(value);
     setText('');
+    onQuoteRemove?.();
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -131,6 +127,7 @@ const ChatPanel: React.FC<Props> = ({
                   currentConv={currentConv}
                   onNew={() => { setHistoryOpen(false); onNewChat?.(); }}
                   onPick={(conv) => { setHistoryOpen(false); onOpenChat?.(conv); }}
+                  onDelete={(conv) => { setHistoryOpen(false); onDeleteChat?.(conv); }}
                   onClose={() => setHistoryOpen(false)}
                 />
               )}
@@ -214,6 +211,14 @@ const ChatPanel: React.FC<Props> = ({
       )}
 
       <div className="p-4 border-t border-[#e5e5e0] bg-white/60">
+        {quote && (
+          <div className="mb-2 inline-flex items-center gap-2 px-2.5 py-1 rounded-lg bg-claude-accent/10 border border-claude-accent/25 text-claude-accent">
+            <span className="text-[11px] font-bold">{quote.label}</span>
+            <button onClick={onQuoteRemove} title="移除引用" className="text-claude-accent/60 hover:text-claude-accent">
+              <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M6 18L18 6M6 6l12 12" /></svg>
+            </button>
+          </div>
+        )}
         {disabled && disabledReason && <p className="text-[10px] text-gray-400 mb-2 px-1">{disabledReason}</p>}
         <div className="flex items-end gap-2 bg-white border border-claude-border rounded-2xl px-3 py-2 focus-within:border-claude-accent/50 focus-within:ring-2 focus-within:ring-claude-accent/10 transition-all">
           <textarea
@@ -295,19 +300,17 @@ const Bubble: React.FC<{ role: 'user' | 'assistant'; system?: boolean; children:
   </div>
 );
 
-/**
- * 会话历史下拉。挂在标题栏的历史按钮下面，点外部关闭。
- *
- * 只列"有内容的会话"：新建后还没说话的会话不显示，免得列表里全是空对话。
- */
+/** 会话历史下拉：挂在标题栏的历史按钮下面，点外部关闭；每行可切换、可删除。 */
 const HistoryMenu: React.FC<{
   conversations: { id: string; title: string; updated: number; count: number }[];
   currentConv: string;
   onNew: () => void;
   onPick: (conv: string) => void;
+  onDelete: (conv: string) => void;
   onClose: () => void;
-}> = ({ conversations, currentConv, onNew, onPick, onClose }) => {
+}> = ({ conversations, currentConv, onNew, onPick, onDelete, onClose }) => {
   const ref = useRef<HTMLDivElement>(null);
+  const [confirming, setConfirming] = useState<string | null>(null);
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
       const t = e.target as HTMLElement;
@@ -347,14 +350,34 @@ const HistoryMenu: React.FC<{
           <div className="px-3.5 py-3 text-[11px] text-gray-400">还没有历史对话</div>
         )}
         {visible.map((c) => (
-          <button
+          <div
             key={c.id}
-            onClick={() => onPick(c.id)}
-            className={`w-full text-left px-3.5 py-2 hover:bg-claude-paper transition-colors ${c.id === currentConv ? 'bg-claude-accent/5' : ''}`}
+            className={`flex items-center gap-1 pr-2 hover:bg-claude-paper transition-colors ${c.id === currentConv ? 'bg-claude-accent/5' : ''}`}
           >
-            <div className={`text-[12px] truncate ${c.id === currentConv ? 'text-claude-accent font-bold' : 'text-claude-text'}`}>{c.title}</div>
-            <div className="text-[10px] text-gray-400 mt-0.5">{when(c.updated)} · {c.count} 条</div>
-          </button>
+            <button
+              onClick={() => onPick(c.id)}
+              className="flex-grow min-w-0 text-left px-3.5 py-2"
+            >
+              <div className={`text-[12px] truncate ${c.id === currentConv ? 'text-claude-accent font-bold' : 'text-claude-text'}`}>{c.title}</div>
+              <div className="text-[10px] text-gray-400 mt-0.5">{when(c.updated)} · {c.count} 条</div>
+            </button>
+            {confirming === c.id ? (
+              <span className="shrink-0 flex items-center gap-1">
+                <button onClick={() => { onDelete(c.id); setConfirming(null); }}
+                  className="px-1.5 py-1 rounded-md bg-red-500 text-white text-[10px] font-bold hover:bg-red-600">删除</button>
+                <button onClick={() => setConfirming(null)}
+                  className="px-1.5 py-1 rounded-md text-gray-400 text-[10px] hover:bg-white">取消</button>
+              </span>
+            ) : (
+              <button
+                onClick={() => setConfirming(c.id)}
+                title="删除这个对话"
+                className="shrink-0 p-1.5 rounded-md text-gray-300 hover:text-red-500 hover:bg-white transition-colors"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+              </button>
+            )}
+          </div>
         ))}
       </div>
     </div>
