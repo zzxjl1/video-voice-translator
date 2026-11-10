@@ -247,6 +247,7 @@ export type ChatEvent = ChatEventBase & (
   | { kind: 'tool_call'; id: string; name: string; args: Record<string, unknown> }
   | { kind: 'tool_result'; id: string; name: string; ok: boolean; error: string | null }
   | { kind: 'confirm_resolved'; id: string; approved: boolean }
+  | { kind: 'clear'; id: string }   // 这一步要调工具，前面的过渡语不该留在气泡里
   | { kind: 'idle' }
 );
 

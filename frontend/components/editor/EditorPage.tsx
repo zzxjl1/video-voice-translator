@@ -147,9 +147,12 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
     } else if (ui.action === 'play_voice_preview') {
       void new Audio(ui.url as string).play().catch(() => {});
     } else if (ui.action === 'export_ready') {
-      downloadFile(ui.url as string, `translated_${id.slice(0, 8)}.mp4`);
+      const ext = ui.container === 'mkv' ? 'mkv' : 'mp4';
+      downloadFile(ui.url as string, `translated_${id.slice(0, 8)}.${ext}`);
     } else if (ui.action === 'browser_action') {
-      setNotice(`AI 请求：${ui.reason ? String(ui.reason) : '需要在浏览器里完成一个操作'}（${ui.action}）`);
+      const what = ui.kind === 'separate_vocals' ? '人声分离'
+        : ui.kind === 'burn_subtitles' ? '字幕烧录' : '浏览器操作';
+      setNotice(`AI 请求：${ui.reason ? String(ui.reason) : '需要在浏览器里完成' + what}（${what}），请在界面里手动触发`);
     }
     clearUi();
   }, [ui, clearUi, play, seek, id]);

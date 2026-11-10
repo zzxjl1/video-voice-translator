@@ -173,6 +173,9 @@ async def setup_and_start(video_id: str, body: SetupBody):
         raise HTTPException(status_code=400, detail=f"separation_mode 必须是 {sorted(config.VALID_SEPARATION_MODES)}")
     if body.accent and body.accent not in config.CHINESE_ACCENTS:
         raise HTTPException(status_code=400, detail="不支持的方言")
+    if body.target_language not in config.TARGET_LANGUAGES:
+        raise HTTPException(status_code=400,
+                            detail=f"不支持的目标语言；可选：{'、'.join(sorted(config.TARGET_LANGUAGES))}")
 
     def apply(s):
         s.target_language = body.target_language
@@ -251,6 +254,9 @@ async def events(video_id: str, request: Request, since: int = 0):
     回放不到（进程重启过）没关系：客户端以 `rev` 为准，发现落后就重新 GET 一次视图。
     """
     _need(video_id)
+    # 进程重启后 bus 的内存序号是 0；先从落盘事件里把它对齐，否则带着旧 since
+    # 重连时，新事件的 seq 会从 1 开始，被客户端的去重逻辑全部丢掉。
+    store.current_seq(video_id)
     queue = bus.subscribe(video_id, since=since)
 
     async def stream():
@@ -354,12 +360,18 @@ async def post_chat(video_id: str, body: ChatBody):
     if len(text) > 4000:
         raise HTTPException(status_code=400, detail="消息太长（最多 4000 字）")
     # 请求进入时就锁定会话：用户可能在排队期间切了会话，这一轮仍属于原来的那个。
-    asyncio.create_task(agent.handle_user_message(video_id, text, store.current_conv(video_id, create=False)))
+    # 用 create=True 保证非空：老工程的 chat_conv 可能为空，若把空串传给任务，
+    # 它会在拿到锁之后才重新解析 —— 用户排队期间切了会话，消息就落错地方。
+    conv = store.current_conv(video_id)
+    asyncio.create_task(agent.handle_user_message(video_id, text, conv))
     return {"accepted": True}
 
 
 @router.post("/{video_id}/chat/confirm")
-def chat_confirm(video_id: str, body: ConfirmBody):
+async def chat_confirm(video_id: str, body: ConfirmBody):
+    """async 而非 def：确认结果要和后续 tool_call / change 事件保持 seq 顺序。
+    同步端点跑在线程池里，bus.publish 会走 call_soon_threadsafe，可能晚于下一帧
+    到达前端，于是 `confirm_resolved` 被 EventClient 的 seq 去重丢掉，卡片一直停在待确认。"""
     _need(video_id)
     if not agent.resolve_confirmation(video_id, body.id, body.approve):
         raise HTTPException(status_code=404, detail="这张确认卡片已经处理过了，或已过期")

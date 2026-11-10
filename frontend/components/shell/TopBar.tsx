@@ -41,7 +41,10 @@ const TopBar: React.FC<Props> = ({
   filename, targetLanguage, onLanguageChange, needs, dubbing, jobs, undoSummary, onUndo, onFill,
   onCancelJobs, onOpenSettings, onExport, onHome, exporting, toggleChat, chatOpen,
 }) => {
-  const [expanded, setExpanded] = useState(false);
+  // 悬停展开是桌面习惯；点「Show Tools」可以钉住展开，触屏也能拿到语言/导出。
+  const [hovered, setHovered] = useState(false);
+  const [pinned, setPinned] = useState(false);
+  const expanded = hovered || pinned;
   const running = jobs.length > 0;
   const job = jobs[0];
   const pending = needs.translate + (dubbing ? needs.dub : 0);
@@ -53,8 +56,8 @@ const TopBar: React.FC<Props> = ({
   return (
     <div className="fixed top-0 inset-x-0 z-50 flex justify-center">
       <header
-        onMouseEnter={() => setExpanded(true)}
-        onMouseLeave={() => setExpanded(false)}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
         className={`
           flex items-center transition-all duration-700 ${EASE}
           bg-white/95 backdrop-blur-2xl border-b w-full overflow-hidden
@@ -202,12 +205,22 @@ const TopBar: React.FC<Props> = ({
         {/* 右：撤销 / 助手 / 设置；收起态还带「Show Tools」药丸 */}
         <div className={`flex items-center transition-all duration-500 ${expanded ? 'gap-1' : 'gap-4'}`}>
           {!expanded && (
-            <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-gray-400 flex items-center gap-1.5 cursor-pointer hover:text-claude-accent transition-colors border px-2 py-0.5 rounded-full border-gray-200 whitespace-nowrap">
+            <button
+              onClick={() => setPinned(true)}
+              title="展开工具栏"
+              className="text-[10px] font-bold uppercase tracking-[0.2em] text-gray-400 flex items-center gap-1.5 cursor-pointer hover:text-claude-accent transition-colors border px-2 py-0.5 rounded-full border-gray-200 whitespace-nowrap"
+            >
               Show Tools
               <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
               </svg>
-            </span>
+            </button>
+          )}
+          {pinned && (
+            <button onClick={() => setPinned(false)} title="收起工具栏"
+              className="px-2 py-1 rounded-md text-[10px] font-bold text-gray-400 hover:text-claude-accent hover:bg-claude-paper transition-colors">
+              收起
+            </button>
           )}
 
           <button

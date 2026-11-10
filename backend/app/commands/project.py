@@ -41,11 +41,15 @@ def set_settings(ctx: Ctx, **patch):
     state = ctx.state
     if not patch:
         raise CommandError("至少给一项要改的设置")
+    if "target_language" in patch and patch["target_language"] not in config.TARGET_LANGUAGES:
+        raise CommandError(
+            f"不支持的目标语言 {patch['target_language']!r}，可选：{'、'.join(sorted(config.TARGET_LANGUAGES))}")
     changed = {k: v for k, v in patch.items() if getattr(state, k) != (v or None if k == "accent" else v)}
     if not changed:
         return {"unchanged": True}
     if "accent" in changed and changed["accent"] and changed["accent"] not in config.CHINESE_ACCENTS:
         raise CommandError(f"不支持的方言 {changed['accent']!r}，可选：{'、'.join(config.CHINESE_ACCENTS)}")
+    before = status.needs(state)
 
     def apply(s):
         for k, v in changed.items():
@@ -60,8 +64,18 @@ def set_settings(ctx: Ctx, **patch):
             s.enable_voice_clone = False
     ctx.change(apply, "改设置：" + "、".join(changed))
     after = ctx.state
-    return {"changed": list(changed), "todo": status.needs(after),
-            "note": "译文/配音已按新设置过期；调用 retranslate 和 redub 补上" if status.needs(after)["translate"] else None}
+    todo = status.needs(after)
+    # note 只描述"这次改动新增的待办"。工程里本来就有过期译文时，切一个无关开关
+    # （比如 mm_enhance）不能说成"译文已按新设置过期"——AI 会据此发起不必要的重译。
+    new_tr = max(0, todo["translate"] - before["translate"])
+    new_dub = max(0, todo["dub"] - before["dub"])
+    note = None
+    if new_tr or new_dub:
+        bits = []
+        if new_tr: bits.append(f"{new_tr} 句译文")
+        if new_dub: bits.append(f"{new_dub} 句配音")
+        note = ("这次改动让 " + "、".join(bits) + "过期；调用 retranslate / redub 补上")
+    return {"changed": list(changed), "todo": todo, "note": note}
 
 
 @command("get_settings", "当前项目设置。", readonly=True, group="read")
@@ -135,7 +149,10 @@ async def export_video(ctx: Ctx, format: Optional[str] = None):
     # 只覆盖这一次导出的字幕方式；tracks/default_track/style 仍取项目保存的方案，
     # 其中 style 由 resolve_plan 从 state.subtitle_style 合入（样式面板改的才是准的）。
     plan = (export_service.resolve_plan(state, {"format": format, "enabled": format != "off"})
-            if format is not None else None)
+            if format is not None else export_service.resolve_plan(state))
+    if plan.format == "burn":
+        raise CommandError("项目保存的是「烧录字幕」，这一步只能在浏览器的导出弹窗里完成；"
+                           "请改用 set_export_plan 把方案改成 styled / soft / off，或在界面里直接烧录")
     if not export_service.is_available():
         raise CommandError("服务器上没有 ffmpeg，无法导出")
     needs = status.needs(state)
@@ -155,7 +172,10 @@ async def export_video(ctx: Ctx, format: Optional[str] = None):
         raise CommandError(f"导出失败：{job.error}")
     if result is None:
         raise CommandError("导出没有完成（可能被取消）")
-    ctx.ui("export_ready", url=f"/api/projects/{ctx.video_id}/export/download")
+    if ctx.actor == "ai":
+        # UI 的导出按钮自己会下载；命令再发一次会让浏览器下载两个文件。
+        ctx.ui("export_ready", url=f"/api/projects/{ctx.video_id}/export/download",
+               container=result.container)
     return {"container": result.container, "size_mb": round(__import__("os").path.getsize(result.path) / 1048576, 1),
             "download": f"/api/projects/{ctx.video_id}/export/download"}
 
@@ -199,5 +219,5 @@ def open_panel(ctx: Ctx, panel: str):
     readonly=True, group="ui",
 )
 def request_browser_action(ctx: Ctx, action: str, reason: str = ""):
-    ctx.ui("browser_action", action=action, reason=reason)
+    ctx.ui("browser_action", kind=action, reason=reason)
     return {"requested": action, "note": "已在界面上提示用户，需要用户点确认；结果会出现在最近改动里"}

@@ -75,7 +75,7 @@ SYSTEM_PROMPT = """你是这个视频配音项目的 AI 助手，和用户一起
 
 【沟通】
 - 始终用用户的语言回答（用户说中文，整段回复都是中文，包括开头的过渡语；不要夹英文客套话）。
-- 需要调用工具时，直接调用，不要先写一句“我来看看”再调用 —— 做完所有事之后再给一段总结。
+- 需要调用工具时，直接调用，**那一步不要输出任何文字**（包括「我先看看」这类过渡语）—— 做完所有事之后的最后一步再给一段总结。
 - 绝不要把工具调用写成文字（不要输出 <invoke>、<parameter>、函数名(参数) 这类东西），只用真正的工具调用。
 - 简洁，先说你做了什么、结果如何，再说需要用户决定的事。
 - 你每次改动之后，用一句话说明改了哪一句、改成了什么，不要长篇大论。
@@ -404,6 +404,9 @@ async def _respond(chat: Chat, video_id: str, user_text: str, conv: str) -> None
             continue
         if not calls:
             break
+        # 这一步要调工具，刚才流式推出的「我先看一下…」是过渡语。发一个 clear
+        # 让前端把气泡里的文字清掉（工具步骤卡片保留），最终回答仍由 message 替换。
+        bus.publish(video_id, {"type": "chat", "kind": "clear", "id": message_id, "conv": conv})
 
         messages.append({
             "role": "assistant", "content": text or "",

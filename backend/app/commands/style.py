@@ -59,10 +59,10 @@ def reset_subtitle_style(ctx: Ctx):
 
 
 @command(
-    "set_export_plan", "设置导出时怎么带字幕：不带 / 外挂软字幕(mp4) / 内嵌带样式(mkv) / 烧录(需要浏览器)。"
-    "也可选要哪些轨道。",
+    "set_export_plan", "设置导出时怎么带字幕：不带 / 外挂软字幕(mp4) / 内嵌带样式(mkv)。"
+    "也可选要哪些轨道。烧录字幕只能在界面的导出弹窗里做，不能设成项目方案。",
     {"type": "object", "properties": {
-        "format": {"type": "string", "enum": ["off", "soft", "styled", "burn"]},
+        "format": {"type": "string", "enum": ["off", "soft", "styled"]},
         "tracks": {"type": "array", "items": {"type": "string", "enum": list(SubtitleStyle.VALID_TRACKS)}},
         "default_track": {"type": "string", "enum": list(SubtitleStyle.VALID_TRACKS)},
     }},

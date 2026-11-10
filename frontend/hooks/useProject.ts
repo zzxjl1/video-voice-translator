@@ -68,6 +68,9 @@ export function useProject(id: string | null): ProjectApi {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [chatError, setChatError] = useState<string | null>(null);
+  // 断线重连 / resync 会并发发起多次 reload；没有序号保护时，一个较早发出的
+  // GET /chat 响应可能晚到，把刚更新的状态（比如已确认的卡片）覆盖回旧值。
+  const reloadSeq = useRef(0);
   const [chat, dispatchChat] = useReducer(reduceChatAction, undefined, emptyChat);
   const [init, setInit] = useState<InitState>(emptyInit);
   const [connection, setConnection] = useState<ConnectionState>('closed');
@@ -114,22 +117,28 @@ export function useProject(id: string | null): ProjectApi {
    */
   const reload = useCallback(async (): Promise<ProjectView | null> => {
     if (!id) return null;
+    const my = ++reloadSeq.current;
+    const fresh = () => my === reloadSeq.current;
     let view: ProjectView;
     try {
       view = await api.getProject(id);
     } catch (e) {
-      setLoadError(e instanceof Error ? e.message : String(e));
-      setNotFound(e instanceof api.ApiError && e.status === 404);
+      if (fresh()) {
+        setLoadError(e instanceof Error ? e.message : String(e));
+        setNotFound(e instanceof api.ApiError && e.status === 404);
+      }
       return null;                       // 不清空已加载的视图，避免闪回"加载中"
     }
+    if (!fresh()) return view;
     setProject(view);
     setLoadError(null);
     setNotFound(false);
 
     const [history, chats] = await Promise.all([
       api.getChat(id).catch(() => null),
-      api.listChats(id).catch((e) => { setChatError(chatErrorText(e)); return null; }),
+      api.listChats(id).catch((e) => { if (fresh()) setChatError(chatErrorText(e)); return null; }),
     ]);
+    if (!fresh()) return view;
     if (history) dispatchChat({ type: 'load', messages: history.messages, running: history.running });
     if (chats) {
       setChatError(null);
@@ -257,7 +266,9 @@ export function useProject(id: string | null): ProjectApi {
         url: (since) => `${api.API_BASE}/projects/${id}/events?since=${since}`,
         onEvent: handle,
         onState: (s) => !cancelled && setConnection(s),
-        onGone: () => { if (!cancelled) { setLoadError('这个工程已经不存在了'); setNotFound(true); } },
+        // SSE 短暂 404（后端重启窗口）不该把用户踢回首页、也不该删最近工程记录：
+        // 由 reload 里 getProject 的真实状态决定。
+        onGone: () => { if (!cancelled) void reload(); },
         startSeq,
       });
       void client.run();
@@ -334,7 +345,15 @@ export function useProject(id: string | null): ProjectApi {
   }, [id]);
   const stop = useCallback(async () => { if (id) await api.stopChat(id); }, [id]);
   const confirm = useCallback(async (cardId: string, approve: boolean) => {
-    if (id) await api.confirmChat(id, cardId, approve).catch(() => {});
+    if (!id) return;
+    try {
+      await api.confirmChat(id, cardId, approve);
+      // 乐观更新：服务端也会发 confirm_resolved 并落盘，但跨线程投递的事件可能
+      // 乱序到达、被 seq 去重丢掉。点完立刻把卡片settled，刷新后仍以服务端为准。
+      dispatchChat({ type: 'event', event: {
+        type: 'chat', seq: 0, kind: 'confirm_resolved', id: cardId, approved: approve,
+      } });
+    } catch { /* 卡片已处理/过期：服务端状态为准，下次刷新会同步 */ }
   }, [id]);
 
   return {

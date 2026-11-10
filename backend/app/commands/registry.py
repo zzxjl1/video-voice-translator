@@ -141,9 +141,14 @@ class Ctx:
         """长任务的细粒度进度（只进内存环形缓冲，不落盘）。"""
         bus.publish(self.video_id, {"type": "progress", **event})
 
-    def ui(self, action: str, **payload) -> None:
-        """界面意图：滚动到某行、打开某个面板……不改状态，客户端自己决定怎么做。"""
-        bus.publish(self.video_id, {"type": "ui", "action": action, "actor": self.actor, **payload})
+    def ui(self, event_type: str, **payload) -> None:
+        """
+        界面意图：滚动到某行、打开某个面板……不改状态，客户端自己决定怎么做。
+
+        位置参数用 `event_type` 而不是 `action`/`kind`：事件里的 `action` 是意图
+        类型，`kind` 这类名字调用方也想用（比如浏览器动作名），同名会撞车。
+        """
+        bus.publish(self.video_id, {"type": "ui", "action": event_type, "actor": self.actor, **payload})
 
 
 # ----------------------------------------------------------------------------

@@ -132,6 +132,13 @@ export function reduceChat(state: ChatState, event: ChatEvent): ChatState {
         ),
       };
 
+    case 'clear': {
+      // 模型边说「我先看一下」边调工具：文字是过渡语，但工具步骤卡片要留着。
+      const cur = state.streaming;
+      if (!cur || cur.id !== event.id) return state;
+      return { ...state, streaming: { ...cur, text: '' } };
+    }
+
     case 'idle':
       return { ...state, busy: false, streaming: null };
   }

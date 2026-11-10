@@ -569,6 +569,11 @@ SYSTEM_VOICE_LANGUAGES = frozenset(
     }
 )
 
+# 允许写入 state.target_language 的值。落地页的下拉列表（frontend/utils/languages.ts）
+# 是这 10 个；chat / HTTP 也必须遵守同一份，否则一句 "改成 Klingon" 就能让所有
+# 译文指纹失效、再让翻译模型对着一个不存在的语言干活。
+TARGET_LANGUAGES = frozenset(SYSTEM_VOICE_LANGUAGES)
+
 
 def system_voices_support(language: Optional[str]) -> bool:
     """

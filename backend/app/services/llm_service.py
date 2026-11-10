@@ -50,8 +50,15 @@ def _is_connection_error(e: Optional[BaseException]) -> bool:
 
 
 def _is_auth_error(e: Optional[BaseException]) -> bool:
-    from openai import AuthenticationError, PermissionDeniedError, NotFoundError
-    return isinstance(e, (AuthenticationError, PermissionDeniedError, NotFoundError))
+    """只用于报错文案：401/403 才是凭据问题。404（模型名/路径不对）不该让人去查 key。"""
+    from openai import AuthenticationError, PermissionDeniedError
+    return isinstance(e, (AuthenticationError, PermissionDeniedError))
+
+
+def _is_permanent_error(e: Optional[BaseException]) -> bool:
+    """重试也没用的错误：鉴权、404、400。用来短路分块重试和二轮补翻。"""
+    from openai import BadRequestError, NotFoundError
+    return _is_auth_error(e) or isinstance(e, (BadRequestError, NotFoundError))
 
 _SYSTEM_PROMPT = (
     "You are a professional dubbing translator. "
@@ -325,6 +332,9 @@ Script:
             _dump(os.path.join(llm_dir, "glossary_extracted.json"), glossary, "glossary")
             return glossary
         except Exception as e:
+            if _is_permanent_error(e):
+                logger.warning(f"Glossary extraction failed, continuing without it: {e}")
+                break
             if attempt == 2:
                 logger.warning(f"Glossary extraction failed, continuing without it: {e}")
     return {}
@@ -680,7 +690,7 @@ async def _translate_chunk(
         except Exception as e:
             last_error = e
             logger.warning(f"{name} attempt {attempt} failed: {e}")
-            if _is_auth_error(e):
+            if _is_permanent_error(e):
                 # 401/403/404/400 不会因为多等几秒就变好：立刻放弃这个 chunk，
                 # 把失败原因带出去，而不是把同样的请求原样打满 3 次。
                 break
@@ -689,7 +699,7 @@ async def _translate_chunk(
     if error_sink is not None:
         error_sink.setdefault("first", last_error)
         error_sink["last"] = last_error
-        if _is_auth_error(last_error):
+        if _is_permanent_error(last_error):
             error_sink["auth"] = True
     # Never throw away what the last attempt DID produce: a truncated response
     # often yields most of the chunk, and dropping it would send every one of

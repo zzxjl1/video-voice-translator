@@ -140,6 +140,16 @@ const base = () => ({
     chatEventMatches({ conv: 'A' }, 'A') && !chatEventMatches({ conv: 'A' }, 'B')
     && chatEventMatches({}, 'B') && chatEventMatches({ conv: 'A' }, ''));
 
+  // 有工具调用的那一步：过渡语清掉，但工具步骤卡片要留着
+  const withText = reduceChat(reduceChat(loadChat([], true), { type: 'chat', seq: 1, kind: 'start', id: 'r11' }),
+    { type: 'chat', seq: 2, kind: 'delta', id: 'r11', text: '我先看一下' });
+  const stepped = reduceChat(withText, { type: 'chat', seq: 3, kind: 'tool_call', id: 't11', name: 'get_overview', args: {} });
+  const cleared = reduceChat(stepped, { type: 'chat', seq: 4, kind: 'clear', id: 'r11' });
+  check('⑨c clear 只清文字、保留工具步骤', cleared.streaming?.text === '' && cleared.streaming?.steps.length === 1,
+    cleared.streaming);
+  check('⑨c clear 不能误伤别的一轮',
+    reduceChat(stepped, { type: 'chat', seq: 5, kind: 'clear', id: 'other' }).streaming?.text === '我先看一下');
+
   // 输出完还挂着"输出中 + 停止按钮"：GET /chat 的快照（running=true）比事件旧，
   // 落在 message/idle 之后会把 busy 覆盖成 true。判据要落在消息上。
   const asst = { id: 'm1', role: 'assistant', ts: 1, text: '说完了' };
