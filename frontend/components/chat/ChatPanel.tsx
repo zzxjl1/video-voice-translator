@@ -15,6 +15,7 @@ import type { ChatMessage } from '../../net/types';
 import { pendingConfirms, stepLabel, type ChatState, type ToolStep } from '../../store/chat';
 import { ConfirmCard } from './ConfirmCard';
 import Markdown from './Markdown';
+import type { HeaderProps } from '../../hooks/useWindows';
 
 interface Props {
   chat: ChatState;
@@ -27,8 +28,10 @@ interface Props {
   quote?: { line: number; label: string } | null;
   onQuoteRemove?: () => void;
   suggestions?: string[];
-  /** 悬浮窗口的关闭按钮。 */
-  onClose?: () => void;
+  /** 吸附在右栏时自己画卡片的边框和圆角；浮动时由窗口外框画。 */
+  docked?: boolean;
+  /** 标题栏右边的窗口按钮（吸附 / 弹出、关闭）。 */
+  windowControls?: React.ReactNode;
   /** 会话历史（新的在前）与当前会话 id。 */
   conversations?: { id: string; title: string; updated: number; count: number }[];
   currentConv?: string;
@@ -37,21 +40,13 @@ interface Props {
   onDeleteChat?: (conv: string) => void;
   /** 会话接口失败的原因（例如后端版本过旧）；不能让新对话看起来像没反应。 */
   error?: string | null;
-  /** 由 FloatingChat 注入：标题栏同时是窗口的拖动区。 */
-  dragProps?: {
-    onPointerDown: (e: React.PointerEvent) => void;
-    onPointerMove: (e: React.PointerEvent) => void;
-    onPointerUp: (e: React.PointerEvent) => void;
-    onPointerCancel: (e: React.PointerEvent) => void;
-    style?: React.CSSProperties;
-    className?: string;
-    title?: string;
-  };
+  /** 标题栏同时是窗口的拖动区。 */
+  dragProps?: HeaderProps;
 }
 
 const ChatPanel: React.FC<Props> = ({
   chat, disabled, disabledReason, onSend, onStop, onConfirm,
-  quote, onQuoteRemove, suggestions = [], onClose, dragProps,
+  quote, onQuoteRemove, suggestions = [], docked = true, windowControls, dragProps,
   conversations = [], currentConv = '', onNewChat, onOpenChat, onDeleteChat, error,
 }) => {
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -94,7 +89,7 @@ const ChatPanel: React.FC<Props> = ({
   const empty = chat.messages.length === 0 && !chat.streaming;
 
   return (
-    <div className="flex flex-col h-full bg-[#fbfbf9] overflow-hidden">
+    <div className={`flex flex-col h-full bg-[#fbfbf9] overflow-hidden ${docked ? 'border border-[#e5e5e0] rounded-3xl shadow-sm' : ''}`}>
       <div
         {...dragProps}
         className={`relative z-20 px-5 py-3.5 border-b border-[#e5e5e0] flex items-center justify-between bg-white/60 backdrop-blur-md shrink-0 ${dragProps?.className ?? ''}`}
@@ -133,15 +128,7 @@ const ChatPanel: React.FC<Props> = ({
               )}
             </div>
           )}
-          {onClose && (
-            <button
-              onClick={onClose}
-              title="收起助手"
-              className="p-1 rounded-md text-gray-300 hover:text-gray-600 hover:bg-claude-paper transition-colors"
-            >
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" /></svg>
-            </button>
-          )}
+          {windowControls}
         </div>
       </div>
 

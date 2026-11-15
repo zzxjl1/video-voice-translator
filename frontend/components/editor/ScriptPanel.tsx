@@ -12,6 +12,7 @@ import type { Line, MixPlanSegment, SpeakerView } from '../../net/types';
 import type { Flash } from '../../hooks/useProject';
 import { formatTime } from '../../utils/helpers';
 import { splitSubtitleTags, SUBTITLE_TAG_RE } from '../../utils/subtitleStyle';
+import type { HeaderProps } from '../../hooks/useWindows';
 
 export interface ScriptActions {
   edit: (id: string, field: 'text' | 'translation', value: string, line: number) => void;
@@ -33,6 +34,12 @@ interface Props {
   mix: Map<string, MixPlanSegment>;
   dubbing: boolean;
   actions: ScriptActions;
+  /** 吸附在右栏时自己画卡片的边框和圆角；浮动时由窗口外框画。 */
+  docked?: boolean;
+  /** 标题栏同时是窗口的拖动区。 */
+  dragProps?: HeaderProps;
+  /** 标题栏右边的窗口按钮（吸附 / 弹出、关闭）。 */
+  windowControls?: React.ReactNode;
 }
 
 const KIND_LABEL: Record<string, string> = { music: '音乐', noise: '噪音', vocal: '人声非语言' };
@@ -43,7 +50,7 @@ const STATUS: Record<string, { text: string; tone: string }> = {
 };
 
 const ScriptPanel: React.FC<Props> = ({
-  lines, speakers, colorOf, currentTime, flash, mix, dubbing, actions,
+  lines, speakers, colorOf, currentTime, flash, mix, dubbing, actions, docked = true, dragProps, windowControls,
 }) => {
   const listRef = useRef<HTMLDivElement>(null);
   const speakerById = useMemo(() => new Map(speakers.map((s) => [s.id, s])), [speakers]);
@@ -60,13 +67,19 @@ const ScriptPanel: React.FC<Props> = ({
   }, [activeId]);
 
   return (
-    <div className="flex flex-col h-full bg-[#fbfbf9] border border-[#e5e5e0] rounded-3xl overflow-hidden shadow-sm">
-      <div className="px-6 py-5 border-b border-[#e5e5e0] flex items-center justify-between bg-white/60 backdrop-blur-md">
+    <div className={`flex flex-col h-full bg-[#fbfbf9] overflow-hidden ${docked ? 'border border-[#e5e5e0] rounded-3xl shadow-sm' : ''}`}>
+      <div
+        {...dragProps}
+        className={`px-6 py-5 border-b border-[#e5e5e0] flex items-center justify-between bg-white/60 backdrop-blur-md shrink-0 ${dragProps?.className ?? ''}`}
+      >
         <h3 className="text-xs font-serif font-bold text-gray-700 flex items-center gap-2 tracking-wide">
           <span className="w-1.5 h-1.5 bg-claude-accent rounded-full" />
           SCRIPT &amp; TRANSLATION
         </h3>
-        <span className="text-[10px] font-bold uppercase tracking-widest text-gray-400">{lines.length} 句</span>
+        <div className="flex items-center gap-3">
+          <span className="text-[10px] font-bold uppercase tracking-widest text-gray-400">{lines.length} 句</span>
+          {windowControls}
+        </div>
       </div>
 
       <div ref={listRef} className="flex-grow overflow-y-auto p-6 space-y-6 scroll-smooth">

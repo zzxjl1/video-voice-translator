@@ -6,6 +6,7 @@ import type {
   SubtitleStylePatch,
   SubtitleTrack,
 } from '../net/types';
+import type { HeaderProps } from '../hooks/useWindows';
 
 /**
  * Subtitle style editor. It replaces the SCRIPT & TRANSLATION column while open.
@@ -49,6 +50,8 @@ import type {
 const CARD =
   'flex-grow flex flex-col h-full bg-[#fbfbf9] border border-[#e5e5e0] ' +
   'rounded-3xl overflow-hidden shadow-sm';
+/** 浮动时：窗口外框已经画了边框、圆角和阴影。 */
+const CARD_FLOATING = 'flex-grow flex flex-col h-full bg-[#fbfbf9] overflow-hidden';
 const CARD_HEAD =
   'px-6 py-5 border-b border-[#e5e5e0] flex items-center justify-between ' +
   'bg-white/60 backdrop-blur-md';
@@ -187,28 +190,28 @@ const Group: React.FC<{ title: string; children: React.ReactNode }> = ({ title, 
 interface SubtitleStylePanelProps {
   style: SubtitleStyle;
   onStyleChange: (patch: SubtitleStylePatch) => void;
-  onClose: () => void;
+  /** 吸附在右栏时自己画卡片的边框和圆角；浮动时由窗口外框画。 */
+  docked?: boolean;
+  /** 标题栏同时是窗口的拖动区。 */
+  dragProps?: HeaderProps;
+  /** 标题栏右边的窗口按钮（吸附 / 弹出、关闭）。 */
+  windowControls?: React.ReactNode;
 }
 
 const SubtitleStylePanel: React.FC<SubtitleStylePanelProps> = ({
   style,
   onStyleChange,
-  onClose,
+  docked = true,
+  dragProps,
+  windowControls,
 }) => (
-  <div className={CARD}>
-    <div className={CARD_HEAD}>
+  <div className={docked ? CARD : CARD_FLOATING}>
+    <div {...dragProps} className={`${CARD_HEAD} shrink-0 ${dragProps?.className ?? ''}`}>
       <h3 className={CARD_TITLE}>
         <span className="w-1.5 h-1.5 bg-claude-accent rounded-full"></span>
         字幕样式
       </h3>
-      <button
-        type="button"
-        onClick={onClose}
-        title="返回脚本与翻译"
-        className="px-3 py-1 bg-white/90 border border-[#d1d1cc] rounded-full text-[10px] font-bold uppercase tracking-widest shadow-sm hover:scale-105 transition-transform text-gray-600 cursor-pointer"
-      >
-        返回
-      </button>
+      {windowControls}
     </div>
 
     <div className={CARD_BODY}>

@@ -12,21 +12,20 @@ import { probeBurnCapability, type BurnCapability } from '../../utils/burnCapabi
 import { getAudioWaveformFromUrl } from '../../utils/audioProcessor';
 import { useProject } from '../../hooks/useProject';
 import { useMixPlayback } from '../../hooks/useMixPlayback';
+import { useWindows } from '../../hooks/useWindows';
 import { speakerColor } from '../../store/project';
 import type { TimelineSegment } from '../../store/timeline';
 import { DEFAULT_SUBTITLE_STYLE } from '../../net/types';
 import type { Line, SubtitleCapabilities, SubtitleCue, SubtitleStyle } from '../../net/types';
 import { containRect, overlayContainerStyle, overlayLineStyle, stripSubtitleTags, type Rect } from '../../utils/subtitleStyle';
 import ChatPanel from '../chat/ChatPanel';
-import FloatingChat from '../chat/FloatingChat';
 import ScriptPanel, { type ScriptActions } from './ScriptPanel';
-import TopBar from '../shell/TopBar';
+import TopBar, { type WindowToggle } from '../shell/TopBar';
+import { DockSlot, WindowLayer, WindowPortals, type PanelRenderers } from '../windows/WindowSystem';
 import SettingsPanel from './SettingsPanel';
 import Timeline from '../Timeline';
 import SubtitleStylePanel from '../SubtitleStylePanel';
 import ExportModal, { type SubtitleDelivery } from '../ExportModal';
-
-type RightPanel = 'script' | 'subtitle';
 
 interface Props {
   project: ReturnType<typeof useProject>;
@@ -41,8 +40,9 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
   const lines = project!.segments;
   const dubbing = project!.settings.enableDubbing;
 
-  const [panel, setPanel] = useState<RightPanel>('script');
-  const [chatOpen, setChatOpen] = useState(true);
+  // 脚本 / 助手 / 字幕样式都是窗口：吸附在右栏，或者拖出来自由摆放
+  const wm = useWindows();
+  const openWindow = wm.open;
   const [showExport, setShowExport] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   // 从脚本引用到聊天的那一句：结构化值，不在输入框里拼字符串，
@@ -131,10 +131,10 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
     if (ui.action === 'focus_line') {
       // AI 说"我定位到第 N 句"：切到脚本、滚到那一行、按需播放。直接按 DOM id 滚，
       // 不需要面板再暴露一个"外部要求滚动"的 prop。
-      setPanel('script');
+      openWindow('script');
       const seg = lines.find((l) => l.line === ui.line);
       if (seg) {
-        // 可能刚从字幕样式面板切回脚本：等 React 提交后再查 DOM，单帧不够。
+        // 脚本窗口可能刚被打开 / 切成当前标签：等 React 提交后再查 DOM，单帧不够。
         requestAnimationFrame(() => requestAnimationFrame(() => {
           document.getElementById(`line-${seg.id}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
         }));
@@ -142,7 +142,7 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
       if (ui.play) play(ui.start as number); else seek(ui.start as number);
     } else if (ui.action === 'open_panel') {
       const p = ui.panel as string;
-      if (p === 'script' || p === 'subtitle_style') setPanel(p === 'script' ? 'script' : 'subtitle');
+      if (p === 'script' || p === 'subtitle_style') openWindow(p === 'script' ? 'script' : 'subtitle');
       else if (p === 'export') setShowExport(true);
       else if (p === 'settings') setShowSettings(true);
     } else if (ui.action === 'play_voice_preview') {
@@ -156,7 +156,7 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
       setNotice(`AI 请求：${ui.reason ? String(ui.reason) : '需要在浏览器里完成' + what}（${what}），请在界面里手动触发`);
     }
     clearUi();
-  }, [ui, clearUi, play, seek, id]);
+  }, [ui, clearUi, play, seek, id, openWindow]);
 
   // 导出
   const [capabilities, setCapabilities] = useState<SubtitleCapabilities>({});
@@ -214,10 +214,20 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
     redub: async (l: Line) => { const r = await run('redub', { lines: [l.line], force: l.ttsStatus === 'fresh' }); if (!r.ok) setNotice(r.error ?? '配音失败'); },
     retranslate: async (l: Line, hint) => { const r = await run('retranslate', { lines: [l.line], ...(hint ? { length: hint } : {}) }); if (!r.ok) setNotice(r.error ?? '翻译失败'); },
     mark: async (l: Line, kind) => { const r = await run('mark_non_speech', { lines: [l.line], kind }); if (!r.ok) setNotice(r.error ?? '标记失败'); },
-    askAbout: (l: Line) => { setChatOpen(true); setQuote({ line: l.line, label: `第 ${l.line} 句` }); },
-  }), [run, seek]);
+    askAbout: (l: Line) => { openWindow('chat'); setQuote({ line: l.line, label: `第 ${l.line} 句` }); },
+  }), [run, seek, openWindow]);
 
   const colorOf = useCallback((sid: string) => speakerColor(project!, sid), [project]);
+  // 顶栏的窗口开关
+  const windowToggles = useMemo<WindowToggle[]>(() => [
+    { id: 'script', title: '脚本与译文', open: wm.layout.panels.script.open, onToggle: () => wm.toggle('script'),
+      icon: 'M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z' },
+    { id: 'chat', title: 'AI 助手', open: wm.layout.panels.chat.open, onToggle: () => wm.toggle('chat'),
+      icon: 'M8 10h.01M12 10h.01M16 10h.01M21 12c0 4.4-4 8-9 8a9.9 9.9 0 01-4-.8L3 20l1.3-3.9A7.6 7.6 0 013 12c0-4.4 4-8 9-8s9 3.6 9 8z' },
+    { id: 'subtitle', title: '字幕样式', open: wm.layout.panels.subtitle.open, onToggle: () => wm.toggle('subtitle'),
+      icon: 'M4 6h16a1 1 0 011 1v10a1 1 0 01-1 1H4a1 1 0 01-1-1V7a1 1 0 011-1zM7 12h3m4 0h3M7 15h6' },
+  ], [wm]);
+
   // 时间线用的行：kept = 导出时会把这段原声放回去（有预览地址 = 人声非语言 + 没静音 + 做过人声分离）
   const timelineSegments = useMemo<TimelineSegment[]>(() => lines.map((l) => ({
     id: l.id, speakerId: l.speakerId, start: l.start, end: l.end, kind: l.kind, muted: l.muted, hidden: l.hidden,
@@ -244,6 +254,43 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
     if (!r.ok) setNotice(r.error ?? '修改失败');
   }, [project, run]);
 
+  // 三个窗口的内容。窗口系统只管放在哪、多大；内容是什么在这里定。
+  const panels: PanelRenderers = {
+    script: (c) => (
+      <ScriptPanel
+        lines={lines} speakers={project!.speakers} colorOf={colorOf} currentTime={currentTime} flash={flash}
+        mix={mixEntries} dubbing={dubbing} actions={actions}
+        docked={c.docked} dragProps={c.headerProps} windowControls={c.controls}
+      />
+    ),
+    chat: (c) => (
+      <ChatPanel
+        chat={chat}
+        onSend={(t) => void say(t)}
+        onStop={() => void stop()}
+        onConfirm={(cid, ok) => void confirm(cid, ok)}
+        quote={quote}
+        onQuoteRemove={onQuoteRemove}
+        suggestions={SUGGESTIONS}
+        docked={c.docked}
+        dragProps={c.headerProps}
+        windowControls={c.controls}
+        error={api_.chatError}
+        conversations={api_.conversations}
+        currentConv={api_.currentConv}
+        onNewChat={() => void api_.startNewChat()}
+        onOpenChat={(cv) => void api_.openChat(cv)}
+        onDeleteChat={(cv) => void api_.deleteChat(cv)}
+      />
+    ),
+    subtitle: (c) => (
+      <SubtitleStylePanel
+        style={style} onStyleChange={onStyleChange}
+        docked={c.docked} dragProps={c.headerProps} windowControls={c.controls}
+      />
+    ),
+  };
+
   return (
     <div className="h-screen flex flex-col bg-claude-bg overflow-hidden">
       <TopBar
@@ -261,8 +308,7 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
         onExport={() => setShowExport(true)}
         onHome={onHome}
         exporting={exporting}
-        toggleChat={() => setChatOpen((v) => !v)}
-        chatOpen={chatOpen}
+        windows={windowToggles}
       />
 
       {notice && (
@@ -273,8 +319,12 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
       )}
 
       {/* 顶栏是 fixed 的（悬停展开时浮在画面上方），内容要给它让出顶部空间。
-          助手是悬浮卡片（不占栅格），所以这里始终是「视频 | 脚本」两栏。 */}
-      <main className="flex-grow min-h-0 grid gap-5 p-5 lg:p-6 pt-10 lg:pt-11 lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]">
+          右栏是「停靠位」：吸附进来的窗口在这里，大小固定；里面没有窗口（都拖出去了或关了）就收起，
+          视频撑满。浮动窗口不占栅格。 */}
+      <main
+        ref={(el) => { wm.mainRef.current = el; }}
+        className={`flex-grow min-h-0 grid gap-5 p-5 lg:p-6 pt-10 lg:pt-11 ${wm.docked.length > 0 ? 'lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]' : 'lg:grid-cols-1'}`}
+      >
         {/* 左：视频撑满剩余高度 + 时间轴贴底 —— 不再留出空白 */}
         <section className="flex flex-col gap-4 min-h-0 min-w-0">
           {/*
@@ -300,14 +350,14 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
             {/* 字幕样式：原版那枚竖排挂耳，贴在画面左边缘**外侧**，像书签一样 */}
             <button
               type="button"
-              onClick={() => setPanel(panel === 'subtitle' ? 'script' : 'subtitle')}
+              onClick={() => wm.toggle('subtitle')}
               title="调整字幕的字体、大小、颜色和位置，画面上的字幕会实时跟着变"
               style={{ writingMode: 'vertical-rl' }}
               className={[
                 'absolute left-0 top-1/2 -translate-y-1/2 -translate-x-full z-20',
                 'px-1 py-3 rounded-l-lg border transition-colors cursor-pointer',
                 'text-[10px] font-bold tracking-[0.25em]',
-                panel === 'subtitle'
+                wm.layout.panels.subtitle.open
                   ? 'bg-claude-accent text-white border-claude-accent shadow-md shadow-claude-accent/25'
                   : 'bg-white text-claude-accent border-claude-accent shadow-sm hover:bg-claude-accent/10',
               ].join(' ')}
@@ -329,44 +379,13 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
           </div>
         </section>
 
-        {/* 右：脚本（点挂耳时切成字幕样式面板） */}
-        <section className="flex flex-col min-h-0 min-w-0">
-          {panel === 'script' ? (
-            <ScriptPanel
-              lines={lines} speakers={project!.speakers} colorOf={colorOf} currentTime={currentTime} flash={flash}
-              mix={mixEntries} dubbing={dubbing} actions={actions}
-            />
-          ) : (
-            <SubtitleStylePanel style={style} onStyleChange={onStyleChange} onClose={() => setPanel('script')} />
-          )}
-        </section>
+        {/* 右：停靠位 */}
+        {wm.docked.length > 0 && <DockSlot wm={wm} />}
       </main>
 
-      {/* AI 助手：桌面应用式的浮动窗口 —— 拖标题栏移动、拖右下角改大小。
-          不占布局空间，挡到哪里拖开即可。 */}
-      {chatOpen && (
-        <FloatingChat>
-          {(dragProps) => (
-            <ChatPanel
-              chat={chat}
-              onSend={(t) => void say(t)}
-              onStop={() => void stop()}
-              onConfirm={(cid, ok) => void confirm(cid, ok)}
-              quote={quote}
-              onQuoteRemove={onQuoteRemove}
-              suggestions={SUGGESTIONS}
-              onClose={() => setChatOpen(false)}
-              dragProps={dragProps}
-              error={api_.chatError}
-              conversations={api_.conversations}
-              currentConv={api_.currentConv}
-              onNewChat={() => void api_.startNewChat()}
-              onOpenChat={(c) => void api_.openChat(c)}
-              onDeleteChat={(c) => void api_.deleteChat(c)}
-            />
-          )}
-        </FloatingChat>
-      )}
+      {/* 浮动窗口 + 吸附区提示；面板内容经 portal 渲染进各自的宿主，宿主在停靠位和浮动窗口间搬动 */}
+      <WindowLayer wm={wm} />
+      <WindowPortals wm={wm} panels={panels} />
 
       <ExportModal
         isOpen={showExport}
@@ -378,7 +397,7 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
         onDeliveryChange={setDelivery}
         keepStyle={keepStyle}
         onKeepStyleChange={setKeepStyle}
-        onOpenStyleEditor={() => { setShowExport(false); setPanel('subtitle'); }}
+        onOpenStyleEditor={() => { setShowExport(false); openWindow('subtitle'); }}
         onExport={() => void doExport()}
         isExporting={exporting}
         burnProgress={burnProgress}
