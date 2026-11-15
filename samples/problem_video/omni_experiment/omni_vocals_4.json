@@ -1,0 +1,49 @@
+{
+  "model": "qwen3.8-omni-flash",
+  "prompt": "You are a transcription reviewer. You HEAR the original video audio and read the ASR transcript of the same video. ASR transcribes ONE speaker per line and cannot handle people talking at the same time.\n\nEach line below is split into numbered clauses like [1]...[2]... . Line boundaries and clause numbers are GIVEN. NEVER output timestamps or seconds. Refer to places only by line id and clause number.\n\nDo three things:\n1. PROOFREAD every line against what you hear (fix mis-recognized words; keep the original language; do not translate; do not renumber or re-split). Return the corrected text of the whole line, clause numbers removed.\n2. STRUCTURAL PROBLEMS inside a line — report ONLY what you clearly hear, otherwise leave ops empty:\n   {\"op\":\"split\",\"after_clause\":N}  the line is really two different speakers taking turns; the second speaker starts right after clause N.\n   {\"op\":\"overlap\",\"text\":\"...\",\"from_clause\":A,\"to_clause\":B}  another person talks AT THE SAME TIME as the line's speaker during clauses A..B, and ASR dropped or merged those words. text = what that person said, in the original language.\n   {\"op\":\"vocal\",\"kind\":\"laugh|sigh|cough|breath\",\"after_clause\":N}  a human non-speech sound in the pause right after clause N.\n3. GAP MARKERS: the voice track has sound at these places where ASR transcribed nothing. For each marker say what the sound IS. kind is one of: speech | laugh | sigh | cough | breath | wind | impact | music | noise | other | none. If it is speech, give the words in text. Use none if you hear nothing there. (The audio you hear may also contain background sound such as wind or music; report the sound that is actually at that place.)\n\nReply with a JSON object only: {\"lines\":[{\"id\":\"...\",\"text\":\"...\",\"ops\":[]}],\"gaps\":[{\"h\":\"H1\",\"kind\":\"...\",\"text\":\"\"}]}. Every line id must appear exactly once. ops is usually empty.\n\nLines:\nseg-01: [1]大家好，[2]欢迎收看今天的节目。\nseg-02: [1]今天我们聊一聊视频翻译这件事。\nseg-03: [1]你听到刚才那声巨响了吗？\nseg-04: [1]好吧，[2]我们继续。\nseg-05: [1]接下来是第二个问题，[2]关于字幕的位置，[3]我觉得这个方案很好，[4]应该马上执行。\nseg-06: [1]好，[2]回到正题，[3]我们来看最后一个例子。\nseg-07: [1]谢谢大家，[2]我们下期再见。\n\nGap markers:\nH1: after line seg-03 (1 of 2 in that pause), about 1.3s long\nH2: after line seg-03 (2 of 2 in that pause), about 1.1s long\nH3: after line seg-06, about 2.2s long",
+  "raw_response": "{\"lines\":[{\"id\":\"seg-01\",\"text\":\"大家好，欢迎收看今天的节目。\",\"ops\":[]},{\"id\":\"seg-02\",\"text\":\"今天我们聊一聊视频翻译这件事。\",\"ops\":[]},{\"id\":\"seg-03\",\"text\":\"你听到刚才那声巨响了吗？\",\"ops\":[]},{\"id\":\"seg-04\",\"text\":\"好吧，我们继续。\",\"ops\":[]},{\"id\":\"seg-05\",\"text\":\"接下来是第二个问题，关于字幕的位置。\",\"ops\":[{\"op\":\"split\",\"after_clause\":2}]},{\"id\":\"seg-06\",\"text\":\"好，回到正题，我们来看最后一个例子。\",\"ops\":[]},{\"id\":\"seg-07\",\"text\":\"谢谢大家，我们下期再见。\",\"ops\":[]}],\"gaps\":[{\"h\":\"H1\",\"kind\":\"laugh\",\"text\":\"\"},{\"h\":\"H2\",\"kind\":\"noise\",\"text\":\"\"},{\"h\":\"H3\",\"kind\":\"laugh\",\"text\":\"\"}]}",
+  "usage": {
+    "completion_tokens": 204,
+    "prompt_tokens": 933,
+    "total_tokens": 1137,
+    "completion_tokens_details": {
+      "accepted_prediction_tokens": null,
+      "audio_tokens": null,
+      "reasoning_tokens": null,
+      "rejected_prediction_tokens": null,
+      "text_tokens": 204
+    },
+    "prompt_tokens_details": {
+      "audio_tokens": 240,
+      "cached_tokens": 0,
+      "text_tokens": 693
+    }
+  },
+  "seconds": 3.45,
+  "candidates": [
+    {
+      "start": 11.2,
+      "end": 12.46,
+      "after": "seg-03",
+      "nth": 1,
+      "of": 2,
+      "h": "H1"
+    },
+    {
+      "start": 13.02,
+      "end": 14.14,
+      "after": "seg-03",
+      "nth": 2,
+      "of": 2,
+      "h": "H2"
+    },
+    {
+      "start": 31.14,
+      "end": 33.3,
+      "after": "seg-06",
+      "nth": 1,
+      "of": 1,
+      "h": "H3"
+    }
+  ]
+}
