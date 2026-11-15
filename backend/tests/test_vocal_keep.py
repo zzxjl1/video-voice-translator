@@ -981,7 +981,7 @@ if os.path.exists(os.path.join(SAMPLE, "speech_stem.flac")):
     _orig_synth = _tts.synthesize_speech; _tts.synthesize_speech = synth_quiet
     class _J:
         cancel = type("E", (), {"is_set": staticmethod(lambda: False)})()
-        lines = set(); total = done = 0
+        lines = set(); total = done = 0; id = "j"; kind = "dub"
         def check(self): pass
     try:
         failed = asyncio.run(jobs.dub_lines(DV, _J()))
