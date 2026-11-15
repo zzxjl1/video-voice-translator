@@ -1,0 +1,212 @@
+{
+  "about": "合成测试视频的逐事件真值。时间单位秒，对应 problem_sample.mp4 的时间轴。",
+  "synthetic": true,
+  "sample_rate": 44100,
+  "duration": 34.494,
+  "files": {
+    "video": "problem_sample.mp4",
+    "speech_stem": "speech_stem.flac",
+    "background_stem": "background_stem.flac",
+    "truth": "truth.json"
+  },
+  "voices": {
+    "A": "Flo (中文（中国大陆）)",
+    "B": "Reed (中文（中国大陆）)"
+  },
+  "events": [
+    {
+      "start": 1.0,
+      "end": 3.713,
+      "track": "speech_stem",
+      "category": "speech",
+      "speaker": "A",
+      "text": "大家好，欢迎收看今天的节目。",
+      "id": "ev01"
+    },
+    {
+      "start": 4.213,
+      "end": 6.716,
+      "track": "speech_stem",
+      "category": "speech",
+      "speaker": "B",
+      "text": "今天我们聊一聊视频翻译这件事。",
+      "id": "ev02"
+    },
+    {
+      "start": 4.813,
+      "end": 16.262,
+      "track": "background_stem",
+      "category": "background",
+      "label": "wind",
+      "note": "持续的风声，带阵风，垫在好几句话下面",
+      "id": "ev03"
+    },
+    {
+      "start": 7.416,
+      "end": 8.149,
+      "track": "background_stem",
+      "category": "background",
+      "label": "impact",
+      "note": "关门的撞击声，独立出现，ASR 可能漏掉，也可能误识成一个字",
+      "id": "ev04"
+    },
+    {
+      "start": 8.849,
+      "end": 10.834,
+      "track": "speech_stem",
+      "category": "speech",
+      "speaker": "A",
+      "text": "你听到刚才那声巨响了吗？",
+      "id": "ev05"
+    },
+    {
+      "start": 11.234,
+      "end": 12.459,
+      "track": "speech_stem",
+      "category": "nonverbal_human",
+      "label": "laugh",
+      "speaker": "B",
+      "note": "独立的笑声：人声轨上有声音，ASR 通常没有句子",
+      "id": "ev06"
+    },
+    {
+      "start": 13.059,
+      "end": 14.133,
+      "track": "speech_stem",
+      "category": "nonverbal_human",
+      "label": "sigh",
+      "speaker": "A",
+      "note": "很轻的叹息",
+      "id": "ev07"
+    },
+    {
+      "start": 14.633,
+      "end": 15.962,
+      "track": "speech_stem",
+      "category": "speech",
+      "speaker": "A",
+      "text": "好吧，我们继续。",
+      "id": "ev08"
+    },
+    {
+      "start": 16.362,
+      "end": 19.214,
+      "track": "speech_stem",
+      "category": "speech",
+      "speaker": "B",
+      "text": "接下来是第二个问题，关于字幕的位置。",
+      "id": "ev09"
+    },
+    {
+      "start": 17.931,
+      "end": 18.291,
+      "track": "speech_stem",
+      "category": "nonverbal_human",
+      "label": "cough",
+      "speaker": "A",
+      "overlaps": [
+        "接下来是第二个问题，关于字幕的位置。"
+      ],
+      "note": "咳嗽压在别人说话中间：无法与说话分开，只能标注",
+      "id": "ev10"
+    },
+    {
+      "start": 19.714,
+      "end": 22.572,
+      "track": "speech_stem",
+      "category": "speech",
+      "speaker": "A",
+      "text": "我觉得这个方案很好，应该马上执行。",
+      "overlap_group": 1,
+      "id": "ev11"
+    },
+    {
+      "start": 20.014,
+      "end": 22.572,
+      "track": "speech_stem",
+      "category": "overlap",
+      "speakers": [
+        "A",
+        "B"
+      ],
+      "note": "两人同时说话；ASR 的单值 speaker 无法表达",
+      "id": "ev12"
+    },
+    {
+      "start": 20.014,
+      "end": 23.142,
+      "track": "speech_stem",
+      "category": "speech",
+      "speaker": "B",
+      "text": "不对，我完全不同意，成本太高了。",
+      "overlap_group": 1,
+      "id": "ev13"
+    },
+    {
+      "start": 23.742,
+      "end": 33.694,
+      "track": "background_stem",
+      "category": "music",
+      "label": "music",
+      "note": "23.7–26.2 秒是纯音乐，之后垫在说话下面直到结尾",
+      "id": "ev14"
+    },
+    {
+      "start": 26.242,
+      "end": 29.727,
+      "track": "speech_stem",
+      "category": "speech",
+      "speaker": "A",
+      "text": "好，回到正题。我们来看最后一个例子。",
+      "id": "ev15"
+    },
+    {
+      "start": 30.127,
+      "end": 32.2,
+      "track": "speech_stem",
+      "category": "speech",
+      "speaker": "B",
+      "text": "谢谢大家，我们下期再见。",
+      "id": "ev16"
+    },
+    {
+      "start": 32.32,
+      "end": 33.294,
+      "track": "speech_stem",
+      "category": "nonverbal_human",
+      "label": "laugh",
+      "speaker": "A",
+      "note": "紧贴句尾的笑声：ASR 可能把它并进上一句",
+      "id": "ev17"
+    }
+  ],
+  "expected": {
+    "speech_lines": [
+      "ev01",
+      "ev02",
+      "ev05",
+      "ev08",
+      "ev09",
+      "ev11",
+      "ev13",
+      "ev15",
+      "ev16"
+    ],
+    "uncovered_voice": [
+      "ev06",
+      "ev07",
+      "ev17"
+    ],
+    "voice_inside_speech": [
+      "ev10"
+    ],
+    "overlap": [
+      "ev12"
+    ],
+    "background_only": [
+      "ev03",
+      "ev04",
+      "ev14"
+    ]
+  }
+}
