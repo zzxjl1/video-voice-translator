@@ -722,8 +722,9 @@ def voices_for_language(language: Optional[str]) -> list[str]:
 # the backend validates it rather than trusting the client.
 SEPARATION_MODE = _env("SEPARATION_MODE", "client").lower()
 
-# Initial state of the "BGM Separation" control in the UI.
-ENABLE_BGM_SEPARATION_DEFAULT = _env_bool("ENABLE_BGM_SEPARATION_DEFAULT", False)
+# Initial state of the "BGM Separation" control in the UI. Defaults on so intro
+# starts with In-browser; set ENABLE_BGM_SEPARATION_DEFAULT=false in .env to keep the old off default.
+ENABLE_BGM_SEPARATION_DEFAULT = _env_bool("ENABLE_BGM_SEPARATION_DEFAULT", True)
 
 # ----- Browser ("client") backend -----
 # The MDX-Net model served to the browser; its DSP parameters are mirrored to

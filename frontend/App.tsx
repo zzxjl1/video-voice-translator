@@ -46,12 +46,13 @@ const App: React.FC = () => {
   const [targetLanguage, setTargetLanguage] = useState(detectBrowserLanguage);
   const [targetAccent, setTargetAccent] = useState('');
   const [enableDubbing, setEnableDubbing] = useState(true);
-  const [enableVoiceClone, setEnableVoiceClone] = useState(false);
+  // 落地页默认开启声音克隆；浏览器分离也默认选中 In-browser（克隆需要分离后的人声轨）。
+  const [enableVoiceClone, setEnableVoiceClone] = useState(true);
   const [cloneSmartPick, setCloneSmartPick] = useState(false);
   // 落地页默认开启 omni 审听增强（纠错 + 语气标签）；用户仍可在处理设置里关掉。
   const [mmEnhance, setMmEnhance] = useState(true);
   const [customPrompt, setCustomPrompt] = useState('');
-  const [separationMode, setSeparationMode] = useState<SeparationMode>('off');
+  const [separationMode, setSeparationMode] = useState<SeparationMode>('client');
   const [backends, setBackends] = useState<SeparationBackends>({});
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
@@ -80,8 +81,14 @@ const App: React.FC = () => {
     api.getSeparatorInfo().then((info) => {
       setBackends(info.backends as SeparationBackends);
       const usable = (info.backends as Record<string, BackendAvailability | undefined>).client?.available;
-      setSeparationMode(info.default_enabled && usable ? 'client' : 'off');
-    }).catch(() => {});
+      const on = info.default_enabled && usable;
+      setSeparationMode(on ? 'client' : 'off');
+      // 克隆需要分离后的人声轨：浏览器后端不可用 / 服务端没开时，别把默认状态留成会失败的 client + clone。
+      if (!on) setEnableVoiceClone(false);
+    }).catch(() => {
+      setSeparationMode('off');
+      setEnableVoiceClone(false);
+    });
   }, []);
 
   const refreshRecent = useCallback(() => {

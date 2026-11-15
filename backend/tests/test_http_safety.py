@@ -93,6 +93,20 @@ check("③b 两条音轨都不在 → /audio 和 /audio/original 都 404",
       c.get(f"/api/projects/{vid}/audio").status_code == 404
       and c.get(f"/api/projects/{vid}/audio/original").status_code == 404)
 
+# ------------------------------------------------------------------ ③c 落地页默认：In-browser 分离 + 声音克隆
+check("③c 服务端默认开启浏览器分离", config.ENABLE_BGM_SEPARATION_DEFAULT is True)
+models_tmp = os.path.join(TMP, "sep_models")
+os.makedirs(models_tmp, exist_ok=True)
+open(os.path.join(models_tmp, config.SEPARATOR_MODEL_FILE), "wb").write(b"dummy")
+old_models = config.MODELS_DIR
+config.MODELS_DIR = models_tmp
+try:
+    r = c.get("/api/models/separator")
+    check("③c /models/separator 返回 default_enabled=true，前端据此选中 In-browser",
+          r.status_code == 200 and r.json().get("default_enabled") is True, (r.status_code, r.text[:120]))
+finally:
+    config.MODELS_DIR = old_models
+
 # ------------------------------------------------------------------ ④ Range 端到端
 r = c.get(f"/api/projects/{vid}/video", headers={"Range": "bytes=-16"})
 check("④ /video 后缀 Range → 206 且是尾部 16 字节",

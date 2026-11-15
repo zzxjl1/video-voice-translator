@@ -150,7 +150,7 @@ const ProcessingSettings: React.FC<ProcessingSettingsProps> = ({
                                 <div className="mt-2 rounded-lg border border-gray-200/70 bg-white/80 px-2.5 py-2">
                                     <div className="flex items-center mb-1.5">
                                         <span className="text-xs font-medium text-gray-700">BGM 分离</span>
-                                        <InfoTooltip text="Splits vocals from background music for cleaner transcription and voice cloning. Pick which backend does the work, or turn it off." />
+                                        <InfoTooltip text="On by default (In-browser): splits vocals from background music for cleaner transcription and voice cloning. Switch to Off to skip the first-run 64 MB model download." />
                                     </div>
                                     <SeparationModeSelector
                                         value={separationMode}
@@ -166,7 +166,7 @@ const ProcessingSettings: React.FC<ProcessingSettingsProps> = ({
                                     <div className="flex items-center justify-between gap-3 py-1.5 px-2.5">
                                         <div className="flex items-center">
                                             <span className="text-xs font-medium text-gray-700">声音克隆</span>
-                                            <InfoTooltip text="Clone the original speaker's voice for synthesis. The translated audio will sound like the original speaker. Requires more processing time." />
+                                            <InfoTooltip text="On by default: clones the original speaker's voice for synthesis. Requires BGM separation and more processing time; turn it off to use built-in voices." />
                                         </div>
                                         <Switch on={enableVoiceClone} onClick={() => onVoiceCloneChange(!enableVoiceClone)} />
                                     </div>
