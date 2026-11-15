@@ -379,7 +379,9 @@ async def chat_confirm(video_id: str, body: ConfirmBody):
 
 
 @router.post("/{video_id}/chat/stop")
-def chat_stop(video_id: str):
+async def chat_stop(video_id: str):
+    """async 而非 def：cancel_chat 会 set asyncio.Event / Future，必须在事件循环线程里做。
+    同步端点跑在线程池里，从那边 set 不会唤醒正在等待的协程，要拖到下一个事件才醒。"""
     _need(video_id)
     agent.cancel_chat(video_id)
     return {"stopping": True}

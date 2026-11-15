@@ -104,6 +104,33 @@ try:
 finally:
     agent.handle_user_message = original
 
+# ------------------------------------------------------------------ ⑦ 停止/确认必须在事件循环线程里执行
+# cancel_chat / resolve_confirmation 会 set asyncio.Event / Future。从线程池里 set 不会唤醒
+# 正在等待的协程（要拖到下一个事件才醒），所以这两个端点必须是 async def。
+# 这里不看"端点是不是 async"这个形式，而是直接量：被调用时在哪个线程。
+import asyncio, threading
+import httpx
+
+async def where_do_they_run():
+    loop_thread = threading.get_ident()
+    seen = {}
+    orig_cancel, orig_resolve = agent.cancel_chat, agent.resolve_confirmation
+    agent.cancel_chat = lambda vid: seen.__setitem__("stop", threading.get_ident())
+    agent.resolve_confirmation = lambda vid, cid, ok: seen.__setitem__("confirm", threading.get_ident()) or True
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as ac:
+            r1 = await ac.post(f"{p}/chat/stop")
+            r2 = await ac.post(f"{p}/chat/confirm", json={"id": "x", "approve": True})
+        return loop_thread, seen, (r1.status_code, r2.status_code)
+    finally:
+        agent.cancel_chat, agent.resolve_confirmation = orig_cancel, orig_resolve
+
+loop_thread, ran_in, codes = asyncio.run(where_do_they_run())
+check("⑦ 两个端点都返回 200", codes == (200, 200), codes)
+check("⑦ POST /chat/stop 在事件循环线程里执行 cancel_chat", ran_in.get("stop") == loop_thread, (ran_in, loop_thread))
+check("⑦ POST /chat/confirm 在事件循环线程里执行 resolve_confirmation", ran_in.get("confirm") == loop_thread, (ran_in, loop_thread))
+
 c.close()
 print(f"\n合计 {'全部通过' if not fails else str(len(fails)) + ' 项失败: ' + ', '.join(fails)}")
 sys.exit(1 if fails else 0)

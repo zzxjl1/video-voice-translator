@@ -11,6 +11,7 @@
  */
 import React from 'react';
 import { Streamdown } from 'streamdown';
+import { SAFE_COMPONENTS } from './markdownSafe';
 
 interface Props {
   text: string;
@@ -22,6 +23,7 @@ const Markdown: React.FC<Props> = ({ text, streaming = false }) => (
   <Streamdown
     mode={streaming ? 'streaming' : 'static'}
     isAnimating={streaming}
+    components={SAFE_COMPONENTS}
     className="text-[13px] leading-relaxed [&_table]:my-2"
   >
     {text}

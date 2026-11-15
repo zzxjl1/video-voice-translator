@@ -21,6 +21,7 @@ import {
   forgetRecentProject, loadRecentProjects, touchRecentProject, type RecentProject,
 } from './utils/recentProjects';
 import { emptyInit, reduceInit, type InitState } from './store/init';
+import { pageFor } from './store/page';
 import type { BackendAvailability, SeparationBackends, SeparationMode } from './net/types';
 
 const PARAM = 'v';
@@ -57,6 +58,10 @@ const App: React.FC = () => {
 
   const project = useProject(videoId);
   const { project: view, loadError, notFound } = project;
+  // start() 在 open() 之前创建，它闭包里的 project 还是"没有工程"的那一份；
+  // 要在 setup 之后取最新视图，必须经过 ref 拿当前这一帧的 reload。
+  const reloadRef = useRef(project.reload);
+  reloadRef.current = project.reload;
 
   // 浏览器端分离的进度（在服务端初始化之前发生，所以不走事件流）
   const [prep, setPrep] = useState<InitState>(emptyInit);
@@ -121,6 +126,10 @@ const App: React.FC = () => {
       const uploaded = await api.upload(file);
       uploadedId = uploaded.id;
       touchRecentProject(uploaded.id, uploaded.filename);
+      // 马上切到初始化页：浏览器端人声分离可能要几分钟，这段时间用户要看到步骤清单、
+      // 进度和取消，而不是停在落地页。别因此闪出旧编辑器 —— pageFor 在 starting /
+      // preparing 期间强制停在初始化页（上传按 MD5 复用时工程可能是已完成的）。
+      open(uploaded.id);
 
       let mode: SeparationMode = enableDubbing ? separationMode : 'off';
       if (mode === 'client') {
@@ -154,10 +163,10 @@ const App: React.FC = () => {
       setPreparing(false);
       setStartError(e instanceof Error ? e.message : String(e));
     } finally {
-      // 必须在 setup 之后才切到工程页：setup 会先把 stage 改成 initializing。
-      // 以前先切页，若这个 id 是一个已经 ready 的工程（上传按 MD5 复用），
-      // 界面会先用旧的 ready 渲染出编辑器，随后才跳回初始化页。
-      if (uploadedId) open(uploadedId);
+      // setup 返回时服务端已把 stage 改成 initializing，但这个变化经事件流到达之前，
+      // 本地视图可能还是旧的 ready。先取一次最新视图再放开 starting，否则放开的
+      // 那一瞬间会闪出编辑器。
+      if (uploadedId) await reloadRef.current();
       setStarting(false);
     }
   }, [targetLanguage, targetAccent, enableDubbing, enableVoiceClone, cloneSmartPick, mmEnhance, customPrompt, separationMode, open]);
@@ -190,7 +199,8 @@ const App: React.FC = () => {
   }, [job?.id, preparing]);
 
   // —— 页面 ——
-  if (!videoId) {
+  const page = pageFor({ videoId, stage: view?.stage ?? null, starting, preparing });
+  if (page === 'landing') {
     return (
       <>
       <VideoUpload
@@ -220,24 +230,19 @@ const App: React.FC = () => {
         onOpenProject={(id) => open(id)}
         onDeleteProject={(id, name) => void deleteProject(id, name)}
       />
-      {/* 浏览器端人声分离发生在切页之前（要赶在 init 任务开始前上传音轨），
-          这一步的进度和上传/启动失败都要在落地页上可见。 */}
-      {(starting || preparing || startError) && (
+      {/* 只覆盖"还没拿到工程 id"的那一段：上传中，或上传本身失败。
+          拿到 id 之后就切到初始化页了，分离和启动的进度、失败都在那里显示。 */}
+      {(starting || startError) && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 w-[min(560px,90vw)] bg-white border border-claude-border rounded-2xl shadow-xl px-5 py-4 space-y-1.5">
-          <div className="text-xs font-bold text-gray-700">
-            {startError ? '没能开始处理' : preparing ? '正在浏览器里分离人声…' : '正在上传并准备…'}
-          </div>
+          <div className="text-xs font-bold text-gray-700">{startError ? '没能开始处理' : '正在上传…'}</div>
           {startError && <div className="text-[12px] text-red-500">{startError}</div>}
-          {!startError && prep.log.slice(-3).map((l) => (
-            <div key={l.key} className="text-[11px] text-gray-400 truncate">{l.text}</div>
-          ))}
         </div>
       )}
       </>
     );
   }
 
-  if (!view) {
+  if (page === 'loading' || !view) {
     return (
       <div className="min-h-screen bg-claude-bg flex items-center justify-center text-sm text-gray-400">
         {loadError ? (
@@ -253,7 +258,7 @@ const App: React.FC = () => {
     );
   }
 
-  if (view.stage !== 'ready') {
+  if (page === 'init') {
     const running = view.stage === 'initializing' || preparing || starting;
     return (
       <>

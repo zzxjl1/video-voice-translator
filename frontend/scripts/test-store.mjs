@@ -6,7 +6,8 @@
  */
 import { applyPatch, applyChange, speakerColor, summarize, lineAt } from '../store/project.ts';
 import { reduceChat, emptyChat, loadChat, pendingConfirms, stepLabel, chatEventMatches } from '../store/chat.ts';
-import { reduceInit, emptyInit, overallProgress, failInit } from '../store/init.ts';
+import { reduceInit, emptyInit, overallProgress, failInit, replayCeiling, acceptEvent } from '../store/init.ts';
+import { pageFor } from '../store/page.ts';
 import { EventClient } from '../net/events.ts';
 
 let failures = 0;
@@ -314,6 +315,57 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   });
   const run = client.run(); await sleep(30); client.close(); await run;
   check('㉑ 一帧坏 JSON 被丢弃，后面的帧照常处理', got.includes(2) && !got.includes(1), got);
+}
+
+// ------------------------------------------------------------------ ⑧ 刷新后找回初始化进度
+{
+  check('㉒ 初始化中 / 失败停留：重放上界 = 快照的 seq', replayCeiling({ stage: 'initializing', seq: 40 }) === 40 && replayCeiling({ stage: 'failed', seq: 9 }) === 9);
+  check('㉒ 已就绪 / 刚上传：不重放（0）', replayCeiling({ stage: 'ready', seq: 40 }) === 0 && replayCeiling({ stage: 'uploaded', seq: 3 }) === 0);
+
+  const ev = (type, seq, extra = {}) => ({ type, seq, ...extra });
+  const C = 40;
+  check('㉒ 重放段里只放行 progress', acceptEvent(ev('progress', 10), C));
+  for (const t of ['ui', 'chat', 'change', 'job', 'conversation']) {
+    check(`㉒ 重放段里的旧 ${t} 事件被挡掉（ui 会再触发一次下载，chat 会重画旧气泡）`, !acceptEvent(ev(t, 10), C));
+  }
+  check('㉒ 边界：seq == 上界仍属于重放段', !acceptEvent(ev('ui', C), C) && acceptEvent(ev('progress', C), C));
+  for (const t of ['ui', 'chat', 'change', 'job']) {
+    check(`㉒ 重放段之后的实时 ${t} 事件照常处理`, acceptEvent(ev(t, C + 1), C));
+  }
+  check('㉒ 不重放时（上界 0）一切照常', ['ui', 'chat', 'change'].every((t) => acceptEvent(ev(t, 1), 0)));
+  check('㉒ 没有 seq 的事件放行（保持与 EventClient 一致）', acceptEvent({ type: 'chat' }, C));
+
+  // 端到端：模拟"刷新前跑到配音 4/10"，重放这些 progress 到一个全新的状态
+  const P = (phase, status, o = {}) => ({ type: 'progress', seq: 0, ts: 0, phase, status, ...o });
+  const history = [
+    P('separation', 'skipped'), P('asr', 'started'), P('asr', 'done', { lines: 10 }),
+    P('mm_enhance', 'skipped'), P('translation', 'started', { count: 10 }), P('translation', 'done', { count: 10, failed: 0 }),
+    P('voice_clone', 'complete'), P('tts', 'started', { total: 10 }),
+    ...[1, 2, 3, 4].map((i) => P('tts', undefined, { segment_id: `s${i}`, progress: i, total: 10 })),
+  ].map((e, i) => ({ ...e, seq: i + 1 }));
+  const mixedIn = [...history.slice(0, 3), ev('chat', 4, { kind: 'message' }), ev('ui', 5, { action: 'export_ready' }), ...history.slice(3)];
+  let live = emptyInit();
+  for (const e of mixedIn) if (acceptEvent(e, 60)) live = reduceInit(live, e);
+  check('㉓ 重放后：已完成的步骤是完成态，不是“待处理”',
+    live.steps.map((x) => x.status).join() === 'skipped,done,skipped,done,done,running', live.steps.map((x) => x.status));
+  check('㉓ 重放后：配音进度 4/10', live.steps[5].progress?.done === 4 && live.steps[5].progress?.total === 10);
+  check('㉓ 重放后：日志不是空的', live.log.length >= 3 && live.log.some((l) => l.text.includes('识别完成')), live.log.length);
+  check('㉓ 重放后接着收实时事件：进度继续往前走', reduceInit(live, P('tts', undefined, { segment_id: 's5', progress: 5, total: 10 })).steps[5].progress.done === 5);
+}
+
+// ------------------------------------------------------------------ ⑨ 该显示哪一页
+{
+  const A = (o) => pageFor({ videoId: 'v', stage: 'ready', starting: false, preparing: false, ...o });
+  check('㉔ 没有工程 → 落地页', pageFor({ videoId: null, stage: null, starting: false, preparing: false }) === 'landing');
+  check('㉔ 打开了工程但视图没回来 → 加载中', A({ stage: null }) === 'loading');
+  check('㉔ uploaded / initializing / failed → 初始化页', ['uploaded', 'initializing', 'failed'].every((st) => A({ stage: st }) === 'init'));
+  check('㉔ ready → 编辑器', A({}) === 'editor');
+  // 回归：上传按 MD5 复用了一个已完成的工程。分离/setup 期间服务端还是旧的 ready，不能闪出编辑器
+  check('㉔ 回归：复用了已完成工程，浏览器分离期间（preparing）停在初始化页，不闪编辑器', A({ preparing: true }) === 'init');
+  check('㉔ 回归：setup 请求期间（starting）也停在初始化页', A({ starting: true }) === 'init');
+  check('㉔ 分离/启动结束后，ready 才进编辑器', A({ starting: false, preparing: false }) === 'editor');
+  check('㉔ 加载中优先于 starting（视图没回来前没得显示）', A({ stage: null, starting: true }) === 'loading');
+  check('㉔ 落地页不受 starting 影响（上传中还在落地页上）', pageFor({ videoId: null, stage: null, starting: true, preparing: false }) === 'landing');
 }
 
 console.log(failures === 0 ? '\n合计 全部通过' : `\n合计 ${failures} 项失败`);

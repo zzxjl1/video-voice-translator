@@ -15,7 +15,7 @@ import { EventClient } from '../net/events';
 import type { ChatEvent, ChangeEvent, CommandResult, ConversationEvent, JobEvent, ProjectView, ServerEvent, UiEvent } from '../net/types';
 import { applyChange } from '../store/project';
 import { chatEventMatches, emptyChat, loadChat, reduceChat, type ChatState } from '../store/chat';
-import { emptyInit, failInit, reduceInit, type InitState } from '../store/init';
+import { acceptEvent, emptyInit, failInit, reduceInit, replayCeiling, type InitState } from '../store/init';
 
 export type ConnectionState = 'connecting' | 'open' | 'reconnecting' | 'closed';
 
@@ -193,8 +193,11 @@ export function useProject(id: string | null): ProjectApi {
 
     let cancelled = false;
     let client: EventClient | null = null;
+    // 重放段的上界（见 store/init.ts）。重放期间只放行 progress，之后一切照常。
+    let ceiling = 0;
 
     const handle = (event: ServerEvent) => {
+      if (!acceptEvent(event, ceiling)) return;
       switch (event.type) {
         case 'change': {
           const current = projectRef.current;
@@ -261,7 +264,9 @@ export function useProject(id: string | null): ProjectApi {
       if (cancelled) return;
       // 用这次重取拿到的 seq，而不是 render 里才赋值的 ref —— 首帧它是 null，
       // 会让 SSE 以 since=0 连上，把历史事件（含 export_ready 下载）重放一遍。
-      const startSeq = view?.seq ?? projectRef.current?.seq ?? 0;
+      // 例外：工程还在初始化阶段时有意从头重放（只采纳 progress），找回刷新前的进度。
+      ceiling = view ? replayCeiling(view) : 0;
+      const startSeq = ceiling > 0 ? 0 : (view?.seq ?? projectRef.current?.seq ?? 0);
       client = new EventClient({
         url: (since) => `${api.API_BASE}/projects/${id}/events?since=${since}`,
         onEvent: handle,

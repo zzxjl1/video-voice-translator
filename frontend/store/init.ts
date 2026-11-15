@@ -190,6 +190,32 @@ export function failInit(state: InitState, message: string): InitState {
   return { ...state, failed: message, finished: true };
 }
 
+// ----------------------------------------------------------------------------
+// 刷新页面后找回进度
+// ----------------------------------------------------------------------------
+//
+// 初始化页的步骤清单和日志**只**靠 progress 事件累积，快照（GET /projects/{id}）里没有。
+// 所以刷新后如果事件流只从"现在"开始接，已经完成的步骤会全部显示成"待处理"、日志是空的。
+//
+// 修法：工程还停在初始化阶段（进行中，或失败后停在这里看原因）时，让事件流从头重放，
+// 但**只**采纳重放段里的 progress 事件。其余类型的旧事件不能重放：
+//   · ui（export_ready）会再触发一次下载；
+//   · chat 会把旧一轮的流式气泡又画一遍；
+//   · change 虽然会被 rev 判成"已见过"而忽略，但没有理由让它走一遍。
+// 重放不到（进程重启过，内存里的事件环是空的）也没关系：那时任务本来也已经没了。
+
+/** 重放的上界：seq 不超过它的事件属于"重放段"；0 = 不重放（直接接着快照往下听）。 */
+export function replayCeiling(view: { stage: string; seq: number }): number {
+  return view.stage === 'initializing' || view.stage === 'failed' ? view.seq : 0;
+}
+
+/** 重放段里只放行 progress；重放段之后（seq 大于上界）的实时事件照常处理。 */
+export function acceptEvent(event: { type: string; seq?: number }, ceiling: number): boolean {
+  if (!ceiling) return true;
+  if (typeof event.seq !== 'number' || event.seq > ceiling) return true;
+  return event.type === 'progress';
+}
+
 /** 总进度 0..1（给进度条）。 */
 export function overallProgress(state: InitState): number {
   const active = state.steps.filter((s) => s.status !== 'skipped');
