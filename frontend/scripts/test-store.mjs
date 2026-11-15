@@ -8,6 +8,10 @@ import { applyPatch, applyChange, speakerColor, summarize, lineAt } from '../sto
 import { reduceChat, emptyChat, loadChat, pendingConfirms, stepLabel, chatEventMatches } from '../store/chat.ts';
 import { reduceInit, emptyInit, overallProgress, failInit, replayCeiling, acceptEvent } from '../store/init.ts';
 import { pageFor } from '../store/page.ts';
+import {
+  PANEL_IDS, MIN_SIZE, TOP_INSET, KEEP_VISIBLE, DIRS, clampRect, resizeRect, pointInRect, fallbackDockZone, defaultLayout, defaultRect,
+  dockedOpen, floatingOpen, activeDock, normalize, reduce, serialize, restore, STORAGE_KEY,
+} from '../store/windows.ts';
 import { assignLanes, blockGeometry, barColors, colorOfSegment, formatSpan, segmentFlags, showIcon, minPxFor, MAX_LANES, KIND_META } from '../store/timeline.ts';
 import { EventClient } from '../net/events.ts';
 
@@ -409,8 +413,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   // —— 取色
   check('㉘ 台词 = 说话人的颜色（用传进来的 colorOf，和脚本面板同一个函数）', colorOfSegment(T('a', 0, 1), color) === '#aaa' && colorOfSegment(T('a', 0, 1, { speakerId: '1' }), color) === '#bbb');
-  const kc = ['music', 'noise', 'vocal'].map((k) => colorOfSegment(T('x', 0, 1, { kind: k }), color));
-  check('㉘ 音乐 / 噪音 / 人声非语言：各自的颜色，互不相同，也不是说话人的颜色', new Set(kc).size === 3 && kc.every((c) => c !== '#aaa'), kc);
+  const kc = ['music', 'noise', 'vocal', 'song'].map((k) => colorOfSegment(T('x', 0, 1, { kind: k }), color));
+  check('㉘ 音乐 / 噪音 / 人声非语言 / 歌曲：各自的颜色，互不相同，也不是说话人的颜色', new Set(kc).size === 4 && kc.every((c) => c !== '#aaa' && c !== '#bbb'), kc);
+  check('㉘ 歌曲有自己的名字和说明', KIND_META.song.label === '歌曲' && KIND_META.song.hint.includes('♪'));
   check('㉘ 非台词的颜色不随说话人变（vocal 行借的是前一句的说话人，那是无意义的）',
     colorOfSegment(T('x', 0, 1, { kind: 'vocal', speakerId: '0' }), color) === colorOfSegment(T('x', 0, 1, { kind: 'vocal', speakerId: '1' }), color));
   check('㉘ 未知 kind 兜底成灰色，不抛', colorOfSegment(T('x', 0, 1, { kind: 'whatever' }), color) === '#9ca3af');
@@ -428,6 +433,110 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   check('㉙ 人声非语言：没做人声分离时说明原因（而不是让人以为被丢了）', segmentFlags(T('v', 0, 1, { kind: 'vocal', kept: false })).join().includes('没做人声分离'));
   check('㉙ 人声非语言：静音了就说“已静音”，不说“保留”', (() => { const f = segmentFlags(T('v', 0, 1, { kind: 'vocal', kept: false, muted: true })); return f.some((x) => x.includes('已静音')) && !f.some((x) => x.includes('保留这段')); })());
   check('㉙ 音乐 / 噪音不带“原声”相关的标签', segmentFlags(T('m', 0, 1, { kind: 'music' })).length === 0);
+  check('㉙ 歌曲：保留原声的说明、字幕显示原歌词', (() => { const f = segmentFlags(T('g', 0, 1, { kind: 'song', kept: true })); return f.some((x) => x.includes('保留这段原声')) && f.some((x) => x.includes('原歌词')); })());
+  check('㉙ 歌曲：没做人声分离 / 静音时和人声非语言一样说明原因', (() => {
+    const a = segmentFlags(T('g', 0, 1, { kind: 'song', kept: false })); const b = segmentFlags(T('g', 0, 1, { kind: 'song', kept: false, muted: true }));
+    return a.some((x) => x.includes('没做人声分离')) && b.some((x) => x.includes('已静音')) && !b.some((x) => x.includes('保留这段')); })());
+}
+
+// ------------------------------------------------------------------ ⑪ 窗口：吸附 / 浮动 / 缩放 / 存取
+{
+  const VP = { w: 1600, h: 900 };
+  const R = (l, a) => reduce(l, a, VP);
+  const init = () => defaultLayout(VP);
+  const P = (l, id) => l.panels[id];
+  const js = (x) => JSON.stringify(x);
+
+  let l = init();
+  check('㊵ 默认：脚本吸附在右栏、助手浮着（和以前一样）、字幕样式收着', P(l, 'script').open && P(l, 'script').docked && P(l, 'chat').open && !P(l, 'chat').docked && !P(l, 'subtitle').open);
+  check('㊵ 默认：停靠位里只有脚本，当前显示脚本', dockedOpen(l).join() === 'script' && activeDock(l) === 'script');
+  check('㊵ 默认：每个窗口的初始位置完整落在可视区域里、不小于最小尺寸', PANEL_IDS.every((id) => {
+    const r = defaultRect(id, VP); return r.x >= 0 && r.y >= TOP_INSET && r.x + r.w <= VP.w && r.y + r.h <= VP.h && r.w >= MIN_SIZE[id].w && r.h >= MIN_SIZE[id].h;
+  }), PANEL_IDS.map((id) => defaultRect(id, VP)));
+  const tiny = defaultLayout({ w: 500, h: 400 });
+  check('㊵ 屏幕很小时初始位置也不炸', PANEL_IDS.every((id) => P(tiny, id).rect.w >= MIN_SIZE[id].w && P(tiny, id).rect.y >= TOP_INSET));
+
+  l = R(init(), { type: 'float', id: 'script' });
+  check('㊶ 脚本弹出：变成浮动窗口，停靠位空了（右栏该收起）', !P(l, 'script').docked && floatingOpen(l).includes('script') && dockedOpen(l).length === 0 && activeDock(l) === null);
+  l = R(l, { type: 'dock', id: 'script' });
+  check('㊶ 再吸附回去：回到停靠位并成为当前标签', P(l, 'script').docked && activeDock(l) === 'script' && !floatingOpen(l).includes('script'));
+  const chatRect = P(init(), 'chat').rect;
+  l = R(R(init(), { type: 'dock', id: 'chat' }), { type: 'float', id: 'chat' });
+  check('㊶ 吸附再弹出：回到原来浮动的位置和大小（位置记着）', js(P(l, 'chat').rect) === js(chatRect), P(l, 'chat').rect);
+  l = R(init(), { type: 'float', id: 'script', rect: { x: 300, y: 200, w: 640, h: 520 } });
+  check('㊶ 拖出来时给的位置和大小原样采用', js(P(l, 'script').rect) === js({ x: 300, y: 200, w: 640, h: 520 }), P(l, 'script').rect);
+  l = R(init(), { type: 'float', id: 'script', rect: { x: -900, y: -50, w: 100, h: 100 } });
+  check('㊶ 拖出来给的位置越界 / 太小：夹回去（不会弹出一个抓不住的窗口）', P(l, 'script').rect.w === MIN_SIZE.script.w && P(l, 'script').rect.y === TOP_INSET && P(l, 'script').rect.x + P(l, 'script').rect.w >= KEEP_VISIBLE, P(l, 'script').rect);
+
+  l = R(init(), { type: 'open', id: 'subtitle' });
+  check('㊷ 打开字幕样式（默认吸附）：和脚本是同一个停靠位里的两个标签，当前是它', dockedOpen(l).join() === 'script,subtitle' && activeDock(l) === 'subtitle');
+  l = R(l, { type: 'activate', id: 'script' });
+  check('㊷ 切回脚本标签', activeDock(l) === 'script');
+  l = R(R(l, { type: 'dock', id: 'chat' }), { type: 'activate', id: 'chat' });
+  check('㊷ 助手也吸附进来：三个标签，顺序固定（脚本、助手、字幕），当前是助手', dockedOpen(l).join() === 'script,chat,subtitle' && activeDock(l) === 'chat');
+  l = R(l, { type: 'close', id: 'chat' });
+  check('㊷ 关掉当前标签：当前自动换成剩下的第一个', activeDock(l) === 'script' && dockedOpen(l).join() === 'script,subtitle');
+  l = R(l, { type: 'float', id: 'script' });
+  check('㊷ 把当前标签拖出来：停靠位里剩下的接着显示', activeDock(l) === 'subtitle' && dockedOpen(l).join() === 'subtitle');
+  l = R(l, { type: 'close', id: 'subtitle' });
+  check('㊷ 停靠位里最后一个也关了：没有窗口（右栏收起）', activeDock(l) === null && dockedOpen(l).length === 0);
+  check('㊷ 对没吸附的窗口 activate 不起作用', activeDock(R(init(), { type: 'activate', id: 'chat' })) === 'script');
+
+  l = R(init(), { type: 'close', id: 'chat' });
+  check('㊸ 关闭助手：不再显示，位置记着', !P(l, 'chat').open && js(P(l, 'chat').rect) === js(chatRect));
+  l = R(l, { type: 'toggle', id: 'chat' });
+  check('㊸ 再点开关：回到原来的位置，并在最上面', P(l, 'chat').open && !P(l, 'chat').docked && js(P(l, 'chat').rect) === js(chatRect) && floatingOpen(l).at(-1) === 'chat');
+  check('㊸ 开关两次回到关闭', !P(R(l, { type: 'toggle', id: 'chat' }), 'chat').open);
+  check('㊸ 打开一个已经打开的吸附窗口 = 切到它的标签', (() => { let q = R(init(), { type: 'open', id: 'subtitle' }); q = R(q, { type: 'activate', id: 'script' }); return activeDock(R(q, { type: 'open', id: 'subtitle' })) === 'subtitle'; })());
+
+  l = R(R(init(), { type: 'float', id: 'script' }), { type: 'float', id: 'subtitle' });
+  check('㊹ 后弹出的在最上面；叠放序号是 1..n 连续的', floatingOpen(l).at(-1) === 'subtitle' && floatingOpen(l).map((id) => P(l, id).z).join() === '1,2,3', floatingOpen(l).map((id) => [id, P(l, id).z]));
+  l = R(l, { type: 'focus', id: 'chat' });
+  check('㊹ 点哪个哪个到最上面，其它的相对顺序不变', floatingOpen(l).at(-1) === 'chat' && floatingOpen(l).join() === 'script,subtitle,chat', floatingOpen(l));
+  check('㊹ 已经在最上面再点：状态原样（同一个对象，不触发重渲染）', R(l, { type: 'focus', id: 'chat' }) === l);
+  check('㊹ 点吸附的窗口不改叠放', R(init(), { type: 'focus', id: 'script' }).panels.script.z === 0);
+  check('㊹ 关掉的窗口不占叠放序号', (() => { const q = R(l, { type: 'close', id: 'script' }); return floatingOpen(q).map((id) => P(q, id).z).join() === '1,2'; })());
+
+  const min = MIN_SIZE.chat;
+  check('㊺ clampRect：太小夹到最小，太大夹到屏幕内', (() => { const a = clampRect({ x: 0, y: 100, w: 10, h: 10 }, VP, min); const b = clampRect({ x: 0, y: 100, w: 9999, h: 9999 }, VP, min); return a.w === min.w && a.h === min.h && b.w === VP.w - 16 && b.h === VP.h - TOP_INSET - 8; })());
+  check('㊺ clampRect：拖到屏幕外也至少留 KEEP_VISIBLE 像素，不压顶栏', (() => {
+    const a = clampRect({ x: 5000, y: 5000, w: 400, h: 400 }, VP, min); const b = clampRect({ x: -5000, y: -5000, w: 400, h: 400 }, VP, min);
+    return a.x === VP.w - KEEP_VISIBLE && a.y === VP.h - KEEP_VISIBLE && b.x === KEEP_VISIBLE - 400 && b.y === TOP_INSET; })());
+  const base = { x: 400, y: 200, w: 500, h: 400 };
+  const rz = (dir, dx, dy) => resizeRect(base, dir, dx, dy, VP, min);
+  check('㊻ 右下角：宽高跟着变，左上不动', js(rz('se', 50, 30)) === js({ x: 400, y: 200, w: 550, h: 430 }));
+  check('㊻ 左上角：右下不动（位置和大小同时变）', js(rz('nw', -40, -20)) === js({ x: 360, y: 180, w: 540, h: 420 }), rz('nw', -40, -20));
+  check('㊻ 只拖右边 / 下边：另一个方向不变', (() => { const a = rz('e', 60, 999); const b = rz('s', 999, 60); return a.h === 400 && a.y === 200 && a.w === 560 && b.w === 500 && b.x === 400 && b.h === 460; })());
+  check('㊻ 只拖左边 / 上边：对边不动', (() => { const a = rz('w', -60, 0); const b = rz('n', 0, -60); return a.x === 340 && a.x + a.w === 900 && b.y === 140 && b.y + b.h === 600; })());
+  check('㊻ 缩到最小就停：左边往右拖过头，右边缘不动（不会被推着走）', (() => { const a = rz('w', 9999, 0); return a.w === min.w && a.x + a.w === 900; })());
+  check('㊻ 缩到最小就停：下边往上拖过头', (() => { const a = rz('s', 0, -9999); return a.h === min.h && a.y === 200; })());
+  check('㊻ 不会缩放出屏幕：右下角拖出去被夹到屏幕边', (() => { const a = rz('se', 9999, 9999); return a.x + a.w === VP.w && a.y + a.h === VP.h; })());
+  check('㊻ 不会盖住顶栏：上边往上拖被夹在 TOP_INSET', (() => { const a = rz('n', 0, -9999); return a.y === TOP_INSET && a.y + a.h === 600; })());
+  check('㊻ 八个方向都能算（不抛、结果不小于最小尺寸）', DIRS.every((d) => { const a = rz(d, -77, 55); return a.w >= min.w && a.h >= min.h; }));
+  check('㊻ 不修改传入的矩形', js(base) === js({ x: 400, y: 200, w: 500, h: 400 }));
+
+  const zone = { x: 900, y: 60, w: 650, h: 800 };
+  check('㊼ 指针在吸附区里 / 边上算在里面，外面不算', pointInRect(1000, 100, zone) && pointInRect(900, 60, zone) && pointInRect(1550, 860, zone) && !pointInRect(899, 100, zone) && !pointInRect(1000, 861, zone));
+  const fz = fallbackDockZone({ x: 0, y: 40, w: 1600, h: 860 });
+  check('㊼ 停靠位没显示时的兜底吸附区：在右侧、不超出主区域', fz.x > 800 && fz.x + fz.w <= 1600 && fz.y >= 40 && fz.y + fz.h <= 900 && fz.w > 300, fz);
+
+  const shrunk = reduce(init(), { type: 'viewport' }, { w: 700, h: 500 });
+  check('㊽ 浏览器窗口缩小：浮动窗口尺寸不超过视口，标题栏仍在屏内可抓（不要求整块在屏内，和桌面窗口一样）', PANEL_IDS.every((id) => { const r = P(shrunk, id).rect; return r.w <= 700 && r.h <= 500 - TOP_INSET && r.x <= 700 - KEEP_VISIBLE && r.y >= TOP_INSET && r.y <= 500 - KEEP_VISIBLE; }), PANEL_IDS.map((id) => P(shrunk, id).rect));
+
+  l = R(R(R(init(), { type: 'float', id: 'script', rect: { x: 300, y: 200, w: 640, h: 520 } }), { type: 'open', id: 'subtitle' }), { type: 'focus', id: 'chat' });
+  const back = restore(serialize(l), null, VP);
+  check('㊾ 存了再读：打开 / 吸附 / 位置 / 当前标签 / 叠放顺序全部一致', PANEL_IDS.every((id) => js(P(back, id)) === js(P(l, id))) && back.active === l.active, [back.panels, l.panels]);
+  check('㊾ 读不出来的内容（null / 空串 / 乱码 / 不是对象）：回到默认布局', ['', 'not json', '[]', '{"panels":42}', 'null'].every((raw) => js(restore(raw, null, VP)) === js(init())) && js(restore(null, null, VP)) === js(init()));
+  check('㊾ 某一块坏了只那一块用默认，别的照读', (() => {
+    const raw = js({ panels: { script: { open: true, docked: false, rect: { x: 'a' } }, chat: { open: false, docked: true, rect: { x: 10, y: 60, w: 400, h: 400 } } } });
+    const r = restore(raw, null, VP); return !P(r, 'script').docked && js(P(r, 'script').rect) === js(defaultRect('script', VP)) && !P(r, 'chat').open && P(r, 'chat').docked;
+  })());
+  check('㊾ 存下来的位置在更小的屏幕上读回来会被夹进去', (() => { const r = restore(js({ panels: { chat: { open: true, docked: false, rect: { x: 1500, y: 800, w: 900, h: 900 } } } }), null, { w: 800, h: 600 }); const c = P(r, 'chat').rect; return c.w <= 800 - 16 && c.h <= 600 - TOP_INSET - 8 && c.x <= 800 - KEEP_VISIBLE; })());
+  check('㊾ 迁移旧版：只有助手窗口位置的老存档，助手沿用那个位置', (() => { const r = restore(null, js({ x: 111, y: 222, w: 333, h: 444 }), VP); return js(P(r, 'chat').rect) === js({ x: 111, y: 222, w: 333, h: 444 }) && !P(r, 'chat').docked; })());
+  check('㊾ 新存档优先于旧版的助手位置', js(P(restore(serialize(init()), js({ x: 5, y: 60, w: 333, h: 444 }), VP), 'chat').rect) === js(P(init(), 'chat').rect));
+  check('㊾ 旧版位置是坏的：忽略，用默认', js(P(restore(null, '{bad', VP), 'chat').rect) === js(P(init(), 'chat').rect));
+  check('㊾ 存储 key 带版本号', STORAGE_KEY.endsWith('.v1'));
+  check('㊾ normalize 幂等', js(normalize(normalize(l))) === js(normalize(l)));
 }
 
 console.log(failures === 0 ? '\n合计 全部通过' : `\n合计 ${failures} 项失败`);
