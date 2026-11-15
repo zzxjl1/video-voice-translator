@@ -13,6 +13,7 @@ import { getAudioWaveformFromUrl } from '../../utils/audioProcessor';
 import { useProject } from '../../hooks/useProject';
 import { useMixPlayback } from '../../hooks/useMixPlayback';
 import { speakerColor } from '../../store/project';
+import type { TimelineSegment } from '../../store/timeline';
 import { DEFAULT_SUBTITLE_STYLE } from '../../net/types';
 import type { Line, SubtitleCapabilities, SubtitleCue, SubtitleStyle } from '../../net/types';
 import { containRect, overlayContainerStyle, overlayLineStyle, stripSubtitleTags, type Rect } from '../../utils/subtitleStyle';
@@ -217,6 +218,11 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
   }), [run, seek]);
 
   const colorOf = useCallback((sid: string) => speakerColor(project!, sid), [project]);
+  // 时间线用的行：kept = 导出时会把这段原声放回去（有预览地址 = 人声非语言 + 没静音 + 做过人声分离）
+  const timelineSegments = useMemo<TimelineSegment[]>(() => lines.map((l) => ({
+    id: l.id, speakerId: l.speakerId, start: l.start, end: l.end, kind: l.kind, muted: l.muted, hidden: l.hidden,
+    text: l.text, translation: l.translation, kept: l.kind === 'vocal' && !l.muted && !!l.audioUrl,
+  })), [lines]);
 
   const fill = useCallback(async () => {
     const translated = project!.needs.translate > 0;
@@ -312,8 +318,9 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
 
           <div className="shrink-0">
             <Timeline
-              segments={lines.map((l) => ({ id: l.id, speakerId: l.speakerId, startTime: l.start, endTime: l.end, originalText: l.text, translatedText: l.translation, audioPath: l.audioUrl ?? undefined, muted: l.muted, hidden: l.hidden } as never))}
-              speakers={project!.speakers.map((s) => ({ id: s.id, name: s.name }) as never)}
+              segments={timelineSegments}
+              speakers={project!.speakers}
+              colorOf={colorOf}
               duration={duration}
               currentTime={currentTime}
               onSeek={seek}

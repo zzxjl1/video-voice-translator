@@ -1,11 +1,25 @@
-
-import React, { useMemo, useRef, useState } from 'react';
-import { TranscriptionSegment, Speaker } from '../types';
-import { formatTime, getSpeakerColor } from '../utils/helpers';
+/**
+ * 时间线：波形 + 每一句的色块。
+ *
+ *   · 台词是说话人颜色的实心块；音乐 / 噪音 / 人声非语言是各自颜色的描边块，带图标。
+ *     只有导出时真的会保留原声的人声非语言是实心的（它是唯一会出现在成片里的非台词）。
+ *   · 同时说话的两句（时间重叠）分到不同的行里画，不叠在一起。
+ *   · 鼠标指到任何一块：高亮它占的那段时间，浮出说话人 / 种类、时间、文字和状态。
+ *
+ * 布局和取色的规则在 store/timeline.ts（纯函数，有测试）；这里只管画。
+ */
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { formatTime } from '../utils/helpers';
+import {
+  KIND_META, assignLanes, barColors, blockGeometry, colorOfSegment, formatSpan, isSpeech, minPxFor,
+  segmentFlags, showIcon, type TimelineSegment, type TimelineSpeaker,
+} from '../store/timeline';
 
 interface TimelineProps {
-  segments: TranscriptionSegment[];
-  speakers: Speaker[];
+  segments: TimelineSegment[];
+  speakers: TimelineSpeaker[];
+  /** 和脚本面板用同一个函数：同一个说话人在两边必须是同一种颜色。 */
+  colorOf: (speakerId: string) => string;
   duration: number;
   currentTime: number;
   onSeek: (time: number) => void;
@@ -13,53 +27,89 @@ interface TimelineProps {
   isLoading?: boolean;
 }
 
-interface TooltipInfo {
+const LANE_H = 14;       // 每一行的高度（px）
+const LANE_GAP = 1;
+
+/** 小图标（feather 风格，描边）。 */
+const ICON_PATHS: Record<string, React.ReactNode> = {
+  music: (
+    <>
+      <path d="M9 18V5l12-2v13" />
+      <circle cx="6" cy="18" r="3" />
+      <circle cx="18" cy="16" r="3" />
+    </>
+  ),
+  noise: <path d="M9.6 4.6A2 2 0 1 1 11 8H2m10.6 11.4A2 2 0 1 0 14 16H2m15.7-8.3A2.5 2.5 0 1 1 19.5 12H2" />,
+  vocal: (
+    <>
+      <circle cx="12" cy="12" r="10" />
+      <path d="M8 14s1.5 2 4 2 4-2 4-2" />
+      <path d="M9 9h.01M15 9h.01" />
+    </>
+  ),
+};
+
+export const KindIcon: React.FC<{ kind: string; size?: number; color?: string }> = ({ kind, size = 10, color }) => (
+  <svg
+    width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color ?? 'currentColor'}
+    strokeWidth={2.4} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className="shrink-0"
+  >
+    {ICON_PATHS[kind]}
+  </svg>
+);
+
+interface Hover {
+  id: string;
   x: number;
-  y: number;
-  segment: TranscriptionSegment;
-  speakerName: string;
-  color: string;
 }
 
-const Timeline: React.FC<TimelineProps> = ({ segments, speakers, duration, currentTime, onSeek, waveform, isLoading }) => {
+const Timeline: React.FC<TimelineProps> = ({
+  segments, speakers, colorOf, duration, currentTime, onSeek, waveform, isLoading,
+}) => {
   const timelineRef = useRef<HTMLDivElement>(null);
-  const [tooltip, setTooltip] = useState<TooltipInfo | null>(null);
+  const [hover, setHover] = useState<Hover | null>(null);
+  const [width, setWidth] = useState(0);
+
+  // 量容器宽度：块的最小像素宽度、图标显示与否、tooltip 夹边都要用。
+  useEffect(() => {
+    const el = timelineRef.current;
+    if (!el) return;
+    setWidth(el.offsetWidth);
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver((entries) => setWidth(Math.round(entries[0].contentRect.width)));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   const handleSeek = (e: React.MouseEvent<HTMLDivElement, MouseEvent>) => {
     if (!timelineRef.current || duration <= 0) return;
-    const timelineRect = timelineRef.current.getBoundingClientRect();
-    const clickPosition = e.clientX - timelineRect.left;
-    const seekTime = (clickPosition / timelineRect.width) * duration;
-    onSeek(Math.max(0, Math.min(duration, seekTime)));
-  };
-
-  const speakerMap = new Map<string, Speaker>(speakers.map(s => [s.id, s]));
-
-  const handleSegmentHover = (e: React.MouseEvent, segment: TranscriptionSegment) => {
-    if (!timelineRef.current) return;
     const rect = timelineRef.current.getBoundingClientRect();
-    const speaker = speakerMap.get(segment.speakerId);
-    setTooltip({
-      x: e.clientX - rect.left,
-      y: -8,
-      segment,
-      speakerName: speaker?.name || segment.speakerId,
-      color: getSpeakerColor(segment.speakerId),
-    });
+    onSeek(Math.max(0, Math.min(duration, ((e.clientX - rect.left) / rect.width) * duration)));
   };
 
-  /**
-   * 每根波形柱的颜色。只依赖 (waveform, duration, segments)，算一次即可 ——
-   * 播放时父组件每帧更新 currentTime，这个计算不该跟着重做。
-   */
-  const barColors = useMemo(() => {
-    if (!waveform.length || !duration) return [] as string[];
-    return waveform.map((_, idx) => {
-      const time = (idx / waveform.length) * duration;
-      const seg = segments.find(s => time >= s.startTime && time <= s.endTime);
-      return seg ? getSpeakerColor(seg.speakerId) : '#d1d5db';
-    });
-  }, [waveform, duration, segments]);
+  const speakerName = useMemo(() => new Map(speakers.map((s) => [s.id, s.name])), [speakers]);
+
+  // 播放时父组件每帧更新 currentTime；下面这几项只依赖数据，不该跟着重算。
+  const { lanes, count: laneCount } = useMemo(() => assignLanes(segments), [segments]);
+  const colors = useMemo(() => barColors(waveform.length, duration, segments, colorOf), [waveform.length, duration, segments, colorOf]);
+  const geometry = useMemo(
+    () => segments.map((s) => blockGeometry(s.start, s.end, duration, width, minPxFor(s))),
+    [segments, duration, width],
+  );
+
+  const laneAreaH = laneCount * (LANE_H + LANE_GAP) + LANE_GAP;
+  const hovered = hover ? segments.findIndex((s) => s.id === hover.id) : -1;
+  const hoveredSeg = hovered >= 0 ? segments[hovered] : null;
+
+  const presentKinds = useMemo(
+    () => (['music', 'noise', 'vocal'] as const).filter((k) => segments.some((s) => s.kind === k)),
+    [segments],
+  );
+
+  const onEnter = (e: React.MouseEvent, id: string) => {
+    if (!timelineRef.current) return;
+    setHover({ id, x: e.clientX - timelineRef.current.getBoundingClientRect().left });
+  };
 
   return (
     <div className="p-4 bg-white border border-claude-border rounded-2xl shadow-sm select-none">
@@ -74,61 +124,82 @@ const Timeline: React.FC<TimelineProps> = ({ segments, speakers, duration, curre
 
       <div
         ref={timelineRef}
-        className="relative w-full h-20 bg-gray-50 rounded-lg overflow-visible cursor-pointer border border-gray-100"
+        className="relative w-full h-24 bg-gray-50 rounded-lg overflow-visible cursor-pointer border border-gray-100"
         onClick={handleSeek}
       >
-        {/* Waveform bars */}
-        <div className="absolute inset-0 z-10 overflow-hidden rounded-lg">
-          {waveform.length > 0 ? waveform.map((peak, idx) => {
-            const progress = idx / waveform.length;
-            // 颜色来自预计算表（见下方 barColors）：原来在这里对每根柱子做
-            // 一次 segments.find，而播放时每帧都会重渲染 → O(柱数 × 段数)（P2 #28）。
-            const color = barColors[idx] ?? '#d1d5db';
-            return (
-              <div
-                key={idx}
-                className="absolute w-[2px] rounded-full"
-                style={{
-                  left: `${progress * 100}%`,
-                  top: '50%',
-                  height: `${Math.max(6, peak * 75)}%`,
-                  transform: 'translateY(-50%)',
-                  backgroundColor: color,
-                  opacity: 0.5,
-                }}
-              />
-            );
-          }) : (
+        {/* 悬停高亮：这一句占的那段时间（重叠的两句也能一眼看出各自的范围） */}
+        {hoveredSeg && duration > 0 && (
+          <div
+            className="absolute top-0 bottom-0 z-[5] pointer-events-none rounded-sm"
+            style={{
+              left: `${geometry[hovered].left}%`, width: `${geometry[hovered].width}%`,
+              backgroundColor: colorOfSegment(hoveredSeg, colorOf), opacity: 0.12,
+            }}
+          />
+        )}
+
+        {/* 波形：只占色块行上面的那部分 */}
+        <div className="absolute left-0 right-0 top-0 z-10 overflow-hidden rounded-t-lg" style={{ bottom: laneAreaH }}>
+          {waveform.length > 0 ? waveform.map((peak, idx) => (
+            <div
+              key={idx}
+              className="absolute w-[2px] rounded-full"
+              style={{
+                left: `${(idx / waveform.length) * 100}%`,
+                top: '50%',
+                height: `${Math.max(6, peak * 85)}%`,
+                transform: 'translateY(-50%)',
+                backgroundColor: colors[idx] ?? '#d1d5db',
+                opacity: 0.5,
+              }}
+            />
+          )) : (
             <div className="w-full h-full flex items-center justify-center">
               <div className="w-1/3 h-px bg-gray-200 animate-pulse"></div>
             </div>
           )}
         </div>
 
-        {/* Segment bottom markers */}
-        <div className="absolute bottom-0 left-0 right-0 h-[3px] z-20 overflow-hidden rounded-b-lg">
-          {duration > 0 && segments.map(segment => {
-            const left = (segment.startTime / duration) * 100;
-            const width = ((segment.endTime - segment.startTime) / duration) * 100;
+        {/* 色块：一行一行排，重叠的分开行 */}
+        <div className="absolute left-0 right-0 bottom-0 z-20" style={{ height: laneAreaH }}>
+          {duration > 0 && segments.map((seg, i) => {
+            const g = geometry[i];
+            const color = colorOfSegment(seg, colorOf);
+            const speech = isSpeech(seg);
+            const solid = speech || seg.kept;                 // 台词、以及会保留原声的人声非语言：实心
+            const blockPx = (g.width / 100) * width;
+            const isHover = hover?.id === seg.id;
             return (
               <div
-                key={segment.id}
-                className="absolute h-full"
+                key={seg.id}
+                role="img"
+                aria-label={`${speech ? speakerName.get(seg.speakerId) ?? seg.speakerId : KIND_META[seg.kind as keyof typeof KIND_META]?.label} ${formatSpan(seg.start, seg.end)}`}
+                className="absolute flex items-center justify-center overflow-hidden rounded-[3px] transition-[filter,box-shadow] duration-100"
                 style={{
-                  left: `${left}%`,
-                  width: `${width}%`,
-                  backgroundColor: getSpeakerColor(segment.speakerId),
-                  opacity: 0.7,
+                  left: `${g.left}%`,
+                  width: `${g.width}%`,
+                  top: LANE_GAP + lanes[i] * (LANE_H + LANE_GAP),
+                  height: LANE_H,
+                  backgroundColor: solid ? color : `${color}26`,
+                  border: solid ? 'none' : `1px solid ${color}`,
+                  opacity: seg.muted ? 0.4 : solid ? 0.88 : 1,
+                  color: solid ? '#fff' : color,
+                  boxShadow: isHover ? `0 0 0 1.5px ${color}` : undefined,
+                  filter: isHover ? 'brightness(1.08)' : undefined,
+                  backgroundImage: seg.muted
+                    ? 'repeating-linear-gradient(135deg, transparent 0 3px, rgba(255,255,255,0.65) 3px 5px)' : undefined,
                 }}
-                onMouseEnter={(e) => handleSegmentHover(e, segment)}
-                onMouseMove={(e) => handleSegmentHover(e, segment)}
-                onMouseLeave={() => setTooltip(null)}
-              />
+                onMouseEnter={(e) => onEnter(e, seg.id)}
+                onMouseMove={(e) => onEnter(e, seg.id)}
+                onMouseLeave={() => setHover(null)}
+              >
+                {!speech && showIcon(blockPx) && <KindIcon kind={seg.kind} size={10} />}
+              </div>
             );
           })}
         </div>
 
-        {/* Playhead */}
+        {/* 播放头 */}
         {duration > 0 && (
           <div
             className="absolute top-0 h-full w-[1.5px] bg-claude-accent z-30 pointer-events-none"
@@ -139,11 +210,11 @@ const Timeline: React.FC<TimelineProps> = ({ segments, speakers, duration, curre
         )}
 
         {/* Tooltip */}
-        {tooltip && (
+        {hover && hoveredSeg && (
           <div
             className="absolute z-50 pointer-events-none"
             style={{
-              left: `${Math.min(Math.max(tooltip.x, 80), timelineRef.current ? timelineRef.current.offsetWidth - 80 : tooltip.x)}px`,
+              left: `${Math.min(Math.max(hover.x, 100), Math.max(100, width - 100))}px`,
               bottom: '100%',
               transform: 'translateX(-50%)',
               marginBottom: '6px',
@@ -151,23 +222,56 @@ const Timeline: React.FC<TimelineProps> = ({ segments, speakers, duration, curre
           >
             <div className="bg-gray-800 text-white text-[11px] rounded-lg px-3 py-2 shadow-lg whitespace-nowrap">
               <div className="flex items-center gap-1.5 mb-1">
-                <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: tooltip.color }}></span>
-                <span className="font-medium">{tooltip.speakerName}</span>
+                {isSpeech(hoveredSeg) ? (
+                  <>
+                    <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: colorOf(hoveredSeg.speakerId) }}></span>
+                    <span className="font-medium">{speakerName.get(hoveredSeg.speakerId) ?? hoveredSeg.speakerId}</span>
+                  </>
+                ) : (
+                  <>
+                    <span style={{ color: colorOfSegment(hoveredSeg, colorOf) }}><KindIcon kind={hoveredSeg.kind} size={12} /></span>
+                    <span className="font-medium">{KIND_META[hoveredSeg.kind as keyof typeof KIND_META]?.label}</span>
+                  </>
+                )}
               </div>
               <div className="text-gray-300 text-[10px] font-mono">
-                {formatTime(tooltip.segment.startTime)} – {formatTime(tooltip.segment.endTime)}
+                {formatSpan(hoveredSeg.start, hoveredSeg.end)}
+                <span className="text-gray-500"> · {(hoveredSeg.end - hoveredSeg.start).toFixed(1)}s</span>
               </div>
-              <div className="text-gray-400 text-[10px] mt-0.5 max-w-[200px] truncate">
-                {/* 有译文就显示译文（用户看到的就是这句），否则回退原文。
-                    原来读的是 `text` —— TranscriptionSegment 上没有这个字段，
-                    于是 tooltip 里那一行永远是空的。 */}
-                {tooltip.segment.translatedText || tooltip.segment.originalText}
-              </div>
+              {isSpeech(hoveredSeg) ? (
+                <div className="text-gray-400 text-[10px] mt-0.5 max-w-[220px] truncate">
+                  {/* 有译文就显示译文（用户看到的就是这句），否则回退原文 */}
+                  {hoveredSeg.translation || hoveredSeg.text}
+                </div>
+              ) : (
+                <div className="text-gray-400 text-[10px] mt-0.5 max-w-[240px] whitespace-normal">
+                  {KIND_META[hoveredSeg.kind as keyof typeof KIND_META]?.hint}
+                </div>
+              )}
+              {segmentFlags(hoveredSeg).length > 0 && (
+                <div className="flex gap-1 mt-1 flex-wrap">
+                  {segmentFlags(hoveredSeg).map((f) => (
+                    <span key={f} className="px-1.5 py-px rounded bg-white/10 text-[9px] text-gray-200">{f}</span>
+                  ))}
+                </div>
+              )}
               <div className="absolute left-1/2 -translate-x-1/2 top-full w-0 h-0 border-l-[5px] border-l-transparent border-r-[5px] border-r-transparent border-t-[5px] border-t-gray-800"></div>
             </div>
           </div>
         )}
       </div>
+
+      {/* 图例：只列出这个工程里真有的种类 */}
+      {presentKinds.length > 0 && (
+        <div className="flex items-center gap-3 mt-2 text-[10px] text-gray-400">
+          {presentKinds.map((k) => (
+            <span key={k} className="flex items-center gap-1">
+              <span style={{ color: KIND_META[k].color }}><KindIcon kind={k} size={10} /></span>
+              {KIND_META[k].label}
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 };

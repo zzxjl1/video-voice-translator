@@ -8,6 +8,7 @@ import { applyPatch, applyChange, speakerColor, summarize, lineAt } from '../sto
 import { reduceChat, emptyChat, loadChat, pendingConfirms, stepLabel, chatEventMatches } from '../store/chat.ts';
 import { reduceInit, emptyInit, overallProgress, failInit, replayCeiling, acceptEvent } from '../store/init.ts';
 import { pageFor } from '../store/page.ts';
+import { assignLanes, blockGeometry, barColors, colorOfSegment, formatSpan, segmentFlags, showIcon, minPxFor, MAX_LANES, KIND_META } from '../store/timeline.ts';
 import { EventClient } from '../net/events.ts';
 
 let failures = 0;
@@ -366,6 +367,67 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   check('㉔ 分离/启动结束后，ready 才进编辑器', A({ starting: false, preparing: false }) === 'editor');
   check('㉔ 加载中优先于 starting（视图没回来前没得显示）', A({ stage: null, starting: true }) === 'loading');
   check('㉔ 落地页不受 starting 影响（上传中还在落地页上）', pageFor({ videoId: null, stage: null, starting: true, preparing: false }) === 'landing');
+}
+
+// ------------------------------------------------------------------ ⑩ 时间线：分行、位置、取色、tooltip 文案
+{
+  const T = (id, start, end, over = {}) => ({ id, speakerId: '0', start, end, kind: 'speech', muted: false, hidden: false, text: id, translation: '', kept: false, ...over });
+  const color = (sid) => (sid === '0' ? '#aaa' : '#bbb');
+
+  // —— 分行：同时说话的两句不能叠在一起画
+  let r = assignLanes([T('a', 0, 2), T('b', 2, 4), T('c', 4, 6)]);
+  check('㉕ 首尾相接的句子都在第 0 行，只有 1 行', r.lanes.join() === '0,0,0' && r.count === 1, r);
+  r = assignLanes([T('a', 19.71, 22.57), T('b', 20.01, 23.14)]);
+  check('㉕ 同时说话（时间重叠）的两句分到两行', r.lanes.join() === '0,1' && r.count === 2, r);
+  r = assignLanes([T('a', 0, 3), T('b', 2.96, 5)]);
+  check('㉕ 只重叠 0.04 秒（ASR 边界误差）不算重叠', r.lanes.join() === '0,0' && r.count === 1, r);
+  r = assignLanes([T('a', 0, 10), T('b', 1, 3), T('c', 4, 6)]);
+  check('㉕ 长句下面的两句短句共用第 1 行（行被释放后复用）', r.lanes.join() === '0,1,1' && r.count === 2, r);
+  r = assignLanes([T('b', 20, 23), T('a', 19, 22)]);
+  check('㉕ 输入顺序乱也行：返回的行号和输入同序，先开始的在第 0 行', r.lanes.join() === '1,0', r);
+  r = assignLanes([T('a', 0, 10), T('b', 1, 10), T('c', 2, 10), T('d', 3, 10), T('e', 4, 10)]);
+  check(`㉕ 同时说话的人再多，也最多 ${MAX_LANES} 行（不会把时间线撑高）`, r.count === MAX_LANES && Math.max(...r.lanes) === MAX_LANES - 1 && r.lanes.length === 5, r);
+  check('㉕ 没有片段：1 行（高度不塌）', assignLanes([]).count === 1 && assignLanes([]).lanes.length === 0);
+  check('㉕ 不修改传入的数组', (() => { const a = [T('b', 5, 6), T('a', 0, 1)]; assignLanes(a); return a[0].id === 'b'; })());
+
+  // —— 位置：最小像素宽度、不伸出边界
+  let g = blockGeometry(10, 20, 100, 1000, 3);
+  check('㉖ 正常块：按比例', g.left === 10 && g.width === 10, g);
+  g = blockGeometry(10, 10.3, 600, 800, 7);
+  check('㉖ 10 分钟视频里 0.3 秒的咳嗽：宽度被撑到最小 7 像素，鼠标才指得到', Math.abs(g.width - (7 / 800) * 100) < 1e-9, g);
+  g = blockGeometry(99.99, 100, 100, 1000, 7);
+  check('㉖ 贴着右边界的小块：向左挪，不伸出时间线', Math.abs(g.left + g.width - 100) < 1e-9 && g.left < 99.99, g);
+  g = blockGeometry(10, 12, 100, 0, 7);
+  check('㉖ 还没量到宽度（0）：只按比例，不炸', g.left === 10 && g.width === 2, g);
+  check('㉖ 时长为 0：不炸，宽度 0', blockGeometry(1, 2, 0, 800, 3).width === 0);
+  g = blockGeometry(-5, 500, 100, 800, 3);
+  check('㉖ 起止超出范围：夹到 0~100%', g.left === 0 && g.width === 100, g);
+  check('㉖ 非台词的最小宽度比台词大（它们更小更容易被忽略）', minPxFor({ kind: 'vocal' }) > minPxFor({ kind: 'speech' }));
+
+  // —— 图标
+  check('㉗ 块够宽才画图标，窄块不画（否则只会看到一个被切碎的图形）', showIcon(14) && showIcon(40) && !showIcon(13.9) && !showIcon(3));
+
+  // —— 取色
+  check('㉘ 台词 = 说话人的颜色（用传进来的 colorOf，和脚本面板同一个函数）', colorOfSegment(T('a', 0, 1), color) === '#aaa' && colorOfSegment(T('a', 0, 1, { speakerId: '1' }), color) === '#bbb');
+  const kc = ['music', 'noise', 'vocal'].map((k) => colorOfSegment(T('x', 0, 1, { kind: k }), color));
+  check('㉘ 音乐 / 噪音 / 人声非语言：各自的颜色，互不相同，也不是说话人的颜色', new Set(kc).size === 3 && kc.every((c) => c !== '#aaa'), kc);
+  check('㉘ 非台词的颜色不随说话人变（vocal 行借的是前一句的说话人，那是无意义的）',
+    colorOfSegment(T('x', 0, 1, { kind: 'vocal', speakerId: '0' }), color) === colorOfSegment(T('x', 0, 1, { kind: 'vocal', speakerId: '1' }), color));
+  check('㉘ 未知 kind 兜底成灰色，不抛', colorOfSegment(T('x', 0, 1, { kind: 'whatever' }), color) === '#9ca3af');
+  const bc = barColors(10, 10, [T('a', 0, 3), T('m', 5, 7, { kind: 'music' }), T('b', 8, 10, { speakerId: '1' })], color);
+  check('㉘ 波形柱的颜色：台词是说话人色、音乐段是音乐色、没有片段的地方是灰', bc[1] === '#aaa' && bc[5] === KIND_META.music.color && bc[9] === '#bbb' && bc[4] === '#d1d5db', bc);
+  check('㉘ 没有波形 / 时长为 0：空数组', barColors(0, 10, [], color).length === 0 && barColors(10, 0, [], color).length === 0);
+
+  // —— tooltip 文案
+  check('㉙ 时间一位小数（笑声只有零点几秒，整秒会写成 "00:12 – 00:12"）', formatSpan(11.22, 12.46) === '00:11.2 – 00:12.5', formatSpan(11.22, 12.46));
+  check('㉙ 59.96 秒不会写成 "00:60.0"（进位）', formatSpan(59.96, 61) === '01:00.0 – 01:01.0', formatSpan(59.96, 61));
+  check('㉙ 超过一小时按分钟累计（不丢）', formatSpan(3725.5, 3726) === '62:05.5 – 62:06.0', formatSpan(3725.5, 3726));
+  check('㉙ 普通台词没有标签', segmentFlags(T('a', 0, 1)).length === 0);
+  check('㉙ 静音 / 字幕隐藏各有标签', segmentFlags(T('a', 0, 1, { muted: true })).join() === '已静音' && segmentFlags(T('a', 0, 1, { hidden: true })).join() === '字幕隐藏');
+  check('㉙ 人声非语言：会保留原声时明说“导出时保留这段原声”', segmentFlags(T('v', 0, 1, { kind: 'vocal', kept: true })).join().includes('保留这段原声'));
+  check('㉙ 人声非语言：没做人声分离时说明原因（而不是让人以为被丢了）', segmentFlags(T('v', 0, 1, { kind: 'vocal', kept: false })).join().includes('没做人声分离'));
+  check('㉙ 人声非语言：静音了就说“已静音”，不说“保留”', (() => { const f = segmentFlags(T('v', 0, 1, { kind: 'vocal', kept: false, muted: true })); return f.some((x) => x.includes('已静音')) && !f.some((x) => x.includes('保留这段')); })());
+  check('㉙ 音乐 / 噪音不带“原声”相关的标签', segmentFlags(T('m', 0, 1, { kind: 'music' })).length === 0);
 }
 
 console.log(failures === 0 ? '\n合计 全部通过' : `\n合计 ${failures} 项失败`);
