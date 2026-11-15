@@ -29,7 +29,7 @@ PROJECT_FILE = "project.json"
 EVENTS_FILE = "events.jsonl"
 CHAT_FILE = "chat.jsonl"
 
-SEGMENT_KINDS = ("speech", "music", "noise")
+SEGMENT_KINDS = ("speech", "music", "noise", "vocal", "song")
 
 # 工程阶段：只有"初始化过没有"这一件事需要状态机；其余都是从行数据算出来的。
 STAGE_UPLOADED = "uploaded"          # 已上传，还没开始初始化
@@ -69,6 +69,9 @@ class Segment:
     #   music / noise  ASR 把音乐、环境声误识成了话（声音本来就在背景轨里，不用处理）
     #   vocal          人发出的非语言声（笑、叹、咳、呼吸）。分离之后它在人声轨里，导出时会被 TTS 取代的
     #                  人声一起丢掉 —— 所以导出/预览时从人声轨里把这一段**原声**放回去，而不是让 TTS 重造。
+    #   song           在唱歌（歌词被 ASR 当台词转写了）。不翻译、不配音；字幕显示**原**歌词并加 ♪；
+    #                  和 vocal 一样，分离过人声的工程导出时从人声轨保留原声（主唱 + 背景轨里的伴奏）。
+    #                  与 vocal 的区别：可以很长，text 是歌词（不是占位标签）。
     kind: str = "speech"
     # 静音：不合成配音，这一格没有声音。隐藏：这一行不出字幕。两者互补。
     muted: bool = False

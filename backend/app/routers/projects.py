@@ -475,7 +475,7 @@ def serve_kept_original(video_id: str, segment_id: str):
         raise HTTPException(status_code=400, detail="malformed segment id")
     state = _need(video_id)
     seg = state.segment(segment_id)
-    if seg is None or seg.kind != "vocal" or seg.muted:
+    if seg is None or seg.kind not in ("vocal", "song") or seg.muted:
         raise HTTPException(status_code=404, detail="这一行没有可保留的原声")
     source = mix_service.vocals_audio_path_full(video_id)
     if not mix_service.keep_available(video_id) or not source:

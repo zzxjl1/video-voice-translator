@@ -71,6 +71,9 @@ RATE_MAX = _env_float("MIX_RATE_MAX", 1.25)
 # 2：master 从 loudnorm（两遍、动态）改为"量响度 → 一次静态增益 → 限幅兜底"。
 POLICY_VERSION = 3
 
+# 导出时从人声轨保留原声的行：笑叹咳（vocal）和唱歌（song）。
+KEEP_KINDS = ("vocal", "song")
+
 
 def db_to_gain(db: float) -> float:
     return 10.0 ** (db / 20.0)
@@ -181,7 +184,7 @@ def _segment_entries(state: VideoState) -> list[dict]:
     """
     每段配音的摆位条目。
 
-    `kind=vocal` 的行（笑、叹、咳）在能保留原声时也有条目，带 `source: "vocals"`：音频不是 TTS，
+    `kind=vocal`（笑、叹、咳）和 `kind=song`（唱歌）的行在能保留原声时也有条目，带 `source: "vocals"`：音频不是 TTS，
     而是人声轨里这一行的时间窗，原速、不拉伸、不裁剪。播放和导出都按同一个条目摆。
 
     旧工程没有 actual_duration（以前只写日志不落盘）：这里用 ffprobe 现量。
@@ -197,7 +200,7 @@ def _segment_entries(state: VideoState) -> list[dict]:
     for seg in state.segments:
         if getattr(seg, "muted", False):
             continue
-        if getattr(seg, "kind", "speech") == "vocal":
+        if getattr(seg, "kind", "speech") in KEEP_KINDS:
             slot = max(0.0, (seg.end_time or 0.0) - (seg.start_time or 0.0))
             if keep and slot > 0:
                 entries.append({

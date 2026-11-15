@@ -73,11 +73,11 @@ async def enhance_transcript(
     video_id: str,
     items: list[dict],
     audio_url: str,
-) -> dict[str, str]:
+) -> tuple[dict[str, str], set[str]]:
     """
-    听原声，对 ASR 转写做二次处理：纠正识别错误 + 标注语气标签。
+    听原声，对 ASR 转写做二次处理：纠正识别错误 + 标注语气标签 + 判断哪些行是在唱歌。
 
-    items: [{"id": ..., "text": <ASR 原文>}]. 返回 {id: 增强后的文本} ——
+    items: [{"id": ..., "text": <ASR 原文>}]. 返回 ({id: 增强后的文本}, {听出是在唱的行 id}) ——
     【每一条都要返回】（纠错是身份性的：没纠错也要原样返回），调用方据此
     覆盖翻译输入。
 
@@ -86,7 +86,7 @@ async def enhance_transcript(
     之后每次续跑都跳过增强且再也不会重试。抛出后管线回退原始 ASR 文本，且不写缓存。
     """
     if not items or not audio_url:
-        return {}
+        return {}, set()
 
     tag_list = " ".join(config.EMOTION_CONTROL_TAGS)
     lines = "\n".join(f'{item["id"]}: {item["text"]}' for item in items)
@@ -98,7 +98,7 @@ async def enhance_transcript(
         "merge lines, split lines, re-order them, or move text across lines. "
         "Your own sense of timing is far less accurate than these boundaries — "
         "work strictly within each given line.\n\n"
-        "For EVERY line do two things:\n"
+        "For EVERY line do three things:\n"
         "1. PROOFREAD the transcript against what you actually hear: fix "
         "mis-recognized words (homophones are common), missing or wrong "
         "punctuation, and duplicated or dropped words. Keep the ORIGINAL "
@@ -126,12 +126,17 @@ async def enhance_transcript(
         f"happens, at most {config.EMOTION_MAX_RICH_PER_LINE} per line.\n"
         "- Every bracket-marked token you emit must be one of the tags above; "
         "if you cannot pick a fitting tag, emit no tag at all.\n\n"
+        "3. Decide whether the speaker is SINGING the line. Set \"sung\" to true ONLY when you "
+        "hear it sung: lyrics carried on a melody or held notes. Speaking, shouting, chant-like "
+        "talking and reading aloud are NOT singing. When unsure, false. A sung line is still "
+        "proofread like any other — never drop or reword lyrics just because they are sung.\n\n"
         "Reply with a JSON object: {\"lines\": [{\"id\": \"...\", \"text\": "
-        "\"...\"}]} — one entry per input id, in the original language, ids "
+        "\"...\", \"sung\": false}]} — one entry per input id, in the original language, ids "
         "unchanged. Never add explanations."
     )
 
     by_id: dict | None = None
+    sung: set[str] = set()
     for attempt in (1, 2):  # 一次失败重试一次，再失败就放弃
         try:
             # 每次尝试都走 _chat：重试也是真实调用，也各自记一笔账（旧的合并记法
@@ -161,6 +166,11 @@ async def enhance_transcript(
             }
             if set(by_id.keys()) != {str(item["id"]) for item in items}:
                 raise ValueError("returned ids do not match the input")
+            # 只认明确的 true：缺字段、"yes"、1 都当没唱（误标成歌曲的代价比漏标大得多）
+            sung = {
+                str(entry.get("id")) for entry in lines_out
+                if isinstance(entry, dict) and entry.get("id") is not None and entry.get("sung") is True
+            }
             break
         except Exception as e:
             logger.warning(f"[MmEnhance] attempt {attempt} failed: {e}")
@@ -176,8 +186,8 @@ async def enhance_transcript(
         new_text = (by_id[str(item["id"])] or "").strip()
         enhanced[item["id"]] = new_text or item["text"]
     changed = sum(1 for item in items if enhanced[item["id"]] != item["text"])
-    logger.info(f"[MmEnhance] {video_id}: {changed}/{len(items)} line(s) adjusted by review")
-    return enhanced
+    logger.info(f"[MmEnhance] {video_id}: {changed}/{len(items)} line(s) adjusted by review, {len(sung)} judged as sung")
+    return enhanced, sung
 
 
 # 校验下限/上限：picks 的总时长必须落在 [下限, 上限] 之间，否则把原因喂回去

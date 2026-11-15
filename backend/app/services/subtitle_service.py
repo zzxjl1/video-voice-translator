@@ -521,11 +521,11 @@ def build_cues(
     """
     # 隐藏的行不进字幕：预览叠加、SRT 下载、导出内嵌三条路都走这里，所以在这
     # 一处过滤就够。它的配音在时间轴上照常 —— 隐藏只管画面上的字。
-    # 标成音乐/噪音的行（ASR 把非语音误识成了话）同理不出字幕。
+    # 标成音乐/噪音/人声非语言的行同理不出字幕；歌曲（song）出原歌词，见 `_select_text`。
     ordered = sorted(
         (s for s in segments
          if not getattr(s, "hidden", False)
-         and getattr(s, "kind", "speech") == "speech"
+         and getattr(s, "kind", "speech") in ("speech", "song")
          and ((getattr(s, "translated_text", "") or "").strip()
               or (getattr(s, "text", "") or "").strip())),
         key=lambda s: getattr(s, "start_time", 0.0) or 0.0,
@@ -673,7 +673,14 @@ def strip_subtitle_tags(text: str) -> str:
     return collapsed.strip(" \t")
 
 
+SONG_MARK = "♪"
+
+
 def _select_text(seg, track: str) -> tuple[str, str]:
+    if getattr(seg, "kind", "speech") == "song":
+        # 歌词不翻译（译了也唱不出来），所有轨道都是原歌词，前后各一个音符。有审听版就用它（纠过错的）。
+        lyric = strip_subtitle_tags(((getattr(seg, "reviewed_text", "") or getattr(seg, "text", "") or "")).strip())
+        return (f"{SONG_MARK} {lyric} {SONG_MARK}" if lyric else ""), ""
     translated = strip_subtitle_tags((getattr(seg, "translated_text", "") or "").strip())
     original = strip_subtitle_tags((getattr(seg, "text", "") or "").strip())
     if track == "original":

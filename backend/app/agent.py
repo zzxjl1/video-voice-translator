@@ -72,6 +72,9 @@ SYSTEM_PROMPT = """你是这个视频配音项目的 AI 助手，和用户一起
   **这些要用户拍板**：初始化已经把其中不长的声音自动标成了非语言声（第一条消息里有说明）；其余没自动处理的
   （太长、数量异常）是笑声还是漏掉的话，只有听了才知道。你先 listen，把听到的告诉用户并问他怎么处理，
   他同意了再 insert_line / delete_lines；不要自己批量插入或删除。用户已经明确说了"补上/标出来"除外。
+  唱歌：审听（omni）会把它听出是在唱的行自动标成 song（歌词被 ASR 当台词转写了）。song 不翻译、不配音，字幕是
+  原歌词加 ♪，分离过人声的工程导出时保留原声。你发现某几句其实是唱的但没标、或标错了：先 listen（track=vocals），
+  再 mark_non_speech kind=song / speech。
 - 翻译和配音是两步：改了原文或译文，配音会过期，要 redub；改了语气/语速，配音也过期。
 - 配音时长要和时间槽（slot_s）大致相当：dub_vs_slot 大于 1.15 说明配音太长（会被加速或裁掉），
   小于 0.8 说明太短。优先让译文更简短或调语速，而不是硬塞。
@@ -487,6 +490,19 @@ def cancel_chat(video_id: str) -> None:
 # 初始化完成后的第一条消息
 # ----------------------------------------------------------------------------
 
+def _song_notes(state, songs: dict) -> list[str]:
+    """审听听出的"在唱歌"：告诉用户标了哪几句、会怎样处理、不对怎么改。已经被改回语音的不再说。"""
+    line_of = {x.id: i + 1 for i, x in enumerate(state.segments)}
+    nums = sorted(line_of[i] for i in songs.get("ids") or []
+                  if i in line_of and state.segments[line_of[i] - 1].kind == "song")
+    if not nums:
+        return []
+    shown = "、".join(map(str, nums[:8])) + ("等" if len(nums) > 8 else "")
+    return [
+        f"审听时听出第 {shown} 句（共 {len(nums)} 句）是在唱歌，已标成歌曲：不翻译、不配音，字幕显示原歌词并加 ♪，"
+        "做过人声分离的工程导出时保留原声（主唱加伴奏）。听错了告诉我是第几句，我改回语音。"]
+
+
 _SOUND_REASON = {
     "long": "超过 {max:g} 秒，更像漏掉的一句话，不像笑声",
     "too_many": "数量太多或占全片的比例太大，可能是这一段整体没识别好",
@@ -558,9 +574,10 @@ def welcome_text(video_id: str) -> str:
     parts.append("本次配置：" + "、".join(mode) + "。")
 
     parts.extend(_sound_notes(state, rep.get("sounds") or {}))
+    parts.extend(_song_notes(state, rep.get("songs") or {}))
 
     flags = []
-    non = [i + 1 for i, x in enumerate(state.segments) if x.kind not in ("speech", "vocal")]   # vocal 上面单独说了
+    non = [i + 1 for i, x in enumerate(state.segments) if x.kind not in ("speech", "vocal", "song")]   # vocal / song 上面单独说了
     if non:
         flags.append(f"第 {'、'.join(map(str, non[:8]))} 句被标成了非语音")
     ftr, fdub = rep.get("failedTranslation") or [], rep.get("failedDub") or []

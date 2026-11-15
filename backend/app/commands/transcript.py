@@ -174,11 +174,12 @@ def retime_line(ctx: Ctx, line: int, start: Optional[float] = None, end: Optiona
 
 @command(
     "mark_non_speech", "把某些句标成不是台词的声音：music 音乐 / noise 环境噪音（ASR 把它们误识成了话）/ "
-    "vocal 人发出的非语言声（笑、叹气、咳嗽、呼吸）。都不翻译、不配音、不出字幕。vocal 在做过人声分离的工程里"
-    "导出时会保留这一段原声，不用 TTS 重造。标回 speech 就恢复。",
+    "vocal 人发出的非语言声（笑、叹气、咳嗽、呼吸）/ song 在唱歌（歌词被当成台词转写了）。"
+    "music、noise、vocal 都不翻译、不配音、不出字幕；song 也不翻译、不配音，但字幕显示原歌词并加 ♪。"
+    "vocal 和 song 在做过人声分离的工程里导出时会保留这一段原声，不用 TTS 重造。标回 speech 就恢复。",
     {"type": "object", "properties": {
         "lines": {"type": "array", "items": {"type": "integer", "minimum": 1}},
-        "kind": {"type": "string", "enum": ["music", "noise", "vocal", "speech"]},
+        "kind": {"type": "string", "enum": ["music", "noise", "vocal", "song", "speech"]},
     }, "required": ["lines", "kind"]},
 )
 def mark_non_speech(ctx: Ctx, lines: list, kind: str):
@@ -192,7 +193,7 @@ def mark_non_speech(ctx: Ctx, lines: list, kind: str):
             if x.id in ids:
                 x.kind = kind
     nums = "、".join(str(state.segments.index(s) + 1) for s in segs)
-    ctx.change(apply, f"把第 {nums} 句标为{ {'music': '音乐', 'noise': '噪音', 'vocal': '人声非语言', 'speech': '语音'}[kind] }")
+    ctx.change(apply, f"把第 {nums} 句标为{ {'music': '音乐', 'noise': '噪音', 'vocal': '人声非语言', 'song': '歌曲', 'speech': '语音'}[kind] }")
     return {"lines": [state.segments.index(s) + 1 for s in segs], "kind": kind}
 
 

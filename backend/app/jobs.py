@@ -241,21 +241,28 @@ async def step_sounds(video_id: str, job: Job) -> dict:
         return {}
 
 
-async def step_review(video_id: str, job: Job, server_url: str) -> None:
-    """omni 审听：纠错 + 语气标签。每一行的审听版存在行上；失败只降级，不阻断。"""
+async def step_review(video_id: str, job: Job, server_url: str) -> list[str]:
+    """
+    omni 审听：纠错 + 语气标签 + 判断哪些行是在唱歌。每一行的审听版存在行上；失败只降级，不阻断。
+
+    返回被标成歌曲（kind=song）的行 id。听出是唱的行直接标上，一条可撤销的记录；歌词本来被当成台词，
+    不标的话会被翻译、再用 TTS 念一遍叠在原伴奏上。判断只来自 omni 的一次回答，没有量化过识别率，
+    所以结果一定会写进初始化报告和欢迎消息，用户一眼能看到并改回。
+    """
     state = store.require_state(video_id)
     if not state.mm_enhance:
-        return
+        return []
     todo = [s for s in state.segments if s.kind == "speech" and (s.text or "").strip() and not s.reviewed_text]
     if not todo:
         _emit(video_id, job, {"phase": "mm_enhance", "status": "skipped"})
-        return
+        return []
     job.check()
     _emit(video_id, job, {"phase": "mm_enhance", "status": "started", "count": len(todo)})
+    marked: list[str] = []
     try:
         from app.services import omni_service
         _emit(video_id, job, {"phase": "mm_enhance", "status": "listening"})
-        enhanced = await omni_service.enhance_transcript(
+        enhanced, sung = await omni_service.enhance_transcript(
             video_id, [{"id": s.id, "text": s.text} for s in todo],
             AUDIO_URL.format(base=server_url, vid=video_id),
         )
@@ -269,10 +276,23 @@ async def step_review(video_id: str, job: Job, server_url: str) -> None:
 
         store.mutate(video_id, apply, actor="system", cmd="review", summary="审听完成")
         adjusted = sum(1 for s in todo if enhanced.get(s.id, s.text) != s.text)
-        _emit(video_id, job, {"phase": "mm_enhance", "status": "done", "adjusted": adjusted})
+
+        sung_lines = {seg.id: seg.text for seg in todo if seg.id in sung}
+        if sung_lines:
+            def mark_song(s):
+                for sid, original in sung_lines.items():
+                    cur = s.segment(sid)
+                    # 这一行期间被用户改过原文 / 改过种类，就不动
+                    if cur is not None and cur.kind == "speech" and cur.text == original:
+                        cur.kind = "song"
+                        marked.append(sid)
+            store.mutate(video_id, mark_song, actor="system", cmd="review_song", undoable=True,
+                         summary=f"审听听出 {len(sung_lines)} 句是在唱歌，标为歌曲")
+        _emit(video_id, job, {"phase": "mm_enhance", "status": "done", "adjusted": adjusted, "songs": len(marked)})
     except Exception as e:  # 增强不是依赖
         logger.warning(f"[{video_id}] review failed (continuing with raw ASR text): {e}")
         _emit(video_id, job, {"phase": "mm_enhance", "status": "failed", "error": str(e)[:120]})
+    return marked
 
 
 async def translate_lines(
@@ -517,7 +537,9 @@ async def initialize(video_id: str, job: Job, server_url: str) -> dict:
         job.check()
 
         job.step = "审听"
-        await step_review(video_id, job, server_url)
+        songs = await step_review(video_id, job, server_url)
+        if songs:
+            report["songs"] = {"ids": songs}
         job.check()
 
         job.step = "翻译"
