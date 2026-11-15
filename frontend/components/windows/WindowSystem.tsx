@@ -1,11 +1,12 @@
 /**
- * 窗口系统的界面：停靠位（右栏，固定大小，标签条只列已打开的窗口）、浮动窗口（自由位置和大小）、
+ * 窗口系统的界面：停靠位（右栏，固定大小；已打开窗口的切换在上方居中悬浮、hover 才出现、不占布局）、
+ * 浮动窗口（自由位置和大小）、
  * 吸附区提示、面板内容的 portal。状态和拖动控制在 hooks/useWindows.ts。
  *
  * 面板内容只渲染一次（portal 进它自己的宿主节点），宿主在停靠位和浮动窗口之间搬动，
  * 所以吸附 / 弹出不会让面板重新挂载 —— 输入框里写了一半的话、编辑到一半的译文都还在。
  */
-import React, { useLayoutEffect, useRef } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { DIRS, PANEL_IDS, PINNED, TITLES, type Dir, type PanelId } from '../../store/windows';
 import { mountHost, type HeaderProps, type WindowsApi } from '../../hooks/useWindows';
@@ -91,40 +92,106 @@ export const WindowPortals: React.FC<{ wm: WindowsApi; panels: PanelRenderers }>
 // 停靠位
 // ---------------------------------------------------------------------------
 
-export const DockSlot: React.FC<{ wm: WindowsApi }> = ({ wm }) => (
-  <section ref={(el) => { wm.slotRef.current = el; }} className="flex flex-col min-h-0 min-w-0">
-    {/* 标签条只列已打开的停靠窗口；译文 / 助手常驻，字幕样式打开时才多一个 */}
-    {wm.docked.length > 1 && (
-      <div role="tablist" className="shrink-0 flex gap-1.5 mb-2">
-        {wm.docked.map((id) => {
-          const on = id === wm.active;
-          return (
-            <div
-              key={id}
-              role="tab"
-              aria-selected={on}
-              {...wm.tabProps(id)}
-              className={[
-                'px-3.5 py-1.5 rounded-full text-[11px] font-bold tracking-wide cursor-grab active:cursor-grabbing select-none transition-colors border',
-                on ? 'bg-claude-accent text-white border-claude-accent shadow-sm' : 'bg-white text-gray-500 border-[#e5e5e0] hover:text-claude-accent hover:border-claude-accent/50',
-              ].join(' ')}
-            >
-              {TITLES[id]}
-            </div>
-          );
-        })}
+export const DockSlot: React.FC<{ wm: WindowsApi }> = ({ wm }) => {
+  // 面板内容是 portal 进来的：React 的 onMouseEnter / onPointerDown 按 React 树派发，
+  // 收不到 portal 里的指针。显示交给 section 的 CSS :hover（走物理 DOM 树），
+  // 这里只补一份原生事件状态，给拖动、触屏和无障碍属性用。
+  const [hovered, setHovered] = useState(false);
+  const [stuck, setStuck] = useState(false);       // 触屏没有 hover：点一下右栏顶部也能展开
+  useEffect(() => {
+    const el = wm.slotRef.current;
+    if (!el) return;
+    const enter = () => setHovered(true);
+    const leave = () => { setHovered(false); setStuck(false); };
+    const touch = (e: PointerEvent) => {
+      if (e.pointerType === 'mouse') return;
+      if (e.clientY - el.getBoundingClientRect().top < 72) setStuck((v) => !v);
+    };
+    el.addEventListener('mouseenter', enter);
+    el.addEventListener('mouseleave', leave);
+    el.addEventListener('pointerdown', touch);
+    return () => {
+      el.removeEventListener('mouseenter', enter);
+      el.removeEventListener('mouseleave', leave);
+      el.removeEventListener('pointerdown', touch);
+    };
+  }, [wm.slotRef]);
+
+  const hasWindows = wm.docked.length > 0;
+  const visible = hasWindows && (hovered || stuck || wm.drag !== null);
+
+  return (
+    <section
+      ref={(el) => { wm.slotRef.current = el; }}
+      className="group relative flex flex-col min-h-0 min-w-0"
+    >
+      <div className="flex-grow min-h-0 relative">
+        {/* 没显示的标签也挂着（只是隐藏）：切回来时输入、滚动位置都还在 */}
+        {wm.docked.map((id) => (
+          <div key={id} className={id === wm.active ? 'h-full flex flex-col min-h-0' : 'hidden'}>
+            <HostMount host={wm.hosts[id]} />
+          </div>
+        ))}
       </div>
-    )}
-    <div className="flex-grow min-h-0 relative">
-      {/* 没显示的标签也挂着（只是隐藏）：切回来时输入、滚动位置都还在 */}
-      {wm.docked.map((id) => (
-        <div key={id} className={id === wm.active ? 'h-full flex flex-col min-h-0' : 'hidden'}>
-          <HostMount host={wm.hosts[id]} />
+
+      {/* 收起态：顶部中央一根 3px 提示线，纯装饰，不占布局也不拦鼠标 */}
+      {hasWindows && (
+        <span
+          aria-hidden="true"
+          className={[
+            'pointer-events-none absolute top-2 left-1/2 -translate-x-1/2 z-20 h-[3px] w-7 rounded-full bg-gray-300/70',
+            'transition-opacity duration-200',
+            visible ? 'opacity-0' : 'opacity-100 group-hover:opacity-0',
+          ].join(' ')}
+        />
+      )}
+
+      {/* 切换条：绝对定位浮在右栏上方居中；hover 才淡入，完全不占一行高度。
+          group-hover 走物理 DOM，鼠标停在 portal 里的面板上也算 hover 右栏。 */}
+      {hasWindows && (
+        <div
+          role="tablist"
+          aria-label="已打开的窗口"
+          aria-hidden={!visible}
+          className={[
+            'absolute top-1.5 left-1/2 -translate-x-1/2 z-30',
+            'flex items-center gap-0.5 rounded-full px-1 py-1',
+            'border border-[#e5e5e0] bg-white/90 backdrop-blur-xl shadow-[0_10px_30px_rgba(0,0,0,0.12)]',
+            'transition-all duration-200 ease-out',
+            visible
+              ? 'opacity-100 translate-y-0 pointer-events-auto'
+              : 'opacity-0 -translate-y-2 pointer-events-none group-hover:opacity-100 group-hover:translate-y-0 group-hover:pointer-events-auto',
+          ].join(' ')}
+        >
+          {wm.docked.map((id) => {
+            const on = id === wm.active;
+            return (
+              <div
+                key={id}
+                role="tab"
+                aria-selected={on}
+                tabIndex={visible ? 0 : -1}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); wm.open(id); }
+                }}
+                {...wm.tabProps(id)}
+                className={[
+                  'px-3 py-1.5 rounded-full text-[11px] font-bold tracking-wide',
+                  'cursor-grab active:cursor-grabbing select-none transition-colors',
+                  on
+                    ? 'bg-claude-accent text-white shadow-sm shadow-claude-accent/25'
+                    : 'text-gray-500 hover:bg-claude-paper hover:text-claude-accent',
+                ].join(' ')}
+              >
+                {TITLES[id]}
+              </div>
+            );
+          })}
         </div>
-      ))}
-    </div>
-  </section>
-);
+      )}
+    </section>
+  );
+};
 
 // ---------------------------------------------------------------------------
 // 浮动窗口

@@ -309,8 +309,9 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
       )}
 
       {/* 顶栏是 fixed 的（悬停展开时浮在画面上方），内容要给它让出顶部空间。
-          右栏是「停靠位」：标签条只列已打开的窗口；译文 / 助手常驻，字幕样式由画面左边的挂耳打开，
-          打开时才多一个标签，关掉就消失。窗口全被拖成浮动时右栏收起，视频撑满。浮动窗口不占栅格。 */}
+          右栏是「停靠位」：已打开窗口的切换 hover 时浮在右栏上方居中、不占高度；译文 / 助手常驻，
+          字幕样式由画面左边的挂耳打开，打开时才多一项，关掉就消失。窗口全被拖成浮动时右栏收起，
+          视频撑满。浮动窗口不占栅格。 */}
       <main
         ref={(el) => { wm.mainRef.current = el; }}
         className={`flex-grow min-h-0 grid gap-5 p-5 lg:p-6 pt-10 lg:pt-11 ${wm.docked.length > 0 ? 'lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]' : 'lg:grid-cols-1'}`}
@@ -369,7 +370,7 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
           </div>
         </section>
 
-        {/* 右：停靠位（已打开窗口的切换在这里） */}
+        {/* 右：停靠位（切换浮在上方居中，不占布局） */}
         {wm.docked.length > 0 && <DockSlot wm={wm} />}
       </main>
 
