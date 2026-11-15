@@ -40,6 +40,12 @@ const ICON_PATHS: Record<string, React.ReactNode> = {
     </>
   ),
   noise: <path d="M9.6 4.6A2 2 0 1 1 11 8H2m10.6 11.4A2 2 0 1 0 14 16H2m15.7-8.3A2.5 2.5 0 1 1 19.5 12H2" />,
+  song: (
+    <>
+      <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z" />
+      <path d="M19 10v2a7 7 0 01-14 0v-2M12 19v4" />
+    </>
+  ),
   vocal: (
     <>
       <circle cx="12" cy="12" r="10" />
@@ -102,7 +108,7 @@ const Timeline: React.FC<TimelineProps> = ({
   const hoveredSeg = hovered >= 0 ? segments[hovered] : null;
 
   const presentKinds = useMemo(
-    () => (['music', 'noise', 'vocal'] as const).filter((k) => segments.some((s) => s.kind === k)),
+    () => (['music', 'noise', 'vocal', 'song'] as const).filter((k) => segments.some((s) => s.kind === k)),
     [segments],
   );
 

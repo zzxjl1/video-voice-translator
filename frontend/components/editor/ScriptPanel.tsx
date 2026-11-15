@@ -21,7 +21,7 @@ export interface ScriptActions {
   seek: (time: number) => void;
   redub: (line: Line) => void;
   retranslate: (line: Line, hint?: 'longer' | 'shorter') => void;
-  mark: (line: Line, kind: 'music' | 'noise' | 'vocal' | 'speech') => void;
+  mark: (line: Line, kind: 'music' | 'noise' | 'vocal' | 'song' | 'speech') => void;
   askAbout: (line: Line) => void;
 }
 
@@ -42,7 +42,7 @@ interface Props {
   windowControls?: React.ReactNode;
 }
 
-const KIND_LABEL: Record<string, string> = { music: '音乐', noise: '噪音', vocal: '人声非语言' };
+const KIND_LABEL: Record<string, string> = { music: '音乐', noise: '噪音', vocal: '人声非语言', song: '歌曲' };
 
 const STATUS: Record<string, { text: string; tone: string }> = {
   stale: { text: '需更新', tone: 'bg-amber-50 text-amber-700 border-amber-200' },
@@ -199,13 +199,15 @@ const LineCard = memo(({ line, speaker, color, active, flashBy, mixEntry, dubbin
         )}
       </div>
 
-      {/* 保留原声：笑、叹、咳不用 TTS 重造，导出时把人声轨里这一段放回去 */}
-      {line.kind === 'vocal' && (
+      {/* 保留原声：笑、叹、咳、唱歌不用 TTS 重造，导出时把人声轨里这一段放回去 */}
+      {(line.kind === 'vocal' || line.kind === 'song') && (
         <div className="pt-1 space-y-2">
           {line.audioUrl && !line.muted ? (
             <>
               <audio src={line.audioUrl} controls preload="none" className="w-full h-8 opacity-70 hover:opacity-100 transition-opacity" />
-              <div className="text-[10px] text-gray-400">导出时保留这一段原声，不配音、不出字幕</div>
+              <div className="text-[10px] text-gray-400">
+                {line.kind === 'song' ? '导出时保留这一段原声（主唱加伴奏），不翻译、不配音；字幕显示原歌词并加 ♪' : '导出时保留这一段原声，不配音、不出字幕'}
+              </div>
             </>
           ) : (
             <div className="text-[10px] text-gray-400">
@@ -467,6 +469,7 @@ const LineMenu: React.FC<{ line: Line; dubbing: boolean; actions: ScriptActions;
         ? item('标回语音', () => actions.mark(line, 'speech'))
         : (
           <>
+            {item('标为唱歌', () => actions.mark(line, 'song'), '不翻译、不配音，字幕显示原歌词加 ♪，导出时保留原声')}
             {item('标为笑声 / 咳嗽等', () => actions.mark(line, 'vocal'), '不配音，导出时保留这段原声')}
             {item('标为音乐 / 非语音', () => actions.mark(line, 'music'), '不翻译、不配音、不出字幕', true)}
           </>

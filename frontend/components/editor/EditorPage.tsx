@@ -231,7 +231,7 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
   // 时间线用的行：kept = 导出时会把这段原声放回去（有预览地址 = 人声非语言 + 没静音 + 做过人声分离）
   const timelineSegments = useMemo<TimelineSegment[]>(() => lines.map((l) => ({
     id: l.id, speakerId: l.speakerId, start: l.start, end: l.end, kind: l.kind, muted: l.muted, hidden: l.hidden,
-    text: l.text, translation: l.translation, kept: l.kind === 'vocal' && !l.muted && !!l.audioUrl,
+    text: l.text, translation: l.translation, kept: (l.kind === 'vocal' || l.kind === 'song') && !l.muted && !!l.audioUrl,
   })), [lines]);
 
   const fill = useCallback(async () => {

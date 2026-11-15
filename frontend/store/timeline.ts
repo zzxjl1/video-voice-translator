@@ -19,7 +19,7 @@ export interface TimelineSegment {
   hidden: boolean;
   text: string;
   translation: string;
-  /** 导出时会把这一段原声放回去：kind=vocal、没静音、做过人声分离（有预览地址就是这三个条件都满足）。 */
+  /** 导出时会把这一段原声放回去：kind 是 vocal / song、没静音、做过人声分离（有预览地址就是这三个条件都满足）。 */
   kept: boolean;
 }
 
@@ -45,11 +45,12 @@ export interface KindMeta {
   color: string;
 }
 
-/** 非台词的种类。颜色和脚本面板里的标签同属紫色系，但三种互相能分开。 */
+/** 非台词的种类。每种一个颜色 + 一个图标，互相能分开。 */
 export const KIND_META: Record<Exclude<SegmentKind, 'speech'>, KindMeta> = {
   music: { label: '音乐', hint: '不翻译、不配音、不出字幕；声音本来就在背景里', color: '#8b5cf6' },
   noise: { label: '噪音', hint: '不翻译、不配音、不出字幕；声音本来就在背景里', color: '#64748b' },
   vocal: { label: '人声非语言', hint: '笑、叹气、咳嗽等；不配音、不出字幕', color: '#db2777' },
+  song: { label: '歌曲', hint: '唱歌：不翻译、不配音；字幕显示原歌词并加 ♪', color: '#0d9488' },
 };
 
 export function isSpeech(seg: { kind: SegmentKind }): boolean {
@@ -150,13 +151,17 @@ export function formatSpan(start: number, end: number): string {
   return `${f(start)} – ${f(end)}`;
 }
 
+/** 导出时从人声轨保留原声的种类。 */
+export const KEEP_KINDS: readonly SegmentKind[] = ['vocal', 'song'];
+
 /** 这个片段在 tooltip 里要带的小标签。 */
 export function segmentFlags(seg: TimelineSegment): string[] {
   const out: string[] = [];
-  if (seg.kind === 'vocal') {
+  if (KEEP_KINDS.includes(seg.kind)) {
     out.push(seg.kept ? '导出时保留这段原声' : seg.muted ? '已静音：导出时不放' : '没做人声分离：原声本来就在背景里');
   }
-  if (seg.muted && seg.kind !== 'vocal') out.push('已静音');
+  if (seg.muted && !KEEP_KINDS.includes(seg.kind)) out.push('已静音');
   if (seg.hidden) out.push('字幕隐藏');
+  if (seg.kind === 'song') out.push('字幕显示原歌词');
   return out;
 }
