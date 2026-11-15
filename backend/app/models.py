@@ -86,6 +86,9 @@ class Segment:
     tts_fp: str = ""
     # 配音实际时长（秒）：混音计划用它算 atempo。合成时量得，随指纹一起落盘。
     actual_duration: Optional[float] = None
+    # 配音要加多少 dB，才和原片这一句的人声一样响。合成时量一次（需要做过人声分离、有原片人声可比），
+    # 随配音一起落盘；None = 没量过 / 量不出来，保持合成原样。不进指纹：它只是这份 mp3 的属性。
+    tts_gain_db: Optional[float] = None
     # —— 以下是读出时算出来的派生值，**不落盘** ——
     audio_path: Optional[str] = None     # 仅当配音"新鲜"时才有（见 status.hydrate）
 

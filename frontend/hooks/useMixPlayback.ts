@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Line, MixPlan, MixPlanSegment } from '../net/types';
 import { setPreservesPitch } from '../utils/playbackSync';
+import { entryVolume, previewScale } from '../store/mixlevel';
 
 const clamp01 = (v: number) => Math.max(0, Math.min(1, v));
 
@@ -55,6 +56,9 @@ export function useMixPlayback({ lines, plan, backgroundUrl, dubbing }: Options)
     () => new Map<string, MixPlanSegment>((plan?.segments ?? []).map((e) => [e.id, e])),
     [plan],
   );
+
+  // 各路增益里有大于 1 的（配音要抬）放不出来：整体按最大的缩，比例和导出一致。
+  const scale = useMemo(() => previewScale(plan), [plan]);
 
   const stopAll = useCallback(() => {
     active.current.forEach(({ audio }) => audio.pause());
@@ -121,6 +125,7 @@ export function useMixPlayback({ lines, plan, backgroundUrl, dubbing }: Options)
               const audio = new Audio(url);
               setPreservesPitch(audio);     // 拉伸不能改音高；不依赖浏览器默认值
               audio.playbackRate = rate;
+              audio.volume = entryVolume(entry, scale);
               audio.currentTime = progress * played;
               audio.play().catch((e) => console.warn('Audio play blocked:', e));
               active.current.set(line.id, { audio, url });
@@ -129,6 +134,8 @@ export function useMixPlayback({ lines, plan, backgroundUrl, dubbing }: Options)
             }
           } else {
             if (existing.audio.playbackRate !== rate) existing.audio.playbackRate = rate;
+            const vol = entryVolume(entry, scale);
+            if (existing.audio.volume !== vol) existing.audio.volume = vol;
             // 暂停 → 再播放之后这一句的 audio 还在 map 里但处于 paused：必须重新 play()
             if (existing.audio.paused) {
               existing.audio.currentTime = progress * played;
@@ -146,15 +153,15 @@ export function useMixPlayback({ lines, plan, backgroundUrl, dubbing }: Options)
     if (bg && hasBg) {
       if (bg.playbackRate !== targetVideoRate) bg.playbackRate = targetVideoRate;
       const gain = bedGainAt(plan, time);
-      bg.volume = gain !== null ? clamp01(gain) : 1.0;
+      bg.volume = gain !== null ? clamp01(gain * scale) : 1.0;
     }
     // 未分离：原声里有原语言人声，按 plan 包络压到台词之下（与导出同一条曲线）。
     // plan 缺席时的 0.1/1.0 是降级，只影响预览的那几秒，成片由服务端按 plan 出。
     if (!hasBg) {
       const gain = dubbing ? bedGainAt(plan, time) : null;
-      video.volume = gain !== null ? clamp01(gain) : dubbing && anyDubPlaying ? 0.1 : 1.0;
+      video.volume = gain !== null ? clamp01(gain * scale) : dubbing && anyDubPlaying ? 0.1 : 1.0;
     }
-  }, [lines, plan, mixEntries, backgroundUrl, dubbing, stopAll]);
+  }, [lines, plan, mixEntries, scale, backgroundUrl, dubbing, stopAll]);
 
   const seek = useCallback((time: number) => {
     const video = videoRef.current;
@@ -162,10 +169,10 @@ export function useMixPlayback({ lines, plan, backgroundUrl, dubbing }: Options)
     video.currentTime = time;
     stopAll();
     // 拖动后的第一帧也按包络给，否则松手瞬间会漏出满音量的原声
-    video.volume = backgroundUrl ? 0 : clamp01(dubbing ? (bedGainAt(plan, time) ?? 1.0) : 1.0);
+    video.volume = backgroundUrl ? 0 : clamp01(dubbing ? (bedGainAt(plan, time) ?? 1.0) * scale : 1.0);
     if (backgroundRef.current) backgroundRef.current.currentTime = time;
     setCurrentTime(time);
-  }, [backgroundUrl, plan, dubbing, stopAll]);
+  }, [backgroundUrl, plan, dubbing, scale, stopAll]);
 
   const videoHandlers = {
     onTimeUpdate,

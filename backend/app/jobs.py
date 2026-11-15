@@ -28,7 +28,7 @@ from app.bus import bus
 from app.models import (
     STAGE_FAILED, STAGE_INITIALIZING, STAGE_READY, Segment, Speaker, get_video_dir,
 )
-from app.services import asr_service, llm_service, speech_timing, tts_service
+from app.services import asr_service, llm_service, loudness, mix_service, speech_timing, tts_service
 
 logger = logging.getLogger(__name__)
 
@@ -447,11 +447,22 @@ async def dub_lines(video_id: str, job: Job, ids: Optional[list[str]] = None, fo
                     instruction=instruction,
                 )
 
+                # 还原原片的响度：这一句配音和原片这一句的人声比一比，差多少记下来。
+                # 只有做过人声分离才有"纯人声"可比；耗时的解码放线程里。
+                gain_db = None
+                reference = mix_service.vocals_audio_path_full(video_id)
+                if reference:
+                    gain_db = await _run_in_thread(
+                        loudness.align_gain_db, tts_service.tts_audio_path(video_id, seg.id),
+                        reference, line.start_time, line.end_time,
+                    )
+
                 def apply(s):
                     target = s.segment(seg.id)
                     if target is None:
                         return
                     target.actual_duration = duration
+                    target.tts_gain_db = gain_db
                     # 指纹按"合成时用的那份设置"记，而不是按写回时的最新设置：
                     # 合成期间用户改了语速/译文，写回后指纹自然对不上 → 判过期，下次重做。
                     target.tts_fp = _fp_from(cur, line)

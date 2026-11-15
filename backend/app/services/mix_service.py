@@ -23,6 +23,7 @@ import logging
 import os
 
 from app.models import VideoState, video_dir_path
+from app.services import loudness
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +54,7 @@ VOICE_FADE_S = 0.02
 
 # 垫底电平与下压量（dB）。分离出的背景不含人声 → 不下压；
 # 未分离的原声就是原语言人声 → 必须压到台词之下。
-BGM_GAIN_DB = _env_float("MIX_BGM_GAIN_DB", -1.0)
+BGM_GAIN_DB = _env_float("MIX_BGM_GAIN_DB", 0.0)
 BGM_DUCK_DB = _env_float("MIX_BGM_DUCK_DB", 0.0)
 ORIGINAL_GAIN_DB = _env_float("MIX_ORIGINAL_GAIN_DB", 0.0)
 ORIGINAL_DUCK_DB = _env_float("MIX_ORIGINAL_DUCK_DB", -24.0)
@@ -68,7 +69,7 @@ RATE_MAX = _env_float("MIX_RATE_MAX", 1.25)
 
 # 策略语义变了就 +1：让所有已下发的 plan 失效，前端会重新取。
 # 2：master 从 loudnorm（两遍、动态）改为"量响度 → 一次静态增益 → 限幅兜底"。
-POLICY_VERSION = 2
+POLICY_VERSION = 3
 
 
 def db_to_gain(db: float) -> float:
@@ -251,6 +252,7 @@ def _segment_entries(state: VideoState) -> list[dict]:
             # 变速后这句实际占用的秒数：播放器拿它做进度对位（以前前端用
             # "自然时长 × 进度"，速率≠1 时对位就是错的）。
             "played": round(played, 4),
+            **({"gain": loudness.to_linear(seg.tts_gain_db)} if seg.tts_gain_db is not None else {}),
         })
     return entries
 

@@ -52,7 +52,7 @@ config.DATA_DIR = tmp
 st = make_state([seg("a", 0.4, 2.6, 2.2), seg("b", 3.0, 5.4, 2.5)], with_bg=True, tmp=tmp)
 plan = M.build_mix_plan(st)
 check("① bed=background 且无 duck 曲线", plan["bed"]["kind"] == "background" and plan["bed"]["duck"] == [])
-check("① 背景增益 = -1dB", abs(plan["bed"]["gain"] - M.db_to_gain(-1.0)) < 1e-4, plan["bed"]["gain"])
+check("① 背景保持原始电平：增益 = 0 dB（不再默认衰减 1 dB）", plan["bed"]["gain"] == 1.0, plan["bed"]["gain"])
 
 # ② 无分离产物 → bed=original，带下压断点
 st2 = make_state([seg("a", 2.0, 4.0, 2.0)], with_bg=False, tmp=tmp)
@@ -115,7 +115,7 @@ except RuntimeError as e:
 #    少一个会在导出时 KeyError，多出来没人读的字段（如已删除的 loudnessRange）是死配置。
 check("⑩ plan.master 字段集", set(plan["master"]) == {"targetLufs", "peakLimitDbfs", "maxLimitingDb", "maxBoostDb"},
       sorted(plan["master"]))
-check("⑩ 母带语义变了 → policyVersion 已升到 2（让已下发的 plan 失效）", plan["policyVersion"] == 2, plan["policyVersion"])
+check("⑩ 响度策略变了（背景 0 dB、配音按原片还原）→ policyVersion 已升到 3（让已下发的 plan 失效）", plan["policyVersion"] == 3, plan["policyVersion"])
 
 print(f"\n合计 {'全部通过' if not fails else str(len(fails)) + ' 项失败: ' + ', '.join(fails)}")
 sys.exit(1 if fails else 0)

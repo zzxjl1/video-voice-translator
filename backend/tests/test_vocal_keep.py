@@ -288,17 +288,25 @@ check("③ 预览接口：静音的行 → 404", client.get(f"{P}/keep/v1").stat
 st, d = mk_state()
 st.segments = [speech("s1", 1.0, 2.0, d), Segment("v1", "0", 5.0, 6.5, "（笑声）", kind="vocal")]
 plan = mix_service.build_mix_plan(st)
-tl_path = export_service.build_dubbed_timeline(st.video_id, st, 10.0, plan)
-w = wave.open(tl_path); rate = w.getframerate(); tl = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(float); w.close()
-def peak_hz(a, b):
-    seg = tl[int(a * rate): int(b * rate)]
+def load_tl(path):
+    w = wave.open(path); r = w.getframerate(); x = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(float); w.close()
+    return x, r
+def peak_hz(x, rate, a, b):
+    seg = x[int(a * rate): int(b * rate)]
     return np.argmax(np.abs(np.fft.rfft(seg * np.hanning(len(seg))))) * rate / len(seg)
-def rms(a, b): return float(np.sqrt(np.mean(tl[int(a * rate): int(b * rate)] ** 2)))
-check("③ 导出时间轴：配音在 1~2 秒（330 Hz）", abs(peak_hz(1.1, 1.9) - 330) < 15 and rms(1.1, 1.9) > 500, (peak_hz(1.1, 1.9), rms(1.1, 1.9)))
-check("③ 导出时间轴：保留的原声在 5~6.5 秒（来自人声轨，880 Hz）", abs(peak_hz(5.1, 6.4) - 880) < 20 and rms(5.1, 6.4) > 500, (peak_hz(5.1, 6.4), rms(5.1, 6.4)))
-check("③ 导出时间轴：其余地方是静音", rms(3.0, 4.5) < 50 and rms(7.0, 9.0) < 50, (rms(3.0, 4.5), rms(7.0, 9.0)))
-check("③ 导出时间轴：保留的原声没被变速（长度就是 1.5 秒，不多不少）",
-      abs(np.count_nonzero(np.abs(tl[int(4.9 * rate): int(7.0 * rate)]) > 200) / rate - 1.5) < 0.1)
+def rms(x, rate, a, b): return float(np.sqrt(np.mean(x[int(a * rate): int(b * rate)] ** 2)))
+tl_path = export_service.build_dubbed_timeline(st.video_id, st, 10.0, plan)
+kp_path = export_service.build_dubbed_timeline(st.video_id, st, 10.0, plan, kept=True)
+tl, rate = load_tl(tl_path); kp, _ = load_tl(kp_path)
+check("③ 导出：配音和保留的原声是两条时间轴（原因：响度只量配音+垫底，见 ⑧）", tl_path != kp_path and os.path.basename(kp_path) == "kept_original.wav")
+check("③ 配音时间轴：配音在 1~2 秒（330 Hz）", abs(peak_hz(tl, rate, 1.1, 1.9) - 330) < 15 and rms(tl, rate, 1.1, 1.9) > 500, (peak_hz(tl, rate, 1.1, 1.9), rms(tl, rate, 1.1, 1.9)))
+check("③ 配音时间轴里没有保留的原声（5~6.5 秒是静音）——和没有这批片段时逐位一致", rms(tl, rate, 5.0, 6.5) < 50 and rms(tl, rate, 3.0, 4.5) < 50, rms(tl, rate, 5.0, 6.5))
+check("③ 保留的原声时间轴：原声在 5~6.5 秒（来自人声轨，880 Hz）", abs(peak_hz(kp, rate, 5.1, 6.4) - 880) < 20 and rms(kp, rate, 5.1, 6.4) > 500, (peak_hz(kp, rate, 5.1, 6.4), rms(kp, rate, 5.1, 6.4)))
+check("③ 保留的原声时间轴：配音那 1~2 秒是静音，其余也是静音", rms(kp, rate, 1.1, 1.9) < 50 and rms(kp, rate, 7.0, 9.0) < 50, (rms(kp, rate, 1.1, 1.9), rms(kp, rate, 7.0, 9.0)))
+check("③ 保留的原声没被变速（长度就是 1.5 秒，不多不少）", abs(np.count_nonzero(np.abs(kp[int(4.9 * rate): int(7.0 * rate)]) > 200) / rate - 1.5) < 0.1)
+st_nk, d_nk = mk_state()
+st_nk.segments = [speech("s1", 1.0, 2.0, d_nk)]
+check("③ 没有保留的原声时，kept 时间轴不生成（返回 None）", export_service.build_dubbed_timeline(st_nk.video_id, st_nk, 10.0, mix_service.build_mix_plan(st_nk), kept=True) is None)
 
 # 命令：mark_non_speech / insert_line
 fresh()
@@ -793,6 +801,205 @@ if os.path.exists(os.path.join(SAMPLE, "speech_stem.flac")) and os.path.exists(o
               and "审听炸了" in (v["initReport"].get("error") or ""), (v["initReport"].get("error"), [x["kind"] for x in v["segments"]]))
 else:
     print("SKIP ⑦ 端到端（samples/problem_video 不在）")
+
+# ============================================================================ ⑧ 回归：保留原声不能把 BGM 和配音压低
+# 母带只量一次、整条混音加同一个增益。原声片段比配音响，混进被测量的那条里会抬高测出的响度，增益被拉低，
+# BGM 和配音整体变轻（实测 0.9 dB）。量的是**绝对**电平（相对配音的话整体增益变化会被抵消），并且和
+# "没有这批行"的同一个工程对比。
+if os.path.exists(os.path.join(SAMPLE, "speech_stem.flac")) and os.path.exists(os.path.join(SAMPLE, "asr_baseline", "asr_vocals.json")):
+    import logging, re, shutil as _sh
+    LV = "levelcheck000000000000000000000"
+    if store.exists(LV): store.delete(LV)
+    lmp4 = os.path.join(TMP, "lv.mp4"); _sh.copy(os.path.join(SAMPLE, "problem_sample.mp4"), lmp4)
+    store.create(LV, "lv.mp4", lmp4)
+    ld = video_dir_path(LV)
+    for src_name, out_name in (("speech_stem.flac", "vocals.wav"), ("background_stem.flac", "background.wav")):
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", os.path.join(SAMPLE, src_name), "-ac", "1", "-ar", "44100", os.path.join(ld, out_name)], check=True)
+    lasr = json.load(open(os.path.join(SAMPLE, "asr_baseline", "asr_vocals.json"), encoding="utf-8"))["parsed_lines"]
+    from app.models import tts_audio_path as _tap
+    VW = [(11.22, 12.46), (13.04, 14.14), (32.34, 33.30)]
+    def lseed(st_):
+        st_.target_language = "English"; st_.stage = "ready"; st_.enable_dubbing = True
+        st_.speakers = [Speaker("0", "S0", voice="Emily_v3.1")]
+        st_.segments = [Segment(f"s{i}", "0", x["start_time"], x["end_time"], x["text"], translated_text=f"t{i}") for i, x in enumerate(lasr)]
+        for g in st_.segments: g.tr_fp = status.expected_tr_fp(st_, g)
+        for a_, b_ in VW:
+            k = sum(1 for g in st_.segments if g.end_time <= a_)
+            st_.segments.insert(k, Segment(f"v{a_}", "0", a_, b_, "（非语言声）", kind="vocal"))
+    store.mutate(LV, lseed, actor="system", cmd="seed", summary="seed")
+    for g in store.get_state(LV).segments:
+        if g.kind == "speech":
+            p = _tap(LV, g.id); os.makedirs(os.path.dirname(p), exist_ok=True)
+            subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=f=330:d=1.6", "-af", "volume=-12dB", "-ar", "24000", "-c:a", "libmp3lame", p], check=True)
+    def ldub(st_):
+        for g in st_.segments:
+            if g.kind == "speech": g.tts_fp = status.expected_tts_fp(st_, g); g.actual_duration = 1.6
+    store.mutate(LV, ldub, actor="system", cmd="dub", summary="dub")
+
+    master_lines = []
+    class _H(logging.Handler):
+        def emit(self, rec):
+            m = rec.getMessage()
+            if "Master:" in m: master_lines.append(m)
+    _h = _H(); _lg = logging.getLogger("app.services.export_service"); _lg.addHandler(_h)
+
+    def level_export():
+        master_lines.clear()
+        res = asyncio.run(export_service.export_video(LV))
+        def db(a_, b_):
+            raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", str(a_), "-t", str(b_ - a_), "-i", res.path, "-vn", "-ac", "1", "-ar", "16000", "-f", "f32le", "-"], capture_output=True, check=True).stdout
+            y = np.frombuffer(raw, dtype=np.float32).astype(np.float64)
+            return 20 * np.log10(np.sqrt(np.mean(y ** 2)) + 1e-9)
+        gain = float(re.search(r"gain ([+-][\d.]+) dB", master_lines[-1]).group(1))
+        return {"gain": gain, "wind": db(15.0, 15.5), "music": db(24.0, 25.5), "dub": db(1.3, 3.5),
+                "laugh": db(11.3, 12.4), "sigh": db(13.15, 14.05), "tail": db(32.4, 33.2)}
+
+    _orig_limit = mix_service.MAX_LIMITING_DB
+    def with_and_without(limiting_db):
+        mix_service.MAX_LIMITING_DB = limiting_db
+        try:
+            keep = level_export()
+            store.mutate(LV, lambda st_: setattr(st_, "segments", [g for g in st_.segments if g.kind != "vocal"]), actor="user", cmd="d", summary="d")
+            plain = level_export()
+            store.mutate(LV, lseed, actor="system", cmd="seed", summary="seed")
+            store.mutate(LV, ldub, actor="system", cmd="dub", summary="dub")
+            return keep, plain
+        finally:
+            mix_service.MAX_LIMITING_DB = _orig_limit
+
+    for label, lim in (("默认配置（峰值护栏起作用，增益被卡住）", _orig_limit), ("不被峰值护栏卡住（增益 = 目标 − 实测响度）", 20.0)):
+        keep, plain = with_and_without(lim)
+        check(f"⑧ {label}：母带增益和没有这批原声时完全一样（{keep['gain']:+.2f} dB）", keep["gain"] == plain["gain"], (keep["gain"], plain["gain"]))
+        for k, name in (("wind", "风声（只有背景）"), ("music", "背景音乐（只有背景）"), ("dub", "第 1 句配音")):
+            check(f"⑧ {label}：{name}的绝对电平不变（{keep[k]:.2f} vs {plain[k]:.2f} dB）", abs(keep[k] - plain[k]) < 0.1, (keep[k], plain[k]))
+        need = 3.0 if lim == _orig_limit else 0.5     # 放开限幅上限时笑声会被限幅器压掉十来 dB，"响多少"没有意义
+        check(f"⑧ {label}：保留的原声确实在成片里（三处都比没有时响 ≥ {need} dB）",
+              all(keep[k] - plain[k] >= need for k in ("laugh", "sigh", "tail")), {k: round(keep[k] - plain[k], 1) for k in ("laugh", "sigh", "tail")})
+
+    keep, plain = with_and_without(_orig_limit)
+    def stem_db(a_, b_):
+        raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", str(a_), "-t", str(b_ - a_), "-i", os.path.join(SAMPLE, "speech_stem.flac"), "-ac", "1", "-ar", "44100", "-f", "f32le", "-"], capture_output=True, check=True).stdout
+        y = np.frombuffer(raw, dtype=np.float32).astype(np.float64)
+        return 20 * np.log10(np.sqrt(np.mean(y ** 2)) + 1e-9)
+    for k, (a_, b_), name in (("laugh", (11.3, 12.4), "笑声"), ("sigh", (13.15, 14.05), "叹息"), ("tail", (32.4, 33.2), "句尾笑声")):
+        bed = plain[k] - plain["gain"]
+        theory = 10 * np.log10(10 ** (stem_db(a_, b_) / 10) + 10 ** (bed / 10))
+        got = keep[k] - keep["gain"]
+        check(f"⑧ {name}：成片电平 = 人声轨原始电平 + 垫底（功率相加，去掉母带增益），差 {got - theory:+.2f} dB",
+              abs(got - theory) < 0.5, (round(got, 2), round(theory, 2)))
+    _lg.removeHandler(_h)
+else:
+    print("SKIP ⑧ 回归（samples/problem_video 不在）")
+
+# ============================================================================ ⑨ 响度：配音还原到原片这一句的响度，背景和保留的原声保持原始电平
+from app.services import loudness as LD
+
+def tone_wav(path, freq, db, seconds, lead=0.0, rate=16000):
+    """lead 秒静音 + seconds 秒音调（峰值电平 db）。"""
+    x = np.concatenate([np.zeros(int(lead * rate)), tone(rate, int(seconds * rate), freq, db)])
+    write_wav(path, x, rate)
+
+def tone_mp3(path, freq, db, seconds, lead=0.0):
+    wavp = path + ".wav"; tone_wav(wavp, freq, db, seconds, lead)
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", wavp, "-ar", "24000", "-c:a", "libmp3lame", "-b:a", "192k", path], check=True)
+    os.remove(wavp)
+
+LDIR = tempfile.mkdtemp()
+a = np.sin(2 * np.pi * 330 * np.arange(16000) / 16000)
+check("⑨ 响度：同一个信号降 6 dB，量出来差 6 dB", abs(LD.level_db(a * 0.5) - LD.level_db(a) + 6.02) < 0.05, (LD.level_db(a), LD.level_db(a * 0.5)))
+padded = np.concatenate([np.zeros(16000), a, np.zeros(16000)])
+check("⑨ 响度：首尾加静音不改变结果（只统计有声的帧）", abs(LD.level_db(padded) - LD.level_db(a)) < 0.3, (LD.level_db(padded), LD.level_db(a)))
+check("⑨ 响度：全是静音 / 太短 → None（不猜）", LD.level_db(np.zeros(16000)) is None and LD.level_db(a[:100]) is None and LD.level_db(a[:1600]) is None)
+
+ref, mp3 = os.path.join(LDIR, "ref.wav"), os.path.join(LDIR, "t.mp3")
+write_wav(ref, np.concatenate([np.zeros(16000), tone(16000, 32000, 440, -12.0), np.zeros(16000)]), 16000)       # 原片：1~3 秒，-12 dB
+tone_mp3(mp3, 330, -24.0, 1.5, lead=0.4)                                                                          # 配音：-24 dB，开头 0.4 秒静音
+g = LD.align_gain_db(mp3, ref, 1.0, 3.0)
+check("⑨ 配音比原片轻 12 dB → 要加约 +12 dB（配音首部的静音不影响）", g is not None and abs(g - 12.0) <= 0.6, g)
+tone_mp3(mp3, 330, -6.0, 1.5)
+g = LD.align_gain_db(mp3, ref, 1.0, 3.0)
+check("⑨ 配音比原片响 6 dB → 要减约 6 dB", g is not None and abs(g + 6.0) <= 0.6, g)
+tone_mp3(mp3, 330, -60.0, 1.5)
+check("⑨ 差得离谱（配音比原片轻 48 dB）：夹在 +12 dB，不去追", LD.align_gain_db(mp3, ref, 1.0, 3.0) == 12.0)
+check("⑨ 原片那一段没有人声（静音）→ None，不动配音", LD.align_gain_db(mp3, ref, 3.2, 3.9) is None)
+check("⑨ 配音文件坏了 → None，不抛", LD.align_gain_db(os.path.join(LDIR, "nope.mp3"), ref, 1.0, 3.0) is None)
+check("⑨ 线性增益：+6 dB ≈ 1.9953，0 dB = 1", LD.to_linear(6.0) == 1.9953 and LD.to_linear(0.0) == 1.0)
+
+# —— 混音计划：量过的条目带 gain，没量过的形状不变；背景 0 dB
+stg, dg = mk_state()
+s1, s2 = speech("g1", 1.0, 2.0, dg), speech("g2", 3.0, 4.0, dg)
+s1.tts_gain_db = 6.0
+stg.segments = [s1, s2]
+pl = mix_service.build_mix_plan(stg)
+e = {x["id"]: x for x in pl["segments"]}
+check("⑨ 计划：量过的配音带 gain（线性），没量过的没有这个字段", e["g1"].get("gain") == 1.9953 and "gain" not in e["g2"], e)
+check("⑨ 计划：背景是 0 dB（1.0），而且仍然不压低", pl["bed"]["gain"] == 1.0 and pl["bed"]["duck"] == [], pl["bed"])
+v0 = pl["version"]
+s1.tts_gain_db = 3.0
+check("⑨ 增益变了，计划版本号跟着变（播放端据此重取）", mix_service.build_mix_plan(stg)["version"] != v0)
+
+# —— 导出：配音按增益放大，没量过的原样，保留的原声不动
+stg2, dg2 = mk_state()
+s1 = speech("g1", 1.0, 2.0, dg2); s2 = speech("g2", 3.0, 4.0, dg2)
+stg2.segments = [s1, s2, Segment("v1", "0", 5.0, 6.5, "（笑声）", kind="vocal")]
+def level(tlp, a, b):
+    w = wave.open(tlp); r = w.getframerate(); x = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(float); w.close()
+    seg_ = x[int(a * r): int(b * r)]; return 20 * np.log10(np.sqrt(np.mean(seg_ ** 2)) + 1e-9)
+base1 = level(export_service.build_dubbed_timeline(stg2.video_id, stg2, 10.0, mix_service.build_mix_plan(stg2)), 1.1, 1.9)
+s1.tts_gain_db = 6.0
+plan2 = mix_service.build_mix_plan(stg2)
+tl2 = export_service.build_dubbed_timeline(stg2.video_id, stg2, 10.0, plan2)
+kp2 = export_service.build_dubbed_timeline(stg2.video_id, stg2, 10.0, plan2, kept=True)
+check("⑨ 导出：量过的配音被放大了 +6 dB（实测 %.2f dB）" % (level(tl2, 1.1, 1.9) - base1), abs(level(tl2, 1.1, 1.9) - base1 - 6.0) < 0.3, (level(tl2, 1.1, 1.9), base1))
+check("⑨ 导出：没量过的那句不变", abs(level(tl2, 3.1, 3.9) - base1) < 0.3, (level(tl2, 3.1, 3.9), base1))
+kp_before = level(kp2, 5.1, 6.4)
+stg2.segments[0].tts_gain_db = None
+kp_after = level(export_service.build_dubbed_timeline(stg2.video_id, stg2, 10.0, mix_service.build_mix_plan(stg2), kept=True), 5.1, 6.4)
+check("⑨ 导出：保留的原声不受配音增益影响（原始电平）", abs(kp_before - kp_after) < 0.01, (kp_before, kp_after))
+
+# —— 合成时量一次：dub_lines 真的把增益存到行上
+if os.path.exists(os.path.join(SAMPLE, "speech_stem.flac")):
+    import shutil as _sh2
+    from app.services import tts_service as _tts
+    DV = "dubgain0000000000000000000000000"
+    if store.exists(DV): store.delete(DV)
+    dmp4 = os.path.join(TMP, "dg.mp4"); _sh2.copy(os.path.join(SAMPLE, "problem_sample.mp4"), dmp4)
+    store.create(DV, "dg.mp4", dmp4); ddir = video_dir_path(DV)
+    # 参考人声轨：整条 -12 dB 的 440 Hz
+    write_wav(os.path.join(ddir, "vocals.wav"), tone(44100, 44100 * 12, 440, -12.0), 44100)
+    write_wav(os.path.join(ddir, "background.wav"), track(44100, 12.0, []), 44100)
+    def dseed(st_):
+        st_.target_language = "English"; st_.stage = "ready"; st_.enable_dubbing = True
+        st_.speakers = [Speaker("0", "S0", voice="Emily_v3.1")]
+        st_.segments = [Segment("d1", "0", 1.0, 3.0, "你好", translated_text="Hello", tr_fp=""), Segment("d2", "0", 5.0, 7.0, "再见", translated_text="Bye")]
+        for g_ in st_.segments: g_.tr_fp = status.expected_tr_fp(st_, g_)
+    store.mutate(DV, dseed, actor="system", cmd="seed", summary="seed")
+    async def synth_quiet(video_id, segment_id, text, voice, speech_rate=None, target_duration=None, instruction=None):
+        p = _tts.tts_audio_path(video_id, segment_id); os.makedirs(os.path.dirname(p), exist_ok=True)
+        tone_mp3(p, 330, -24.0, 1.5)
+        return p, 1.5
+    _orig_synth = _tts.synthesize_speech; _tts.synthesize_speech = synth_quiet
+    class _J:
+        cancel = type("E", (), {"is_set": staticmethod(lambda: False)})()
+        lines = set(); total = done = 0
+        def check(self): pass
+    try:
+        failed = asyncio.run(jobs.dub_lines(DV, _J()))
+    finally:
+        _tts.synthesize_speech = _orig_synth
+    dst = store.get_state(DV)
+    check("⑨ 合成时量一次：两句配音都存了增益（配音 -24 dB、原片 -12 dB → 约 +12 dB）", not failed and all(g_.tts_gain_db is not None and abs(g_.tts_gain_db - 12.0) <= 0.8 for g_ in dst.segments), [(g_.id, g_.tts_gain_db) for g_ in dst.segments])
+    pv = mix_service.build_mix_plan(dst)
+    check("⑨ 计划里带着这个增益（线性约 4 倍）", all(3.5 < x_.get("gain", 0) < 4.5 for x_ in pv["segments"]), pv["segments"])
+    # 没做人声分离：没有纯人声可比，不量，保持合成原样
+    os.remove(os.path.join(ddir, "vocals.wav"))
+    store.mutate(DV, lambda st_: [setattr(g_, "tts_gain_db", None) for g_ in st_.segments], actor="system", cmd="x", summary="x")
+    _tts.synthesize_speech = synth_quiet
+    try:
+        asyncio.run(jobs.dub_lines(DV, _J(), force=True))
+    finally:
+        _tts.synthesize_speech = _orig_synth
+    check("⑨ 没做人声分离：不量（原声里混着背景，不是纯人声，比不出），保持合成原样", all(g_.tts_gain_db is None for g_ in store.get_state(DV).segments), [g_.tts_gain_db for g_ in store.get_state(DV).segments])
 
 # ============================================================================ 收尾
 print(f"\n合计 {'全部通过' if not fails else str(len(fails)) + ' 项失败: ' + ', '.join(fails)}")

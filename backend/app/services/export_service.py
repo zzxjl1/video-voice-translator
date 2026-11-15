@@ -184,9 +184,17 @@ def build_dubbed_timeline(
     duration: float,
     plan: dict,
     progress: Optional[Callable[[int, int], None]] = None,
+    *,
+    kept: bool = False,
 ) -> Optional[str]:
     """
     按 mix plan 把每段配音写进一条 WAV。返回 WAV 路径，一段都放不进去时 None。
+
+    `kept=True` 只放"保留的原声"（kind=vocal 的行：笑、叹、咳，来自人声轨），写进另一条
+    `kept_original.wav`；默认只放配音。**分开两条的原因是响度**：母带只量一次、整条混音加同一个
+    增益（见 `_mux`）。原声片段比配音响，混在同一条里会把测出来的响度抬高，增益随之降下来 ——
+    BGM 和配音就被整体压低了（实测 0.9 dB）。分开之后响度只量配音 + 垫底，和没有这批片段时
+    逐位一致，原声片段作为第三路混进去。
 
     每段怎么摆全部来自 plan（mix_service 生成，与播放同源）：atempo 先把这句
     变速到与预览一致，`trim` 只在"夹到上限仍装不下"时出现，首尾淡出消掉 TTS
@@ -202,16 +210,18 @@ def build_dubbed_timeline(
     path_by_id = {seg.id: seg.audio_path for seg in state.segments}
     # 保留原声的条目（kind=vocal：笑、叹、咳）：音频是人声轨里这一行的时间窗，不是 TTS
     vocals_path = mix_service.vocals_audio_path_full(video_id)
-    entries = plan["segments"]
+    entries = [e for e in plan["segments"] if (e.get("source") == "vocals") == kept]
     if not entries:
-        logger.warning(f"[{video_id}] No synthesized segments available for export")
+        if not kept:
+            logger.warning(f"[{video_id}] No synthesized segments available for export")
         return None
 
     total_samples = int(duration * sample_rate) + sample_rate  # +1s tail
     if total_samples <= 0:
         raise RuntimeError("Cannot determine video duration for export")
 
-    timeline_path = os.path.join(get_video_dir(video_id), "dubbed_timeline.wav")
+    filename = "kept_original.wav" if kept else "dubbed_timeline.wav"
+    timeline_path = os.path.join(get_video_dir(video_id), filename)
     raw_path = f"{timeline_path}.raw"
     # 时间轴用**磁盘映射**（memmap）而不是内存数组（P2 #26）：2 小时 @24kHz 的
     # int32 缓冲是 ~691MB —— RSS 不与视频时长成正比。
@@ -237,6 +247,11 @@ def build_dubbed_timeline(
             continue
 
         samples = np.frombuffer(pcm, dtype=np.int16).astype(np.int32)
+        gain = entry.get("gain")
+        if gain and not keep_original and abs(gain - 1.0) > 1e-4:
+            # 还原到原片这一句的响度。在 int32 里乘，写出时再整体削到 int16 —— 不在这里削，
+            # 否则一句里的个别峰值会被提前削平；真正的峰值保护是母带最后那个限幅器。
+            samples = (samples * float(gain)).astype(np.int32)
         slot_samples = int(max(0.0, entry["end"] - entry["start"]) * sample_rate)
         cap = int(entry["trim"] * sample_rate) if entry.get("trim") else slot_samples
         samples = samples[: max(0, min(len(samples), cap))]
@@ -274,7 +289,6 @@ def build_dubbed_timeline(
             pass
         return None
 
-    timeline_path = os.path.join(get_video_dir(video_id), "dubbed_timeline.wav")
     with wave.open(timeline_path, "wb") as wav:
         wav.setnchannels(1)
         wav.setsampwidth(SAMPLE_WIDTH)
@@ -294,7 +308,7 @@ def build_dubbed_timeline(
         logger.warning(f"[{video_id}] could not remove {raw_path}")
 
     logger.info(
-        f"[{video_id}] Dubbed timeline built: {placed}/{len(entries)} segments, "
+        f"[{video_id}] {'Kept-original' if kept else 'Dubbed'} timeline built: {placed}/{len(entries)} segments, "
         f"{duration:.1f}s @ {sample_rate}Hz -> {timeline_path}"
     )
     return timeline_path
@@ -632,9 +646,15 @@ def _mux(
     default_subtitle: int = 0,
     master: Optional[dict] = None,
     dubbed: bool = True,
+    kept_path: Optional[str] = None,
 ) -> None:
     """
-    Combine the original video stream + dubbed timeline (+ ducked bed + subtitles).
+    Combine the original video stream + dubbed timeline (+ ducked bed + kept originals + subtitles).
+
+    `kept_path`：保留的原声（笑、叹、咳）。它**参与混音，但不参与响度测量** —— 母带增益由
+    配音 + 垫底决定，和没有这批片段时一样；否则原声片段（比配音响）会把测出的响度抬高，
+    增益被拉低，BGM 和配音跟着整体变轻。峰值也只看配音 + 垫底：原声片段的瞬时峰值由后面的
+    限幅器兜（和所有峰值一样），不为它降低整条混音的增益。
 
     仅字幕模式（dubbed=False）走最底部的直通分支：音频从源视频 `-c:a copy`，
     比特级不动 —— 不解码、不混音、不响度处理。"保留原本声音不动"就是字面意思。
@@ -696,20 +716,27 @@ def _mux(
     master = master or {}
 
     base_cmd = ["ffmpeg", "-y", "-v", "warning", "-i", video_path, "-i", timeline_path]
+    mix_labels = ["[1:a]"]
+    next_input = 2
     if bed_path:
         base_cmd += ["-i", bed_path]
-    # 字幕输入最后加：filter_complex 按序号引用 0/1/2，提前插入会悄悄把音频
-    # 映射到错的流上。
-    first_subtitle_input = 3 if bed_path else 2
+        mix_labels.append(f"[{next_input}:a]")
+        next_input += 1
+    if kept_path:
+        base_cmd += ["-i", kept_path]
+        mix_labels.append(f"[{next_input}:a]")
+        next_input += 1
+    # 字幕输入最后加：filter_complex 按序号引用，提前插入会悄悄把音频映射到错的流上。
+    first_subtitle_input = next_input
     for subtitle_input in inputs:
         base_cmd += ["-i", subtitle_input.path]
 
-    if bed_path:
-        pre_filter = "[1:a][2:a]amix=inputs=2:duration=first:normalize=0[mix];[mix]"
+    if len(mix_labels) > 1:
+        pre_filter = "".join(mix_labels) + f"amix=inputs={len(mix_labels)}:duration=first:normalize=0[mix];[mix]"
     else:
-        pre_filter = "[1:a]"
+        pre_filter = mix_labels[0]
 
-    lufs, peak_dbfs = _measure_mix(timeline_path, bed_path)
+    lufs, peak_dbfs = _measure_mix(timeline_path, bed_path)       # 不含 kept_path：见上
     filter_complex = f"{pre_filter}{master_filter(video_id, lufs, peak_dbfs, master)}[aout]"
 
     cmd = base_cmd + [
@@ -844,6 +871,7 @@ async def _export_video_locked(
     dubbed = mix_plan.get("dubbed", True)
     timeline_path = None
     bed_path = None
+    kept_path = None
 
     if dubbed:
         timeline_task = asyncio.ensure_future(
@@ -870,6 +898,9 @@ async def _export_video_locked(
 
         bed_path = await asyncio.get_running_loop().run_in_executor(
             None, lambda: build_ducked_bed(video_id, state, mix_plan, duration)
+        )
+        kept_path = await loop.run_in_executor(
+            None, lambda: build_dubbed_timeline(video_id, state, duration, mix_plan, kept=True)
         )
     else:
         # 仅字幕模式：没有配音轨也没有垫底 —— 音频在 _mux 里从源视频比特级
@@ -906,6 +937,7 @@ async def _export_video_locked(
             default_index,
             master=mix_plan["master"],
             dubbed=dubbed,
+            kept_path=kept_path,
         ),
     )
 

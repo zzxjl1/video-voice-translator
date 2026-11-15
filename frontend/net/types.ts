@@ -63,6 +63,8 @@ export interface MixPlanSegment {
   videoRate: number;
   trim: number | null;
   played: number;
+  /** 这一句配音要乘多少（线性），才和原片这一句的人声一样响。没量过 = 没有这个字段，按 1。 */
+  gain?: number;
   /** 'vocals' = 音频不是配音，而是人声轨里这一行的时间窗（保留的原声）。 */
   source?: 'vocals';
 }
