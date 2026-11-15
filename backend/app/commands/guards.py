@@ -101,12 +101,18 @@ def _insert_line(ctx: Ctx, args: dict, notes: list[str]) -> dict:
         raise Reject(f"起点 {start:.1f}s 超出了音频长度（{total:.1f}s）")
 
     if (args.get("kind") or "speech") == "vocal":
-        _check_vocal_window(state, start, end, set())
+        # 顺序很重要：AI 给的只是"大概位置"，常常稍微压到旁边那句台词的边上。先吸附到检测到的声音
+        # 边界（候选本身已经抠掉了所有台词，不会再和台词重叠），再判断。先检查重叠的话，差 0.1 秒
+        # 的大概位置会被无谓地拒绝（端到端测试里真的发生过）。
+        if end - start > VOCAL_MAX_S:
+            _check_vocal_window(state, start, end, set())             # 只会抛"太长"
         cands = audio_energy.find_candidates(ctx.video_id, state.segments)
         if cands is None:
-            return args                                   # 没有音轨：没有证据，不拦
+            _check_vocal_window(state, start, end, set())             # 没有音轨：没有证据可吸附，只守住不漏原声这一条
+            return args
         best = max(cands, key=lambda c: _overlap(start, end, c["start"], c["end"]), default=None)
         if best is None or _overlap(start, end, best["start"], best["end"]) < 0.5 * (end - start):
+            _check_vocal_window(state, start, end, set())             # 压在说话上：给出更具体的原因
             raise Reject("这段时间里没有\"ASR 漏掉的声音\"：要么根本没有声音，要么已经被某一句台词（或之前插入的行）覆盖了",
                          hint="先用 find_uncovered_sounds 看哪里有声音没被台词覆盖，再用 listen 听一下")
         new_start, new_end = best["start"], best["end"]

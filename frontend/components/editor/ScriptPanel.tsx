@@ -20,7 +20,7 @@ export interface ScriptActions {
   seek: (time: number) => void;
   redub: (line: Line) => void;
   retranslate: (line: Line, hint?: 'longer' | 'shorter') => void;
-  mark: (line: Line, kind: 'music' | 'noise' | 'speech') => void;
+  mark: (line: Line, kind: 'music' | 'noise' | 'vocal' | 'speech') => void;
   askAbout: (line: Line) => void;
 }
 
@@ -34,6 +34,8 @@ interface Props {
   dubbing: boolean;
   actions: ScriptActions;
 }
+
+const KIND_LABEL: Record<string, string> = { music: '音乐', noise: '噪音', vocal: '人声非语言' };
 
 const STATUS: Record<string, { text: string; tone: string }> = {
   stale: { text: '需更新', tone: 'bg-amber-50 text-amber-700 border-amber-200' },
@@ -140,7 +142,7 @@ const LineCard = memo(({ line, speaker, color, active, flashBy, mixEntry, dubbin
           >
             {speaker?.name ?? `Speaker ${line.speakerId}`}
           </button>
-          {nonSpeech && <Tag tone="bg-purple-50 text-purple-600 border-purple-200">{line.kind === 'music' ? '音乐' : '噪音'}</Tag>}
+          {nonSpeech && <Tag tone="bg-purple-50 text-purple-600 border-purple-200">{KIND_LABEL[line.kind] ?? line.kind}</Tag>}
           {line.muted && <Tag tone="bg-gray-100 text-gray-500 border-gray-200">已静音</Tag>}
           {line.hidden && <Tag tone="bg-amber-50 text-amber-600 border-amber-200">字幕隐藏</Tag>}
           {line.trSuspect && <Tag tone="bg-red-50 text-red-600 border-red-200" title="译文看起来还是原文的文字，可能根本没翻译">疑似未翻译</Tag>}
@@ -183,6 +185,22 @@ const LineCard = memo(({ line, speaker, color, active, flashBy, mixEntry, dubbin
           <Editable label="Translation" value={line.translation} placeholder="译文会出现在这里…" onCommit={(v) => actions.edit(line.id, 'translation', v, line.line)} />
         )}
       </div>
+
+      {/* 保留原声：笑、叹、咳不用 TTS 重造，导出时把人声轨里这一段放回去 */}
+      {line.kind === 'vocal' && (
+        <div className="pt-1 space-y-2">
+          {line.audioUrl && !line.muted ? (
+            <>
+              <audio src={line.audioUrl} controls preload="none" className="w-full h-8 opacity-70 hover:opacity-100 transition-opacity" />
+              <div className="text-[10px] text-gray-400">导出时保留这一段原声，不配音、不出字幕</div>
+            </>
+          ) : (
+            <div className="text-[10px] text-gray-400">
+              {line.muted ? '已静音：导出时不会放这一段' : '没做过人声分离：这一段原声本来就在垫底的声音里，不需要另外保留'}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 配音 */}
       {dubbing && !nonSpeech && !line.muted && (
@@ -434,7 +452,12 @@ const LineMenu: React.FC<{ line: Line; dubbing: boolean; actions: ScriptActions;
       <div className="my-1 border-t border-claude-border/60" />
       {nonSpeech
         ? item('标回语音', () => actions.mark(line, 'speech'))
-        : item('标为音乐 / 非语音', () => actions.mark(line, 'music'), '不翻译、不配音、不出字幕', true)}
+        : (
+          <>
+            {item('标为笑声 / 咳嗽等', () => actions.mark(line, 'vocal'), '不配音，导出时保留这段原声')}
+            {item('标为音乐 / 非语音', () => actions.mark(line, 'music'), '不翻译、不配音、不出字幕', true)}
+          </>
+        )}
     </div>
   );
 };

@@ -6,7 +6,8 @@
  */
 
 export type LineStatus = 'none' | 'missing' | 'stale' | 'fresh';
-export type SegmentKind = 'speech' | 'music' | 'noise';
+/** vocal = 人发出的非语言声（笑、叹、咳）：分离过人声的工程导出时保留这段原声，不用 TTS 重造。 */
+export type SegmentKind = 'speech' | 'music' | 'noise' | 'vocal';
 export type Stage = 'uploaded' | 'initializing' | 'ready' | 'failed';
 
 export interface Line {
@@ -62,6 +63,8 @@ export interface MixPlanSegment {
   videoRate: number;
   trim: number | null;
   played: number;
+  /** 'vocals' = 音频不是配音，而是人声轨里这一行的时间窗（保留的原声）。 */
+  source?: 'vocals';
 }
 
 export interface MixPlan {

@@ -146,6 +146,32 @@ def find_candidates(video_id: str, segments) -> Optional[list[dict]]:
     return out
 
 
+FOCUS_PAD_S = 0.3           # 聚焦判断时，时间窗前后最多多留这么多
+
+
+def focus_window(video_id: str, segments, seg, pad: float = FOCUS_PAD_S) -> tuple[float, float]:
+    """
+    给"只对这一行再判断一次"剪音频用的时间窗：这一行前后各留一点余量，**碰到邻居就停**。
+
+    为什么要留余量：被 ASR 吞掉的那句话往往比这一行多说一点（样本里 B 的反驳比这一行晚 0.15 秒结束），
+    严格按 ASR 的时间窗剪会把它的尾巴剪掉（找回被吞的话 5/5 → 2/4）。
+    为什么碰到邻居要停：余量会把紧挨着的另一句台词、或者候选声音（笑声）的头几百毫秒剪进来，
+    模型会把它当成"第二个声音"（单人说话的对照行误报 0/8 → 2/4）。
+
+    邻居 = 别的行的边界、以及上面算出的"没被台词覆盖的声音"的边界。两者都是确定的。
+    """
+    lo, hi = max(0.0, seg.start_time - pad), seg.end_time + pad
+    eps = 1e-6
+    edges: list[tuple[float, float]] = [(g.start_time, g.end_time) for g in segments if g.id != seg.id]
+    edges += [(c["start"], c["end"]) for c in (find_candidates(video_id, segments) or [])]
+    for a, b in edges:
+        if b <= seg.start_time + eps:
+            lo = max(lo, b)
+        if a >= seg.end_time - eps:
+            hi = min(hi, a)
+    return min(lo, seg.start_time), max(hi, seg.end_time)
+
+
 def is_separated(video_id: str) -> bool:
     """听的是不是人声轨。不是的话候选里会混着风声、音乐这类背景声。"""
     return vocals_audio_path(video_id) is not None

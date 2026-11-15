@@ -157,6 +157,21 @@ check("② is_separated：有 vocals_asr.wav 才算分离过", AE.is_separated(V
 os.remove(os.path.join(D, "vocals_asr.wav"))
 check("② 没有 vocals_asr.wav → 未分离", not AE.is_separated(VID))
 
+# 聚焦窗口：留余量，碰到邻居就停
+fresh(); D = video_dir_path(VID)
+write_wav(os.path.join(D, "extracted_audio.wav"), track(16000, 14.0, [(1.0, 3.0, 300), (3.2, 4.0, 500), (8.0, 9.0, 300)]), 16000)
+fw_lines = [L(1, 1.0, 3.0), L(2, 8.0, 9.0)]
+lo, hi = AE.focus_window(VID, fw_lines, fw_lines[1])
+check("② 聚焦窗口：没有邻居挡着（最近的声音在 4.0 秒，离得很远）→ 前后各留满 0.3 秒", abs(lo - 7.7) < 1e-6 and abs(hi - 9.3) < 1e-6, (lo, hi))
+lo, hi = AE.focus_window(VID, fw_lines, fw_lines[0])
+check("② 聚焦窗口：紧挨着一段没被台词覆盖的声音（3.2 秒起）→ 终点停在那里，不把它剪进来", abs(hi - 3.2) <= 0.06 and abs(lo - 0.7) < 1e-6, (lo, hi))
+nb = [L(1, 1.0, 3.0), L(2, 3.1, 5.0), L(3, 5.2, 6.0)]
+check("② 聚焦窗口：紧挨着别的台词 → 在那句的边界停下（3.0~3.1 之间，不压过去）", AE.focus_window(VID, nb, nb[1])[0] == 3.0 and AE.focus_window(VID, nb, nb[1])[1] == 5.2, AE.focus_window(VID, nb, nb[1]))
+check("② 聚焦窗口：永远包住这一行本身，起点不小于 0", (lambda w: w[0] <= 1.0 and w[1] >= 3.0)(AE.focus_window(VID, nb, nb[0])) and AE.focus_window(VID, [L(1, 0.1, 1.0)], L(1, 0.1, 1.0))[0] == 0.0)
+ov = [L(1, 1.0, 5.0), L(2, 2.0, 6.0)]
+w = AE.focus_window(VID, ov, ov[0])
+check("② 聚焦窗口：重叠的两行互不是对方的边界（那就是要一起听的内容）", w[0] <= 1.0 and w[1] >= 5.0, w)
+
 # 真实样本（合成音轨 + 真实 ASR 基线）：3 个非语言声全部命中、零误报
 SAMPLE = os.path.join(os.path.dirname(BACKEND), "samples", "problem_video")
 if os.path.exists(os.path.join(SAMPLE, "speech_stem.flac")) and os.path.exists(os.path.join(SAMPLE, "asr_baseline", "asr_vocals.json")):
@@ -342,6 +357,19 @@ check("④ 补一句话但那里是静音 → 拒绝（不能凭空造）", not 
 r = run("insert_line", {"after_line": 2, "start": 7.0, "end": 7.8, "text": "被漏掉的一句", "speaker": "0"})
 check("④ 补一句话、那里有声音 → 放行", r["ok"] and store.get_state(VID).segments[2].text == "被漏掉的一句", r)
 
+gfresh()
+write_wav(os.path.join(video_dir_path(VID), "extracted_audio.wav"),
+          track(16000, 14.0, [(1.0, 3.0, 300), (3.5, 6.0, 400), (9.0, 11.0, 300), (11.1, 12.0, 500)]), 16000)
+r = run("insert_line", {"after_line": 3, "start": 10.9, "end": 12.2, "text": "（笑声）", "kind": "vocal"})
+stt = store.get_state(VID)
+check("④ AI 给的大概窗口压到旁边台词的边上（差 0.1 秒）：先吸附到声音边界，不因此被拒绝",
+      r["ok"] and abs(stt.segments[3].start_time - 11.1) <= 0.06 and abs(stt.segments[3].end_time - 12.0) <= 0.06, brief(r))
+gfresh()
+write_wav(os.path.join(video_dir_path(VID), "extracted_audio.wav"),
+          track(16000, 14.0, [(1.0, 3.0, 300), (3.5, 6.0, 400), (9.0, 11.0, 300), (11.1, 12.0, 500)]), 16000)
+r = run("insert_line", {"after_line": 3, "start": 9.5, "end": 11.4, "text": "（笑声）", "kind": "vocal"})
+check("④ 窗口大部分压在台词上、只蹭到一点声音边界 → 仍然拒绝，原因是会漏出原声", not r["ok"] and "第 3 句" in r["error"] and "人声" in r["error"], r)
+
 gfresh(with_audio=False)
 r = run("insert_line", {"after_line": 2, "start": 6.0, "end": 7.0, "text": "（笑声）", "kind": "vocal"})
 check("④ 没有音轨：没有证据就不拦（只剩和台词重叠这条不需要音轨的规则）", r["ok"], r)
@@ -431,9 +459,95 @@ check("⑤ 合并后的下一条字幕照常（前一条合并字幕截在它开
 bil = dataclasses.replace(sty, track="bilingual")
 cues = SS.build_cues([sub_seg("a", 0.0, 3.0, "Hello.", orig="你好"), sub_seg("b", 1.0, 3.0, "Hi.", orig="嗨")], bil, probe_audio=False)
 check("⑤ 双语轨道：每个人的译文在前、原文在后，各占一行", cues[0].lines(bil) == ["- Hello.", "- Hi.", "- 你好", "- 嗨"], cues[0].lines(bil))
-cues = SS.build_cues([sub_seg("b", 1.0, 3.0, "Second."), sub_seg("a", 0.0, 2.0, "First.")], sty, probe_audio=False)
-check("⑤ 输入顺序乱也按开始时间排：先说的在上面一行", cues[0].lines(sty) == ["- First.", "- Second."], cues[0].lines(sty))
-check("⑤ 合成的字幕在预览接口的形状里有 lines（前端按它画）", cues[0].lines(sty) and cues[0].text == "")
+ordered_cues = SS.build_cues([sub_seg("b", 1.0, 3.0, "Second."), sub_seg("a", 0.0, 2.0, "First.")], sty, probe_audio=False)
+check("⑤ 输入顺序乱也按开始时间排：先说的在上面一行", ordered_cues[0].lines(sty) == ["- First.", "- Second."], ordered_cues[0].lines(sty))
+check("⑤ 合成的字幕在预览接口的形状里有 lines（前端按它画），text 为空", ordered_cues[0].lines(sty) and ordered_cues[0].text == "")
+orig_sty = dataclasses.replace(sty, track="original")
+cues = SS.build_cues([sub_seg("a", 0.0, 3.0, "x", orig="[sad]")], orig_sty, probe_audio=False)
+check("⑤ 原文只有语气标签的行（画面上没有字可显示）不出空字幕", cues == [], cues)
+cues = SS.build_cues([sub_seg("a", 0.0, 3.0, "Hello.", orig="你好"), sub_seg("b", 1.0, 3.0, "x", orig="[sad]")], orig_sty, probe_audio=False)
+check("⑤ 重叠的两行里有一行没有可显示的文字 → 退化成普通字幕，没有空的 “- ” 行",
+      len(cues) == 1 and cues[0].text == "你好" and cues[0].forced_lines is None and "- " not in "".join(cues[0].lines(orig_sty)), [c.lines(orig_sty) for c in cues])
+
+# ============================================================================ ⑥ 端到端：真实样本 → AI 经规则层插入 → 真导出 → 从成片里测
+# 样本：合成的两条轨（理想的人声轨 / 背景轨）+ 真实 ASR 的输出。AI 只给"大概位置"，
+# 起止由规则层按检测到的声音边界对齐；然后真的导出一次，再把这三个 vocal 行静音导出一次做对照，
+# 比较"成片里这三处相对配音的响度"——只有保留原声的那次，这三处才有笑声和叹息。
+if os.path.exists(os.path.join(SAMPLE, "speech_stem.flac")) and os.path.exists(os.path.join(SAMPLE, "asr_baseline", "asr_vocals.json")):
+    import shutil
+    E2E = "vocale2e00000000000000000000000"
+    if store.exists(E2E): store.delete(E2E)
+    sample_mp4 = os.path.join(TMP, "sample.mp4"); shutil.copy(os.path.join(SAMPLE, "problem_sample.mp4"), sample_mp4)
+    store.create(E2E, "sample.mp4", sample_mp4)
+    ed = video_dir_path(E2E)
+    def conv(src_name, out_name, rate):
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", os.path.join(SAMPLE, src_name) if src_name != "MP4" else sample_mp4,
+                        "-ac", "1", "-ar", str(rate), os.path.join(ed, out_name)], check=True)
+    conv("speech_stem.flac", "vocals.wav", 44100); conv("speech_stem.flac", "vocals_asr.wav", 16000)
+    conv("background_stem.flac", "background.wav", 44100); conv("MP4", "extracted_audio.wav", 16000)
+    asr = json.load(open(os.path.join(SAMPLE, "asr_baseline", "asr_vocals.json"), encoding="utf-8"))["parsed_lines"]
+    def seed_e2e(st):
+        st.target_language = "English"; st.stage = "ready"; st.enable_dubbing = True
+        st.speakers = [Speaker("0", "Speaker 0", voice="Emily_v3.1")]
+        st.segments = [Segment(l["id"], "0", l["start_time"], l["end_time"], l["text"], translated_text=f"English line {i}")
+                       for i, l in enumerate(asr, 1)]
+        for sg in st.segments: sg.tr_fp = status.expected_tr_fp(st, sg)
+    store.mutate(E2E, seed_e2e, actor="system", cmd="seed", summary="seed")
+    for sg in store.get_state(E2E).segments:
+        from app.models import tts_audio_path
+        ffmpeg_mp3(tts_audio_path(E2E, sg.id), 330, 1.5)
+    def mark_dubbed(st):
+        for sg in st.segments: sg.tts_fp = status.expected_tts_fp(st, sg); sg.actual_duration = 1.5
+    store.mutate(E2E, mark_dubbed, actor="system", cmd="dub", summary="dub")
+    def ai(name, args=None): return asyncio.run(R.execute(E2E, name, args or {}, actor="ai"))
+
+    # AI 只凭 find_uncovered_sounds 的结果和大概位置插入
+    found = ai("find_uncovered_sounds")
+    check("⑥ AI 先问有哪些没被台词覆盖的声音：3 个，已做过分离所以没有“结果偏多”的警告",
+          found["ok"] and found["result"]["count"] == 3 and "warning" not in found["result"], brief(found))
+    plan_ins = [(3, 11.0, 12.7, "（笑声）"), (4, 12.9, 14.3, "（叹气）"), (9, 32.2, 33.5, "（笑声）")]
+    notes = []
+    for after, a, b, label in plan_ins:
+        r = ai("insert_line", {"after_line": after, "start": a, "end": b, "text": label, "kind": "vocal"})
+        check(f"⑥ AI 在第 {after} 句后插入 {label}：放行", r["ok"], brief(r))
+        notes += r.get("result", {}).get("guard_notes", [])
+    check("⑥ 三处起止都被规则层对齐到了检测到的声音边界（给的是大概位置）", len(notes) == 3 and all("吸附" in n for n in notes), notes)
+    es = store.get_state(E2E)
+    vocal = [(i + 1, g) for i, g in enumerate(es.segments) if g.kind == "vocal"]
+    truth_nv = [e for e in truth["events"] if e["category"] == "nonverbal_human" and e["id"] in truth["expected"]["uncovered_voice"]]
+    check("⑥ 对齐后的窗口和真值差不到 0.1 秒", len(vocal) == 3 and all(abs(g.start_time - e["start"]) < 0.1 and abs(g.end_time - e["end"]) < 0.1
+          for (_, g), e in zip(vocal, truth_nv)), [(g.start_time, g.end_time) for _, g in vocal])
+    check("⑥ 再问一次：没有剩下的了（插入的行把候选覆盖掉，幂等）", ai("find_uncovered_sounds")["result"]["count"] == 0)
+    c2 = TestClient(app)
+    keep_urls = [view.segment_view(es, g, i)["audioUrl"] for i, g in enumerate(es.segments) if g.kind == "vocal"]
+    check("⑥ 三行都有预览地址，接口真的返回对应时长的 wav",
+          all(u and (lambda r: r.status_code == 200 and abs(wave.open(io.BytesIO(r.content)).getnframes() / config.EXPORT_SAMPLE_RATE - (g.end_time - g.start_time)) < 0.03)(c2.get(u))
+              for u, (_, g) in zip(keep_urls, vocal)), keep_urls)
+    mp = mix_service.build_mix_plan(store.get_state(E2E))
+    check("⑥ 混音计划：7 句配音 + 3 条保留原声", sum(1 for e in mp["segments"] if e.get("source") == "vocals") == 3 and len(mp["segments"]) == 10, len(mp["segments"]))
+
+    def export_levels():
+        res = asyncio.run(export_service.export_video(E2E))
+        pcm = subprocess.run(["ffmpeg", "-v", "error", "-i", res.path, "-vn", "-ac", "1", "-ar", "16000", "-f", "f32le", "-"],
+                             capture_output=True, check=True).stdout
+        y = np.frombuffer(pcm, dtype=np.float32).astype(np.float64)
+        def db(a, b):
+            seg_ = y[int(a * 16000): int(b * 16000)]
+            return 20 * np.log10(np.sqrt(np.mean(seg_ ** 2)) + 1e-9)
+        ref = db(1.2, 3.6)                                     # 第 1 句的配音：用它做参照，消掉响度归一带来的整体增益差
+        return {"laugh1": db(11.3, 12.4) - ref, "sigh": db(13.15, 14.05) - ref, "laugh2": db(32.4, 33.2) - ref,
+                "music_only": db(24.0, 25.5) - ref, "wind_only": db(15.0, 15.5) - ref}
+    kept = export_levels()
+    for _, g in vocal:
+        asyncio.run(R.execute(E2E, "set_muted", {"lines": [store.get_state(E2E).segments.index(store.get_state(E2E).segment(g.id)) + 1], "muted": True}, actor="user"))
+    dropped = export_levels()
+    for k in ("laugh1", "sigh", "laugh2"):
+        # 实测：笑声 +10.8 dB、叹息 +4.3 dB、句尾笑声 +3.9 dB（它压在背景音乐下面）；不保留时差值是 0.0。门槛放在 3 dB。
+        check(f"⑥ 成片里 {k} 处：保留原声比不保留响 ≥ 3 dB（{kept[k]:.1f} vs {dropped[k]:.1f}，都是相对配音）", kept[k] - dropped[k] >= 3.0, (kept[k], dropped[k]))
+    check("⑥ 别处没被动到：只有背景音乐 / 只有风声的地方，两次成片的相对响度差不到 1.5 dB",
+          abs(kept["music_only"] - dropped["music_only"]) < 1.5 and abs(kept["wind_only"] - dropped["wind_only"]) < 1.5, (kept, dropped))
+else:
+    print("SKIP ⑥ 端到端（samples/problem_video 不在）")
 
 # ============================================================================ 收尾
 print(f"\n合计 {'全部通过' if not fails else str(len(fails)) + ' 项失败: ' + ', '.join(fails)}")
