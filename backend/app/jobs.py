@@ -204,6 +204,7 @@ async def step_transcribe(video_id: str, job: Job, server_url: str) -> None:
     )
 
     def apply(s):
+        s.sounds_scanned = False                  # 新的转写 → 新的扫描
         s.segments = [Segment(id=l["id"], speaker_id=l["speaker_id"], start_time=l["start_time"],
                               end_time=l["end_time"], text=l["text"]) for l in lines]
         ids = sorted({seg.speaker_id for seg in s.segments})
@@ -216,6 +217,28 @@ async def step_transcribe(video_id: str, job: Job, server_url: str) -> None:
     except OSError as e:
         logger.warning(f"[{video_id}] could not save word timestamps: {e}")
     _emit(video_id, job, {"phase": "asr", "status": "done", "lines": len(lines)})
+
+
+async def step_sounds(video_id: str, job: Job) -> dict:
+    """
+    ASR 没转写的非语言声：人声轨上有声音、但没有台词覆盖的片段。
+
+    做过人声分离的工程，其中不长的片段直接标成 `kind=vocal`（导出时保留原声，可撤销）；其余只写进
+    报告，由聊天里的 AI 提示、人来判断。纯确定性、不调用模型。失败只降级，绝不阻断初始化。
+    返回写进 init_report["sounds"] 的小结。
+    """
+    from app.services import sound_scan
+    try:
+        state = store.require_state(video_id)
+        # 耗时的（读整条音轨算能量）放线程里；写状态必须在事件循环线程里做（bus.publish 不是线程安全的）
+        plan = await _run_in_thread(sound_scan.classify, video_id, state)
+        job.check()
+        return sound_scan.apply(video_id, plan)
+    except JobCancelled:
+        raise
+    except Exception as e:  # 增强不是依赖
+        logger.warning(f"[{video_id}] sound scan failed (continuing without it): {e}")
+        return {}
 
 
 async def step_review(video_id: str, job: Job, server_url: str) -> None:
@@ -472,6 +495,14 @@ async def initialize(video_id: str, job: Job, server_url: str) -> dict:
     try:
         job.step = "转写"
         await step_transcribe(video_id, job, server_url)
+        job.check()
+
+        # 放在转写之后、审听之前（而不是真正的末尾）：效果一样 —— vocal 行不翻译不配音 —— 但后面任何一步
+        # 失败，这次标注和报告也不会丢。
+        job.step = "声音"
+        sounds = await step_sounds(video_id, job)
+        if sounds:
+            report["sounds"] = sounds
         job.check()
 
         job.step = "审听"

@@ -549,6 +549,251 @@ if os.path.exists(os.path.join(SAMPLE, "speech_stem.flac")) and os.path.exists(o
 else:
     print("SKIP ⑥ 端到端（samples/problem_video 不在）")
 
+# ============================================================================ ⑦ 初始化时自动标出 ASR 漏掉的非语言声
+# 只有这一类自动应用：边界是音轨能量定的（确定），结论只有一种。其余（太长、数量异常）只写进报告、
+# 由聊天里的 AI 提示，人来判断。
+from app import agent, jobs
+from app.services import sound_scan
+from app.commands import guards as G
+
+class FJ:                                       # 任务的最小替身：step_sounds 只用 check()
+    def check(self): pass
+
+def sfresh(sounds, separated=True, dur=20.0, lines=None):
+    """sounds / lines: [(起, 止)]。人声轨上台词是 300 Hz，没被覆盖的声音是 500 Hz。"""
+    lines = lines if lines is not None else [(1.0, 3.0), (3.5, 6.0), (9.0, 11.0)]
+    fresh(); d = video_dir_path(VID)
+    def seed(st):
+        st.segments = [Segment(f"l{i}", str(i % 2), a, b, f"原文{i}", translated_text=f"tr{i}") for i, (a, b) in enumerate(lines)]
+        st.sounds_scanned = False
+    store.mutate(VID, seed, actor="system", cmd="seed", summary="seed")
+    bursts = [(a, b, 300) for a, b in lines] + [(a, b, 500) for a, b in sounds]
+    x = track(16000, dur, bursts)
+    if separated:
+        write_wav(os.path.join(d, "vocals_asr.wav"), x, 16000)
+        write_wav(os.path.join(d, "vocals.wav"), track(44100, dur, bursts), 44100)
+        write_wav(os.path.join(d, "background.wav"), track(44100, dur, []), 44100)
+    else:
+        write_wav(os.path.join(d, "extracted_audio.wav"), x, 16000)
+
+def step():
+    return asyncio.run(jobs.step_sounds(VID, FJ()))
+
+# ---- 基本：分离过 → 不长的自动标，位置和说话人对，可撤销
+sfresh([(0.0, 0.5), (7.0, 7.8), (8.1, 8.6), (12.0, 13.0)])
+before_ids = [g.id for g in store.get_state(VID).segments]
+rep = step()
+stt = store.get_state(VID)
+kinds = [g.kind for g in stt.segments]
+check("⑦ 4 处没被台词覆盖的声音全部标成 vocal，并插在正确的位置（句首 / 第 2 句后两处 / 第 3 句后）",
+      kinds == ["vocal", "speech", "speech", "vocal", "vocal", "speech", "vocal"], kinds)
+vs = [g for g in stt.segments if g.kind == "vocal"]
+check("⑦ 起止是检测到的声音边界，标签是中性的“非语言声”（没有模型就不知道是笑还是叹，不乱猜）",
+      all(abs(g.start_time - a) <= 0.06 and abs(g.end_time - b) <= 0.06 for g, (a, b) in zip(vs, [(0.0, 0.5), (7.0, 7.8), (8.1, 8.6), (12.0, 13.0)]))
+      and all(g.text == sound_scan.LABEL for g in vs), [(g.start_time, g.end_time, g.text) for g in vs])
+check("⑦ 说话人借前一句的（句首的借第一个说话人）；同一个位置的两段按时间排",
+      [g.speaker_id for g in vs] == ["0", "1", "1", "0"] and vs[1].start_time < vs[2].start_time,
+      [(g.speaker_id, g.start_time) for g in vs])
+check("⑦ 原来的行一个没动、顺序没变", [g.id for g in stt.segments if g.kind == "speech"] == before_ids
+      and all(g.translated_text for g in stt.segments if g.kind == "speech"))
+check("⑦ 小结：track=vocals、已标记 4 处（带 id）、没有待确认的",
+      rep["track"] == "vocals" and len(rep["applied"]) == 4 and rep["pendingCount"] == 0 and rep["applied"][0]["id"] in {g.id for g in vs}, rep)
+check("⑦ 扫描标记已置位", stt.sounds_scanned is True)
+check("⑦ 插入的行不和任何台词重叠，且都通过 AI 规则层对 vocal 窗口的检查（两套规则一致）",
+      all(not G._speech_overlapping(stt, g.start_time, g.end_time, set()) for g in vs))
+und = store.can_undo(VID)
+check("⑦ 可撤销，且是一条记录（系统的其它改动不可撤销，所以最近一条就是它）", und and "自动标出 4 处" in und["summary"], und)
+store.undo(VID, actor="user")
+stt = store.get_state(VID)
+check("⑦ 撤销：4 行全部移除，原来的行（含译文）原样还在", [g.kind for g in stt.segments] == ["speech"] * 3 and all(g.translated_text for g in stt.segments))
+check("⑦ 撤销不会把扫描标记退回 False（否则再跑初始化会把用户刚撤销的又加回来）", stt.sounds_scanned is True)
+rep2 = step()
+check("⑦ 撤销之后再跑一遍：不会重新加（尊重用户的决定），小结里也不再算“待确认”",
+      [g.kind for g in store.get_state(VID).segments] == ["speech"] * 3 and rep2["applied"] == [] and rep2["pendingCount"] == 0, rep2)
+check("⑦ 这一遍没有产生新的可撤销记录（扫描标记是静默、不可撤销的）", store.can_undo(VID) is None, store.can_undo(VID))
+
+# ---- 规则：什么时候不自动
+sfresh([(7.0, 8.0), (12.0, 18.0)], dur=40.0)
+rep = step(); stt = store.get_state(VID)
+check("⑦ 超过 4 秒的片段不自动标（更像被漏掉的一句话）：只标了短的那个，长的留作待确认",
+      [g.kind for g in stt.segments].count("vocal") == 1 and rep["pendingCount"] == 1 and rep["pending"][0]["reason"] == "long", rep)
+check("⑦ 待确认的带位置（在哪一行之后）和起止，给聊天提示用", rep["pending"][0]["afterId"] == "l2" and abs(rep["pending"][0]["start"] - 12.0) <= 0.06, rep["pending"])
+
+sfresh([(7.0 + 0.8 * i, 7.4 + 0.8 * i) for i in range(21)], dur=40.0, lines=[(1.0, 3.0), (3.5, 6.0)])   # 台词都在声音前面，21 处全在台词之外
+rep = step()
+check("⑦ 数量异常（21 处 > 20）：一处都不自动标（多半是这一段整体没识别好），全部待确认",
+      [g.kind for g in store.get_state(VID).segments] == ["speech"] * 2 and rep["pendingCount"] == 21 and {p["reason"] for p in rep["pending"]} == {"too_many"}, rep["pendingCount"])
+check("⑦ 报告里最多列 20 段，但总数是真的（21）", len(rep["pending"]) == 20 and rep["pendingCount"] == 21)
+check("⑦ 这种情况也算扫描过了（不会每次初始化都重新判断）", store.get_state(VID).sounds_scanned is True)
+
+sfresh([(7.0, 10.0), (11.0, 14.0), (15.0, 18.0)], dur=20.0, lines=[(1.0, 3.0), (3.5, 6.0)])
+rep = step()
+check("⑦ 没被台词覆盖的声音占全片 45%（超过 25%）：一处都不自动标，即使每段都不长",
+      [g.kind for g in store.get_state(VID).segments] == ["speech"] * 2 and {p["reason"] for p in rep["pending"]} == {"too_many"} and rep["pendingCount"] == 3, rep)
+
+sfresh([(7.0, 7.8), (12.0, 13.0)], separated=False)
+rep = step(); stt = store.get_state(VID)
+check("⑦ 没做人声分离：不自动标（候选里混着风声、音乐，原声本来就在垫底里），报告里记成 no_stem",
+      [g.kind for g in stt.segments] == ["speech"] * 3 and rep["track"] == "original" and {p["reason"] for p in rep["pending"]} == {"no_stem"} and rep["pendingCount"] == 2, rep)
+check("⑦ 没分离时不置扫描标记（之后分离了再跑初始化，还能自动标）", stt.sounds_scanned is False)
+sfresh([(7.0, 7.8)])
+os.remove(os.path.join(video_dir_path(VID), "background.wav"))
+rep = step()
+check("⑦ 有人声轨但没有背景轨（导出时没法保留）：不自动标", [g.kind for g in store.get_state(VID).segments] == ["speech"] * 3 and rep["pending"][0]["reason"] == "no_stem", rep)
+sfresh([(7.0, 7.8)])
+os.remove(os.path.join(video_dir_path(VID), "vocals_asr.wav"))
+write_wav(os.path.join(video_dir_path(VID), "extracted_audio.wav"), track(16000, 20.0, [(1.0, 3.0, 300), (3.5, 6.0, 300), (9.0, 11.0, 300), (7.0, 7.8, 500)]), 16000)
+rep = step()
+check("⑦ 有全频带人声和背景轨、但 ASR 用的人声轨不在（候选来自混音，里面有背景声）：不自动标",
+      rep["pendingCount"] == 1 and [g.kind for g in store.get_state(VID).segments] == ["speech"] * 3 and rep["pending"][0]["reason"] == "no_stem", rep)
+sfresh([])
+rep = step()
+check("⑦ 没有任何漏掉的声音：什么都不改，也没有可撤销记录", rep["applied"] == [] and rep["pendingCount"] == 0 and store.can_undo(VID) is None, (rep, store.can_undo(VID)))
+fresh()
+rep = step()
+check("⑦ 没有音轨：返回 track=none，不抛", rep["track"] == "none" and rep["applied"] == [])
+
+# ---- 健壮：失败只降级；取消要往外传；计划之后状态变了要按最新的算
+sfresh([(7.0, 7.8)])
+orig_classify = sound_scan.classify
+def boom(*a, **k): raise RuntimeError("音轨坏了")
+sound_scan.classify = boom
+try:
+    rep = step()
+finally:
+    sound_scan.classify = orig_classify
+check("⑦ 扫描失败只降级（返回空），不会让初始化失败", rep == {} and [g.kind for g in store.get_state(VID).segments] == ["speech"] * 3)
+class Cancelled(FJ):
+    def check(self): raise jobs.JobCancelled()
+try:
+    asyncio.run(jobs.step_sounds(VID, Cancelled())); passed = False
+except jobs.JobCancelled:
+    passed = True
+check("⑦ 任务被取消时取消要继续往外传（不能被“只降级”吞掉）", passed)
+sfresh([(7.0, 7.8), (12.0, 13.0)])
+plan = sound_scan.classify(VID, store.get_state(VID))
+def cover_first(st): st.segments.append(Segment("late", "0", 6.9, 7.9, "用户补了一句", translated_text="x"))
+store.mutate(VID, cover_first, actor="user", cmd="insert", summary="用户插入")
+rep = sound_scan.apply(VID, plan)
+check("⑦ 计划算完之后用户又插了一句盖住了第一处：按最新状态重算，只标剩下的那一处（不会重复覆盖）",
+      [g.kind for g in store.get_state(VID).segments].count("vocal") == 1 and len(rep["applied"]) == 1 and abs(rep["applied"][0]["start"] - 12.0) <= 0.06, rep)
+
+# ---- 欢迎消息：说清标了什么、没处理什么
+sfresh([(7.0, 7.8), (12.0, 13.0), (14.0, 19.0)], dur=40.0)
+rep = step()
+store.mutate(VID, lambda st: setattr(st, "init_report", {"sounds": rep}), actor="system", cmd="init_report", summary="r", undoable=False)
+w = agent.welcome_text(VID)
+check("⑦ 欢迎消息：说了自动标出 2 处、是第几句、导出时怎样、不对怎么办",
+      "自动标出了 2 处" in w and "第 3、5 句" in w and "保留这段原声" in w and "告诉我是第几句" in w, w)
+check("⑦ 欢迎消息：没自动处理的 1 处也提了——在哪、为什么、要不要听由用户决定",
+      "另有 1 处声音没有台词覆盖、也没有自动处理" in w and "超过 4 秒" in w and "第 5 句之后 14.0–19.0 秒" in w and "确认后再改" in w, w)
+check("⑦ 欢迎消息：自动标出的 vocal 行不再被“被标成了非语音”重复提一遍", "被标成了非语音" not in w, w)
+sfresh([(7.0, 7.8)], separated=False)
+rep = step()
+store.mutate(VID, lambda st: setattr(st, "init_report", {"sounds": rep}), actor="system", cmd="init_report", summary="r", undoable=False)
+w = agent.welcome_text(VID)
+check("⑦ 没分离的工程：欢迎消息不提（候选是风声音乐，提了只是噪音）", "声音没有台词覆盖" not in w and "自动标出" not in w, w)
+sfresh([(7.0, 7.8)])
+rep = step()
+store.mutate(VID, lambda st: setattr(st, "init_report", {"sounds": rep}), actor="system", cmd="init_report", summary="r", undoable=False)
+store.mutate(VID, lambda st: [setattr(g, "kind", "speech") for g in st.segments if g.kind == "vocal"], actor="user", cmd="mark", summary="标回")
+check("⑦ 用户已经把它标回语音：欢迎消息不再说“自动标出了”（不拿过期的事实说话）", "自动标出" not in agent.welcome_text(VID))
+check("⑦ 系统提示：这些要用户拍板，AI 先听、告诉用户、同意后才改", "要用户拍板" in agent.SYSTEM_PROMPT and "不要自己批量插入或删除" in agent.SYSTEM_PROMPT)
+
+# ---- 端到端：真实样本 + 真实 ASR 输出，走完整的 initialize（HTTP、真任务、真 store），只桩掉网络
+if os.path.exists(os.path.join(SAMPLE, "speech_stem.flac")) and os.path.exists(os.path.join(SAMPLE, "asr_baseline", "asr_vocals.json")):
+    import shutil, time
+    from fastapi.testclient import TestClient
+    from app.services import asr_service as ASR, llm_service as LLM, tts_service as TTS
+    AID = "autosnds000000000000000000000000"
+    if store.exists(AID): store.delete(AID)
+    mp4 = os.path.join(TMP, "auto.mp4"); shutil.copy(os.path.join(SAMPLE, "problem_sample.mp4"), mp4)
+    store.create(AID, "auto.mp4", mp4)
+    ad = video_dir_path(AID)
+    for src_name, out_name, rate in (("speech_stem.flac", "vocals.wav", 44100), ("background_stem.flac", "background.wav", 44100)):
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", os.path.join(SAMPLE, src_name), "-ac", "1", "-ar", str(rate), os.path.join(ad, out_name)], check=True)
+    real = json.load(open(os.path.join(SAMPLE, "asr_baseline", "asr_vocals.json"), encoding="utf-8"))["raw_transcripts"][0]["transcripts"][0]["sentences"]
+    seen = {"translate": [], "tts": []}
+    async def fake_asr(video_id, video_path, audio_path, url):
+        return [ASR.sentence_to_line(x, f"seg-r{i}") for i, x in enumerate(real, 1)]
+    async def fake_translate(video_id, segments, target_language, emit=None, text_overrides=None, custom_prompt="", length_hint=None):
+        seen["translate"] += [x["id"] for x in segments]
+        return [{"id": x["id"], "translatedText": f"[en] {x['text']}"} for x in segments], []
+    async def fake_synth(video_id, segment_id, text, voice, speech_rate=None, target_duration=None, instruction=None):
+        seen["tts"].append(segment_id)
+        p = TTS.tts_audio_path(video_id, segment_id); os.makedirs(os.path.dirname(p), exist_ok=True)
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=f=440:d=1.5", "-ar", "24000", p], check=True)
+        return p, 1.5
+    ASR.transcribe_video, LLM.translate_script, TTS.synthesize_speech = fake_asr, fake_translate, fake_synth
+    ASR.extract_audio = lambda src, dst: subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", src, "-vn", "-ar", "16000", "-ac", "1", dst], check=True)
+
+    def wait_init(timeout=30):
+        t = time.time()
+        while time.time() - t < timeout:
+            if not any(j["kind"] == "init" for j in jobs.active_snapshot(AID)): return True
+            time.sleep(0.05)
+        return False
+
+    with TestClient(app) as cc:
+        r = cc.post(f"/api/projects/{AID}/setup", json={"target_language": "English", "enable_dubbing": True})
+        check("⑦ 端到端：setup 启动初始化", r.status_code == 200, r.text)
+        check("⑦ 端到端：等初始化结束", wait_init()); time.sleep(0.3)
+        v = cc.get(f"/api/projects/{AID}").json()
+        segs = v["segments"]
+        check("⑦ 端到端：阶段 ready，共 10 行 = 7 句台词 + 3 处非语言声", v["stage"] == "ready" and len(segs) == 10 and [x["kind"] for x in segs].count("vocal") == 3, (v["stage"], [x["kind"] for x in segs]))
+        check("⑦ 端到端：vocal 在笑声（第 3 句后两处）和句尾笑声（第 7 句后）的位置，与真值相差不到 0.1 秒",
+              [x["kind"] for x in segs] == ["speech"] * 3 + ["vocal", "vocal"] + ["speech"] * 4 + ["vocal"]
+              and all(abs(x["start"] - e["start"]) < 0.1 and abs(x["end"] - e["end"]) < 0.1 for x, e in zip([x for x in segs if x["kind"] == "vocal"], truth_nv)),
+              [(x["kind"], x["start"], x["end"]) for x in segs])
+        check("⑦ 端到端：vocal 行没有被翻译、没有被配音（省钱：不给非语言声花一分钱）",
+              not any(i in seen["translate"] for i in [x["id"] for x in segs if x["kind"] == "vocal"])
+              and not any(i in seen["tts"] for i in [x["id"] for x in segs if x["kind"] == "vocal"]) and len(seen["tts"]) == 7, seen)
+        check("⑦ 端到端：台词行译文、配音都正常（新鲜）", all(x["trStatus"] == "fresh" and x["ttsStatus"] == "fresh" for x in segs if x["kind"] == "speech"))
+        check("⑦ 端到端：vocal 行带预览地址（保留原声）", all(x["audioUrl"] for x in segs if x["kind"] == "vocal"))
+        mp = v["mix"]["plan"]
+        check("⑦ 端到端：混音计划里 7 句配音 + 3 条保留原声", sum(1 for e in mp["segments"] if e.get("source") == "vocals") == 3 and len(mp["segments"]) == 10)
+        rpt = v["initReport"]["sounds"]
+        check("⑦ 端到端：初始化报告里有这一项（已标记 3 处，没有待确认）", len(rpt["applied"]) == 3 and rpt["pendingCount"] == 0 and rpt["track"] == "vocals", rpt)
+        msgs = cc.get(f"/api/projects/{AID}/chat").json()["messages"]
+        welcome = next(m["text"] for m in msgs if m.get("system"))
+        check("⑦ 端到端：聊天第一条消息说了：自动标出 3 处、第 4、5、10 句、保留原声", "自动标出了 3 处" in welcome and "第 4、5、10 句" in welcome and "保留这段原声" in welcome, welcome)
+        check("⑦ 端到端：聊天里的 AI 能看到这条消息（它在会话历史里，下一轮就在上下文里）", any(m.get("system") and "自动标出了 3 处" in m["text"] for m in msgs))
+
+        # 再跑初始化：幂等，不重复插入
+        n_before = len(segs)
+        cc.post(f"/api/projects/{AID}/commands/run_initialize", json={"args": {}}); wait_init(); time.sleep(0.3)
+        check("⑦ 端到端：再跑一遍初始化，行数不变（不重复标）", len(cc.get(f"/api/projects/{AID}").json()["segments"]) == n_before)
+
+        # 撤销 → 3 行消失，译文配音还在；再跑初始化不加回来
+        r = cc.post(f"/api/projects/{AID}/undo")
+        v = cc.get(f"/api/projects/{AID}").json()
+        check("⑦ 端到端：撤销之后只剩 7 句台词，译文配音一个没丢", r.status_code == 200 and len(v["segments"]) == 7
+              and all(x["trStatus"] == "fresh" and x["ttsStatus"] == "fresh" for x in v["segments"]), (r.text[:120], len(v["segments"])))
+        cc.post(f"/api/projects/{AID}/commands/run_initialize", json={"args": {}}); wait_init(); time.sleep(0.3)
+        check("⑦ 端到端：撤销后再跑初始化，不会把用户撤销的又加回来", len(cc.get(f"/api/projects/{AID}").json()["segments"]) == 7)
+
+        # 新的转写 → 新的扫描
+        store.mutate(AID, lambda st: setattr(st, "segments", []), actor="user", cmd="clear", summary="清空")
+        cc.post(f"/api/projects/{AID}/commands/run_initialize", json={"args": {}}); wait_init(); time.sleep(0.3)
+        v = cc.get(f"/api/projects/{AID}").json()
+        check("⑦ 端到端：转写被清掉重来（新的转写）：重新扫描、重新标出 3 处", len(v["segments"]) == 10 and [x["kind"] for x in v["segments"]].count("vocal") == 3, len(v["segments"]))
+
+        # 后面某一步失败：标注和报告不丢
+        store.mutate(AID, lambda st: setattr(st, "segments", []), actor="user", cmd="clear", summary="清空")
+        orig_review = jobs.step_review
+        async def review_boom(*a, **k): raise RuntimeError("审听炸了")
+        jobs.step_review = review_boom
+        try:
+            cc.post(f"/api/projects/{AID}/commands/run_initialize", json={"args": {}}); wait_init(); time.sleep(0.3)
+        finally:
+            jobs.step_review = orig_review
+        v = cc.get(f"/api/projects/{AID}").json()
+        check("⑦ 端到端：初始化后面一步失败，已经标出的 3 行还在，报告里也有（放在转写之后而不是末尾的原因）",
+              [x["kind"] for x in v["segments"]].count("vocal") == 3 and len(v["initReport"].get("sounds", {}).get("applied", [])) == 3
+              and "审听炸了" in (v["initReport"].get("error") or ""), (v["initReport"].get("error"), [x["kind"] for x in v["segments"]]))
+else:
+    print("SKIP ⑦ 端到端（samples/problem_video 不在）")
+
 # ============================================================================ 收尾
 print(f"\n合计 {'全部通过' if not fails else str(len(fails)) + ' 项失败: ' + ', '.join(fails)}")
 sys.exit(1 if fails else 0)

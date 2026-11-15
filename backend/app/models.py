@@ -117,6 +117,9 @@ class VideoState:
     # 当前聊天会话的 id。空 = 还没开始（第一条消息时自动开一个）。历史会话都在
     # 同一个 chat.jsonl 里，每行带 conv 字段 —— 追加式写入，切换会话只是换个过滤条件。
     chat_conv: str = ""
+    # 初始化时已经扫描过"ASR 没转写的非语言声"并自动标记了。用户撤销/删掉之后再跑初始化
+    # （补齐、改设置）不能把他否掉的又加回来。新转写进来时重置（见 jobs.step_transcribe）。
+    sounds_scanned: bool = False
 
     # —— 工程设置 ——
     separation_mode: str = ""            # "client"（浏览器分离）| "off"；初始化时定下

@@ -98,6 +98,7 @@ def _env_float(name: str, default: float) -> float:
 
 # 公开别名：混音策略（mix_service）等模块复用同一实现，不要各自再写一份
 env_float = _env_float
+env_int = _env_int
 
 
 # =====================================================================

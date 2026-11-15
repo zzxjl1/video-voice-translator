@@ -69,6 +69,9 @@ SYSTEM_PROMPT = """你是这个视频配音项目的 AI 助手，和用户一起
   的时间段，listen 听过之后：人发出的非语言声 → insert_line kind=vocal（分离过人声的工程导出时保留这段原声，
   不用 TTS 重造）；被吞掉的话 → insert_line 补上。时间由系统按检测到的声音边界对齐，你给的秒数只是大致位置；
   被拒绝时按返回的原因和建议改，不要原样重试。
+  **这些要用户拍板**：初始化已经把其中不长的声音自动标成了非语言声（第一条消息里有说明）；其余没自动处理的
+  （太长、数量异常）是笑声还是漏掉的话，只有听了才知道。你先 listen，把听到的告诉用户并问他怎么处理，
+  他同意了再 insert_line / delete_lines；不要自己批量插入或删除。用户已经明确说了"补上/标出来"除外。
 - 翻译和配音是两步：改了原文或译文，配音会过期，要 redub；改了语气/语速，配音也过期。
 - 配音时长要和时间槽（slot_s）大致相当：dub_vs_slot 大于 1.15 说明配音太长（会被加速或裁掉），
   小于 0.8 说明太短。优先让译文更简短或调语速，而不是硬塞。
@@ -484,6 +487,44 @@ def cancel_chat(video_id: str) -> None:
 # 初始化完成后的第一条消息
 # ----------------------------------------------------------------------------
 
+_SOUND_REASON = {
+    "long": "超过 {max:g} 秒，更像漏掉的一句话，不像笑声",
+    "too_many": "数量太多或占全片的比例太大，可能是这一段整体没识别好",
+}
+
+
+def _sound_notes(state, sounds: dict) -> list[str]:
+    """
+    报告里的"漏掉的非语言声"→ 欢迎消息里的两段话。
+
+    自动标记的：告诉用户标了哪几句、导出时会怎样、不对怎么办。
+    没自动处理的：只提示**有**、在哪里，由用户决定要不要让 AI 听一下 —— 是笑声还是漏掉的话只有听了才知道。
+    没分离人声的工程（no_stem）不提：候选里混着风声和背景音乐，而且原声本来就在垫底里，提了只是噪音。
+    """
+    from app.services import sound_scan
+    line_of = {x.id: i + 1 for i, x in enumerate(state.segments)}
+    out: list[str] = []
+
+    applied = [line_of[a["id"]] for a in sounds.get("applied") or []
+               if a.get("id") in line_of and state.segments[line_of[a["id"]] - 1].kind == "vocal"]
+    if applied:
+        out.append(
+            f"自动标出了 {len(applied)} 处 ASR 没转写、但人声里有声音的片段（第 {'、'.join(map(str, sorted(applied)[:8]))} 句"
+            f"{'等' if len(applied) > 8 else ''}，多半是笑声、叹息、咳嗽）：导出时保留这段原声，不翻译、不配音、不出字幕。"
+            "听着不对的话告诉我是第几句，我来处理。")
+
+    pending = [p for p in sounds.get("pending") or [] if p.get("reason") in _SOUND_REASON]
+    if pending:
+        def where(p):
+            after = line_of.get(p.get("afterId"))
+            return (f"第 {after} 句之后" if after else "开头") + f" {p['start']:.1f}–{p['end']:.1f} 秒"
+        why = _SOUND_REASON[pending[0]["reason"]].format(max=sound_scan.AUTO_MAX_S)
+        out.append(
+            f"另有 {len(pending)} 处声音没有台词覆盖、也没有自动处理（{why}）：{'；'.join(where(p) for p in pending[:3])}"
+            f"{'……' if len(pending) > 3 else ''}。是漏掉的话还是笑声，要听过才知道——需要的话我先听一下，你确认后再改。")
+    return out
+
+
 def welcome_text(video_id: str) -> str:
     """
     初始化报告 → 第一条消息。**不调用模型**：这条消息是确定的事实，不该有措辞上的
@@ -516,8 +557,10 @@ def welcome_text(video_id: str) -> str:
         mode.append("审听增强" + (f"（纠正/标注了 {adj} 句）" if adj else ""))
     parts.append("本次配置：" + "、".join(mode) + "。")
 
+    parts.extend(_sound_notes(state, rep.get("sounds") or {}))
+
     flags = []
-    non = [i + 1 for i, x in enumerate(state.segments) if x.kind != "speech"]
+    non = [i + 1 for i, x in enumerate(state.segments) if x.kind not in ("speech", "vocal")]   # vocal 上面单独说了
     if non:
         flags.append(f"第 {'、'.join(map(str, non[:8]))} 句被标成了非语音")
     ftr, fdub = rep.get("failedTranslation") or [], rep.get("failedDub") or []
