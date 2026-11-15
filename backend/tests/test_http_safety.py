@@ -61,14 +61,37 @@ check("③ 路径穿越（speaker）被拒", c.get(f"/api/projects/{vid}/voice-s
 check("③ 畸形工程 id → 400", c.get("/api/projects/bad%20id%21").status_code in (400, 404))
 ghost = "ghostxx0" + "0" * 24
 for path in (f"/api/projects/{ghost}", f"/api/projects/{ghost}/video", f"/api/projects/{ghost}/audio",
-             f"/api/projects/{ghost}/export/download", f"/api/projects/{ghost}/voice-preview/0",
-             f"/api/projects/{ghost}/tts/seg-1", f"/api/projects/{ghost}/subtitles.srt"):
+             f"/api/projects/{ghost}/audio/original", f"/api/projects/{ghost}/export/download",
+             f"/api/projects/{ghost}/voice-preview/0", f"/api/projects/{ghost}/tts/seg-1",
+             f"/api/projects/{ghost}/subtitles.srt"):
     c.get(path)
 check("③ 对不存在的工程发 GET 不会凭空建目录", not os.path.exists(os.path.join(TMP, ghost)))
 check("③ 对不存在的工程发命令 → 404，且不建目录",
       c.post(f"/api/projects/{ghost}/commands/get_overview", json={"args": {}}).status_code == 404 and not os.path.exists(os.path.join(TMP, ghost)))
 check("③ 删除不存在的工程 → 404，且不建目录",
       c.delete(f"/api/projects/{ghost}").status_code == 404 and not os.path.exists(os.path.join(TMP, ghost)))
+
+# ------------------------------------------------------------------ ③b /audio 与 /audio/original
+d = os.path.join(TMP, vid)
+orig = os.path.join(d, "extracted_audio.wav")
+voc = os.path.join(d, "vocals_asr.wav")
+check("③b 没抽过原声 → /audio/original 404", c.get(f"/api/projects/{vid}/audio/original").status_code == 404)
+open(orig, "wb").write(b"ORIGINAL_MIX")
+open(voc, "wb").write(b"VOCALS_ONLY")
+r_asr = c.get(f"/api/projects/{vid}/audio")
+r_orig = c.get(f"/api/projects/{vid}/audio/original")
+check("③b /audio 仍是 asr_audio_path：有人声轨时优先人声轨",
+      r_asr.status_code == 200 and r_asr.content == b"VOCALS_ONLY", (r_asr.status_code, r_asr.content[:20]))
+check("③b /audio/original 恒定返回原声，不受人声轨影响",
+      r_orig.status_code == 200 and r_orig.content == b"ORIGINAL_MIX"
+      and r_orig.headers.get("content-type", "").startswith("audio/wav"),
+      (r_orig.status_code, r_orig.content[:20], r_orig.headers.get("content-type")))
+os.remove(voc)
+check("③b 没有人声轨时 /audio 才回退到原声", c.get(f"/api/projects/{vid}/audio").content == b"ORIGINAL_MIX")
+os.remove(orig)
+check("③b 两条音轨都不在 → /audio 和 /audio/original 都 404",
+      c.get(f"/api/projects/{vid}/audio").status_code == 404
+      and c.get(f"/api/projects/{vid}/audio/original").status_code == 404)
 
 # ------------------------------------------------------------------ ④ Range 端到端
 r = c.get(f"/api/projects/{vid}/video", headers={"Range": "bytes=-16"})

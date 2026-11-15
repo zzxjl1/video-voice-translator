@@ -14,7 +14,7 @@
   POST   /projects/{id}/chat               发一条消息（立刻返回，回复走事件流）
   POST   /projects/{id}/chat/confirm       确认 / 拒绝一张确认卡片
   POST   /projects/{id}/chat/stop          停止当前这轮对话
-  文件：video / audio / audio/background / audio/stereo / tts/{seg} / voice-sample / voice-preview / export/download / subtitles.srt
+  文件：video / audio / audio/original / audio/background / audio/stereo / tts/{seg} / voice-sample / voice-preview / export/download / subtitles.srt
   浏览器分离：separator-token / stems
 """
 import asyncio
@@ -36,7 +36,7 @@ from app.bus import bus
 from app.commands import registry as R
 from app.deps import enforce_separator_token, validate_video_id
 from app.http_range import iter_file_range, parse_range
-from app.models import STAGE_INITIALIZING, asr_audio_path, get_video_dir, tts_audio_path, video_dir_path
+from app.models import STAGE_INITIALIZING, asr_audio_path, get_video_dir, original_audio_path, tts_audio_path, video_dir_path
 from app.services import audio_clip, export_service, mix_service, subtitle_service, token_service, tts_service, voice_clone_service
 
 logger = logging.getLogger(__name__)
@@ -414,10 +414,25 @@ def serve_video(video_id: str, request: Request):
 
 @router.get("/{video_id}/audio")
 def serve_audio(video_id: str):
-    """16 kHz 单声道音轨 —— ASR 和 omni 通过公网 URL 取它。"""
+    """16 kHz 单声道音轨 —— ASR 和 omni 通过公网 URL 取它。有人声分离结果时优先人声轨。"""
     path = asr_audio_path(video_id)
     if not path:
         raise HTTPException(status_code=404, detail="Audio not found")
+    return FileResponse(path, media_type="audio/wav")
+
+
+@router.get("/{video_id}/audio/original")
+def serve_original_audio(video_id: str):
+    """
+    原视频的完整声音（16 kHz 单声道，含背景音乐、风声、环境声），**不受人声分离影响**。
+
+    `/audio` 是给 ASR / 审听用的：有人声轨时返回人声轨，没有才回退到这份原声。
+    `/audio/original` 恒定返回 `extracted_audio.wav`，供需要同时对照"原声 + 人声轨"的调用使用。
+    没抽过音频（初始化还没跑到那一步）就 404，不在这里临时解码视频：GET 不该做长任务。
+    """
+    path = original_audio_path(video_id)
+    if not path:
+        raise HTTPException(status_code=404, detail="Original audio not found")
     return FileResponse(path, media_type="audio/wav")
 
 
