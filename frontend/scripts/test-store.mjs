@@ -10,7 +10,7 @@ import { reduceInit, emptyInit, overallProgress, failInit, replayCeiling, accept
 import { pageFor } from '../store/page.ts';
 import {
   PANEL_IDS, MIN_SIZE, TOP_INSET, KEEP_VISIBLE, DIRS, clampRect, resizeRect, pointInRect, fallbackDockZone, defaultLayout, defaultRect,
-  dockedOpen, floatingOpen, activeDock, normalize, reduce, serialize, restore, STORAGE_KEY,
+  dockedOpen, floatingOpen, activeDock, normalize, reduce, serialize, restore, STORAGE_KEY, PINNED,
 } from '../store/windows.ts';
 import { assignLanes, blockGeometry, barColors, colorOfSegment, formatSpan, segmentFlags, showIcon, minPxFor, MAX_LANES, KIND_META } from '../store/timeline.ts';
 import { EventClient } from '../net/events.ts';
@@ -448,8 +448,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const js = (x) => JSON.stringify(x);
 
   let l = init();
-  check('㊵ 默认：脚本吸附在右栏、助手浮着（和以前一样）、字幕样式收着', P(l, 'script').open && P(l, 'script').docked && P(l, 'chat').open && !P(l, 'chat').docked && !P(l, 'subtitle').open);
-  check('㊵ 默认：停靠位里只有脚本，当前显示脚本', dockedOpen(l).join() === 'script' && activeDock(l) === 'script');
+  check('㊵ 默认：译文和助手都吸附在右栏、字幕样式收着', P(l, 'script').open && P(l, 'script').docked && P(l, 'chat').open && P(l, 'chat').docked && !P(l, 'subtitle').open);
+  check('㊵ 默认：停靠位里是译文 / 助手两个标签，当前显示译文', dockedOpen(l).join() === 'script,chat' && activeDock(l) === 'script');
+  check('㊵ 默认：标签条只列已打开的窗口，字幕样式不在里面', !dockedOpen(l).includes('subtitle'));
+  check('㊵ 默认：译文 / 助手是常驻窗口，close 关不掉、toggle 只会切过去', PINNED.join() === 'script,chat' && R(l, { type: 'close', id: 'chat' }) === l && R(l, { type: 'close', id: 'script' }) === l && P(R(l, { type: 'toggle', id: 'chat' }), 'chat').open);
   check('㊵ 默认：每个窗口的初始位置完整落在可视区域里、不小于最小尺寸', PANEL_IDS.every((id) => {
     const r = defaultRect(id, VP); return r.x >= 0 && r.y >= TOP_INSET && r.x + r.w <= VP.w && r.y + r.h <= VP.h && r.w >= MIN_SIZE[id].w && r.h >= MIN_SIZE[id].h;
   }), PANEL_IDS.map((id) => defaultRect(id, VP)));
@@ -457,7 +459,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   check('㊵ 屏幕很小时初始位置也不炸', PANEL_IDS.every((id) => P(tiny, id).rect.w >= MIN_SIZE[id].w && P(tiny, id).rect.y >= TOP_INSET));
 
   l = R(init(), { type: 'float', id: 'script' });
-  check('㊶ 脚本弹出：变成浮动窗口，停靠位空了（右栏该收起）', !P(l, 'script').docked && floatingOpen(l).includes('script') && dockedOpen(l).length === 0 && activeDock(l) === null);
+  check('㊶ 脚本弹出：变成浮动窗口，停靠位里还剩助手', !P(l, 'script').docked && floatingOpen(l).includes('script') && dockedOpen(l).join() === 'chat' && activeDock(l) === 'chat');
   l = R(l, { type: 'dock', id: 'script' });
   check('㊶ 再吸附回去：回到停靠位并成为当前标签', P(l, 'script').docked && activeDock(l) === 'script' && !floatingOpen(l).includes('script'));
   const chatRect = P(init(), 'chat').rect;
@@ -469,33 +471,34 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   check('㊶ 拖出来给的位置越界 / 太小：夹回去（不会弹出一个抓不住的窗口）', P(l, 'script').rect.w === MIN_SIZE.script.w && P(l, 'script').rect.y === TOP_INSET && P(l, 'script').rect.x + P(l, 'script').rect.w >= KEEP_VISIBLE, P(l, 'script').rect);
 
   l = R(init(), { type: 'open', id: 'subtitle' });
-  check('㊷ 打开字幕样式（默认吸附）：和脚本是同一个停靠位里的两个标签，当前是它', dockedOpen(l).join() === 'script,subtitle' && activeDock(l) === 'subtitle');
+  check('㊷ 打开字幕样式（默认吸附）：成为停靠位里的第三个标签，当前是它', dockedOpen(l).join() === 'script,chat,subtitle' && activeDock(l) === 'subtitle');
   l = R(l, { type: 'activate', id: 'script' });
   check('㊷ 切回脚本标签', activeDock(l) === 'script');
-  l = R(R(l, { type: 'dock', id: 'chat' }), { type: 'activate', id: 'chat' });
-  check('㊷ 助手也吸附进来：三个标签，顺序固定（脚本、助手、字幕），当前是助手', dockedOpen(l).join() === 'script,chat,subtitle' && activeDock(l) === 'chat');
-  l = R(l, { type: 'close', id: 'chat' });
-  check('㊷ 关掉当前标签：当前自动换成剩下的第一个', activeDock(l) === 'script' && dockedOpen(l).join() === 'script,subtitle');
+  l = R(l, { type: 'activate', id: 'chat' });
+  check('㊷ 切到助手标签：三个标签顺序固定（脚本、助手、字幕），当前是助手', dockedOpen(l).join() === 'script,chat,subtitle' && activeDock(l) === 'chat');
+  l = R(R(l, { type: 'activate', id: 'subtitle' }), { type: 'close', id: 'subtitle' });
+  check('㊷ 关掉字幕样式：标签从标签条消失，当前自动换回第一个常驻窗口', activeDock(l) === 'script' && dockedOpen(l).join() === 'script,chat');
   l = R(l, { type: 'float', id: 'script' });
-  check('㊷ 把当前标签拖出来：停靠位里剩下的接着显示', activeDock(l) === 'subtitle' && dockedOpen(l).join() === 'subtitle');
-  l = R(l, { type: 'close', id: 'subtitle' });
-  check('㊷ 停靠位里最后一个也关了：没有窗口（右栏收起）', activeDock(l) === null && dockedOpen(l).length === 0);
-  check('㊷ 对没吸附的窗口 activate 不起作用', activeDock(R(init(), { type: 'activate', id: 'chat' })) === 'script');
+  check('㊷ 把当前标签拖出来：停靠位里剩下的接着显示', activeDock(l) === 'chat' && dockedOpen(l).join() === 'chat');
+  l = R(l, { type: 'float', id: 'chat' });
+  check('㊷ 两个常驻窗口都浮着：停靠位空了（右栏收起），但窗口都还开着', activeDock(l) === null && dockedOpen(l).length === 0 && P(l, 'script').open && P(l, 'chat').open);
+  check('㊷ 对浮动窗口 activate 不起作用', (() => { const q = R(init(), { type: 'float', id: 'chat' }); return activeDock(R(q, { type: 'activate', id: 'chat' })) === 'script'; })());
 
-  l = R(init(), { type: 'close', id: 'chat' });
-  check('㊸ 关闭助手：不再显示，位置记着', !P(l, 'chat').open && js(P(l, 'chat').rect) === js(chatRect));
-  l = R(l, { type: 'toggle', id: 'chat' });
-  check('㊸ 再点开关：回到原来的位置，并在最上面', P(l, 'chat').open && !P(l, 'chat').docked && js(P(l, 'chat').rect) === js(chatRect) && floatingOpen(l).at(-1) === 'chat');
-  check('㊸ 开关两次回到关闭', !P(R(l, { type: 'toggle', id: 'chat' }), 'chat').open);
+  const q0 = init();
+  check('㊸ 常驻窗口 close 无效、toggle 只是切到它（不会关掉）', R(q0, { type: 'close', id: 'chat' }) === q0 && R(q0, { type: 'close', id: 'script' }) === q0 && P(R(q0, { type: 'toggle', id: 'chat' }), 'chat').open && activeDock(R(q0, { type: 'toggle', id: 'chat' })) === 'chat');
+  l = R(init(), { type: 'toggle', id: 'subtitle' });
+  check('㊸ 字幕样式打开：多一个标签，位置沿用默认', P(l, 'subtitle').open && dockedOpen(l).join() === 'script,chat,subtitle' && js(P(l, 'subtitle').rect) === js(defaultRect('subtitle', VP)));
+  l = R(l, { type: 'toggle', id: 'subtitle' });
+  check('㊸ 字幕样式再关掉：标签消失，位置记着', !P(l, 'subtitle').open && dockedOpen(l).join() === 'script,chat' && js(P(l, 'subtitle').rect) === js(defaultRect('subtitle', VP)));
   check('㊸ 打开一个已经打开的吸附窗口 = 切到它的标签', (() => { let q = R(init(), { type: 'open', id: 'subtitle' }); q = R(q, { type: 'activate', id: 'script' }); return activeDock(R(q, { type: 'open', id: 'subtitle' })) === 'subtitle'; })());
 
-  l = R(R(init(), { type: 'float', id: 'script' }), { type: 'float', id: 'subtitle' });
-  check('㊹ 后弹出的在最上面；叠放序号是 1..n 连续的', floatingOpen(l).at(-1) === 'subtitle' && floatingOpen(l).map((id) => P(l, id).z).join() === '1,2,3', floatingOpen(l).map((id) => [id, P(l, id).z]));
-  l = R(l, { type: 'focus', id: 'chat' });
-  check('㊹ 点哪个哪个到最上面，其它的相对顺序不变', floatingOpen(l).at(-1) === 'chat' && floatingOpen(l).join() === 'script,subtitle,chat', floatingOpen(l));
-  check('㊹ 已经在最上面再点：状态原样（同一个对象，不触发重渲染）', R(l, { type: 'focus', id: 'chat' }) === l);
+  l = R(R(R(init(), { type: 'float', id: 'script' }), { type: 'float', id: 'subtitle' }), { type: 'float', id: 'chat' });
+  check('㊹ 后弹出的在最上面；叠放序号是 1..n 连续的', floatingOpen(l).at(-1) === 'chat' && floatingOpen(l).map((id) => P(l, id).z).join() === '1,2,3', floatingOpen(l).map((id) => [id, P(l, id).z]));
+  l = R(l, { type: 'focus', id: 'script' });
+  check('㊹ 点哪个哪个到最上面，其它的相对顺序不变', floatingOpen(l).at(-1) === 'script' && floatingOpen(l).join() === 'subtitle,chat,script', floatingOpen(l));
+  check('㊹ 已经在最上面再点：状态原样（同一个对象，不触发重渲染）', R(l, { type: 'focus', id: 'script' }) === l);
   check('㊹ 点吸附的窗口不改叠放', R(init(), { type: 'focus', id: 'script' }).panels.script.z === 0);
-  check('㊹ 关掉的窗口不占叠放序号', (() => { const q = R(l, { type: 'close', id: 'script' }); return floatingOpen(q).map((id) => P(q, id).z).join() === '1,2'; })());
+  check('㊹ 关掉的窗口不占叠放序号', (() => { const q = R(l, { type: 'close', id: 'subtitle' }); return floatingOpen(q).map((id) => P(q, id).z).join() === '1,2'; })());
 
   const min = MIN_SIZE.chat;
   check('㊺ clampRect：太小夹到最小，太大夹到屏幕内', (() => { const a = clampRect({ x: 0, y: 100, w: 10, h: 10 }, VP, min); const b = clampRect({ x: 0, y: 100, w: 9999, h: 9999 }, VP, min); return a.w === min.w && a.h === min.h && b.w === VP.w - 16 && b.h === VP.h - TOP_INSET - 8; })());
@@ -527,15 +530,15 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const back = restore(serialize(l), null, VP);
   check('㊾ 存了再读：打开 / 吸附 / 位置 / 当前标签 / 叠放顺序全部一致', PANEL_IDS.every((id) => js(P(back, id)) === js(P(l, id))) && back.active === l.active, [back.panels, l.panels]);
   check('㊾ 读不出来的内容（null / 空串 / 乱码 / 不是对象）：回到默认布局', ['', 'not json', '[]', '{"panels":42}', 'null'].every((raw) => js(restore(raw, null, VP)) === js(init())) && js(restore(null, null, VP)) === js(init()));
-  check('㊾ 某一块坏了只那一块用默认，别的照读', (() => {
+  check('㊾ 某一块坏了只那一块用默认；常驻窗口即使存档写成关闭也强制打开', (() => {
     const raw = js({ panels: { script: { open: true, docked: false, rect: { x: 'a' } }, chat: { open: false, docked: true, rect: { x: 10, y: 60, w: 400, h: 400 } } } });
-    const r = restore(raw, null, VP); return !P(r, 'script').docked && js(P(r, 'script').rect) === js(defaultRect('script', VP)) && !P(r, 'chat').open && P(r, 'chat').docked;
+    const r = restore(raw, null, VP); return !P(r, 'script').docked && js(P(r, 'script').rect) === js(defaultRect('script', VP)) && P(r, 'chat').open && P(r, 'chat').docked;
   })());
   check('㊾ 存下来的位置在更小的屏幕上读回来会被夹进去', (() => { const r = restore(js({ panels: { chat: { open: true, docked: false, rect: { x: 1500, y: 800, w: 900, h: 900 } } } }), null, { w: 800, h: 600 }); const c = P(r, 'chat').rect; return c.w <= 800 - 16 && c.h <= 600 - TOP_INSET - 8 && c.x <= 800 - KEEP_VISIBLE; })());
-  check('㊾ 迁移旧版：只有助手窗口位置的老存档，助手沿用那个位置', (() => { const r = restore(null, js({ x: 111, y: 222, w: 333, h: 444 }), VP); return js(P(r, 'chat').rect) === js({ x: 111, y: 222, w: 333, h: 444 }) && !P(r, 'chat').docked; })());
+  check('㊾ 迁移旧版：只有助手窗口位置的老存档，助手沿用那个位置（默认吸附）', (() => { const r = restore(null, js({ x: 111, y: 222, w: 333, h: 444 }), VP); return js(P(r, 'chat').rect) === js({ x: 111, y: 222, w: 333, h: 444 }) && P(r, 'chat').docked; })());
   check('㊾ 新存档优先于旧版的助手位置', js(P(restore(serialize(init()), js({ x: 5, y: 60, w: 333, h: 444 }), VP), 'chat').rect) === js(P(init(), 'chat').rect));
   check('㊾ 旧版位置是坏的：忽略，用默认', js(P(restore(null, '{bad', VP), 'chat').rect) === js(P(init(), 'chat').rect));
-  check('㊾ 存储 key 带版本号', STORAGE_KEY.endsWith('.v1'));
+  check('㊾ 存储 key 带版本号', /\.v\d+$/.test(STORAGE_KEY));
   check('㊾ normalize 幂等', js(normalize(normalize(l))) === js(normalize(l)));
 }
 

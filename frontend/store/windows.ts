@@ -1,10 +1,10 @@
 /**
  * 窗口布局：脚本与译文 / AI 助手 / 字幕样式 三个面板，各自是一个窗口。
  *
- *   · 吸附（docked）：固定在右栏那一个"停靠位"里，大小由布局决定，不能调。停靠位里有多个窗口时
- *     顶上出现标签条，一次显示一个。
+ *   · 吸附（docked）：固定在右栏那一个"停靠位"里，大小由布局决定，不能调。标签条只列已打开的
+ *     停靠窗口，一次显示一个；译文 / 助手是常驻窗口（一直开着、关不掉），字幕样式默认不打开。
  *   · 浮动（floating）：自由位置、自由大小（四边四角都能拖），点哪个哪个在最上面。
- *   · 关闭（open=false）：收起。窗口的位置、吸附与否都记着，再打开回到原样。
+ *   · 关闭（open=false）：收起。窗口的位置、吸附与否都记着，再打开回到原样；常驻窗口不适用。
  *
  * 这里全是纯函数（没有 React / DOM），所以能在 node 里直接测：状态转移、缩放几何、吸附判定、
  * 存取。拖动时的指针事件在 hooks/useWindows.ts。
@@ -12,6 +12,8 @@
 
 export type PanelId = 'script' | 'chat' | 'subtitle';
 export const PANEL_IDS: readonly PanelId[] = ['script', 'chat', 'subtitle'];
+/** 常驻窗口：一直开着，没有关闭按钮，所以右栏的译文 / 助手切换永远都在。 */
+export const PINNED: readonly PanelId[] = ['script', 'chat'];
 
 export interface Rect { x: number; y: number; w: number; h: number }
 export interface Viewport { w: number; h: number }
@@ -119,11 +121,11 @@ export function defaultRect(id: PanelId, vp: Viewport): Rect {
   return clampRect(r, vp, min);
 }
 
-/** 初始：脚本吸附在右栏，助手浮在右上（和以前一样），字幕样式收着（吸附，打开时是脚本旁边的一个标签）。 */
+/** 初始：译文和助手都吸附在右栏（两个标签，默认显示译文），字幕样式收着，由画面左边缘的挂耳打开。 */
 export function defaultLayout(vp: Viewport): Layout {
   const mk = (id: PanelId, open: boolean, docked: boolean): PanelWin => ({ open, docked, rect: defaultRect(id, vp), z: 0 });
   return normalize({
-    panels: { script: mk('script', true, true), chat: mk('chat', true, false), subtitle: mk('subtitle', false, true) },
+    panels: { script: mk('script', true, true), chat: mk('chat', true, true), subtitle: mk('subtitle', false, true) },
     active: 'script',
   });
 }
@@ -197,9 +199,11 @@ export function reduce(layout: Layout, action: Action, vp: Viewport): Layout {
       // 浮动的打开就放到最上面；吸附的打开就成为当前标签
       return p.docked ? set(action.id, { open: true }, action.id) : set(action.id, { open: true, z: TOP });
     case 'close':
-      return set(action.id, { open: false });
+      // 常驻窗口关不掉；顶栏已经没有开关按钮，关了就再也回不来了
+      return PINNED.includes(action.id) ? layout : set(action.id, { open: false });
     case 'toggle':
-      return reduce(layout, { type: p.open ? 'close' : 'open', id: action.id }, vp);
+      // 常驻窗口的 toggle 等于"切到它 / 置顶"，不是关闭
+      return reduce(layout, { type: p.open && !PINNED.includes(action.id) ? 'close' : 'open', id: action.id }, vp);
     case 'dock':
       return set(action.id, { open: true, docked: true }, action.id);
     case 'float': {
@@ -222,7 +226,8 @@ export function reduce(layout: Layout, action: Action, vp: Viewport): Layout {
 // 存取
 // ---------------------------------------------------------------------------
 
-export const STORAGE_KEY = 'vvt.windows.v1';
+/** 布局版本号：默认布局改了就升一号，别再复用浏览器里旧版的开合状态。 */
+export const STORAGE_KEY = 'vvt.windows.v2';
 /** 旧版只有助手一个浮动窗口，位置存在这个 key 里。 */
 export const LEGACY_CHAT_KEY = 'vvt.chat.window';
 
@@ -272,6 +277,8 @@ export function restore(raw: string | null, legacyChat: string | null, vp: Viewp
       if (Array.isArray(j?.floating)) order = j.floating.filter((x: unknown): x is PanelId => PANEL_IDS.includes(x as PanelId));
     } catch { /* 整个坏了就是默认布局 */ }
   }
+  // 常驻窗口不信任存档里的 open：万一被写成关闭，界面上已经没有入口把它打开
+  for (const id of PINNED) panels[id] = { ...panels[id], open: true };
   // 浮动窗口的叠放顺序：存的顺序（后面的在上）；没存的按固定顺序
   order.forEach((id, i) => { panels[id] = { ...panels[id], z: i + 1 }; });
   return normalize({ panels, active });

@@ -20,7 +20,7 @@ import type { Line, SubtitleCapabilities, SubtitleCue, SubtitleStyle } from '../
 import { containRect, overlayContainerStyle, overlayLineStyle, stripSubtitleTags, type Rect } from '../../utils/subtitleStyle';
 import ChatPanel from '../chat/ChatPanel';
 import ScriptPanel, { type ScriptActions } from './ScriptPanel';
-import TopBar, { type WindowToggle } from '../shell/TopBar';
+import TopBar from '../shell/TopBar';
 import { DockSlot, WindowLayer, WindowPortals, type PanelRenderers } from '../windows/WindowSystem';
 import SettingsPanel from './SettingsPanel';
 import Timeline from '../Timeline';
@@ -218,15 +218,6 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
   }), [run, seek, openWindow]);
 
   const colorOf = useCallback((sid: string) => speakerColor(project!, sid), [project]);
-  // 顶栏的窗口开关
-  const windowToggles = useMemo<WindowToggle[]>(() => [
-    { id: 'script', title: '脚本与译文', open: wm.layout.panels.script.open, onToggle: () => wm.toggle('script'),
-      icon: 'M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z' },
-    { id: 'chat', title: 'AI 助手', open: wm.layout.panels.chat.open, onToggle: () => wm.toggle('chat'),
-      icon: 'M8 10h.01M12 10h.01M16 10h.01M21 12c0 4.4-4 8-9 8a9.9 9.9 0 01-4-.8L3 20l1.3-3.9A7.6 7.6 0 013 12c0-4.4 4-8 9-8s9 3.6 9 8z' },
-    { id: 'subtitle', title: '字幕样式', open: wm.layout.panels.subtitle.open, onToggle: () => wm.toggle('subtitle'),
-      icon: 'M4 6h16a1 1 0 011 1v10a1 1 0 01-1 1H4a1 1 0 01-1-1V7a1 1 0 011-1zM7 12h3m4 0h3M7 15h6' },
-  ], [wm]);
 
   // 时间线用的行：kept = 导出时会把这段原声放回去（有预览地址 = 人声非语言 + 没静音 + 做过人声分离）
   const timelineSegments = useMemo<TimelineSegment[]>(() => lines.map((l) => ({
@@ -308,7 +299,6 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
         onExport={() => setShowExport(true)}
         onHome={onHome}
         exporting={exporting}
-        windows={windowToggles}
       />
 
       {notice && (
@@ -319,8 +309,8 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
       )}
 
       {/* 顶栏是 fixed 的（悬停展开时浮在画面上方），内容要给它让出顶部空间。
-          右栏是「停靠位」：吸附进来的窗口在这里，大小固定；里面没有窗口（都拖出去了或关了）就收起，
-          视频撑满。浮动窗口不占栅格。 */}
+          右栏是「停靠位」：标签条只列已打开的窗口；译文 / 助手常驻，字幕样式由画面左边的挂耳打开，
+          打开时才多一个标签，关掉就消失。窗口全被拖成浮动时右栏收起，视频撑满。浮动窗口不占栅格。 */}
       <main
         ref={(el) => { wm.mainRef.current = el; }}
         className={`flex-grow min-h-0 grid gap-5 p-5 lg:p-6 pt-10 lg:pt-11 ${wm.docked.length > 0 ? 'lg:grid-cols-[minmax(0,7fr)_minmax(0,5fr)]' : 'lg:grid-cols-1'}`}
@@ -379,7 +369,7 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
           </div>
         </section>
 
-        {/* 右：停靠位 */}
+        {/* 右：停靠位（已打开窗口的切换在这里） */}
         {wm.docked.length > 0 && <DockSlot wm={wm} />}
       </main>
 

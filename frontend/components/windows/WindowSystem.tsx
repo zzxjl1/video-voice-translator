@@ -1,5 +1,5 @@
 /**
- * 窗口系统的界面：停靠位（右栏，固定大小，多个窗口时是标签）、浮动窗口（自由位置和大小）、
+ * 窗口系统的界面：停靠位（右栏，固定大小，标签条只列已打开的窗口）、浮动窗口（自由位置和大小）、
  * 吸附区提示、面板内容的 portal。状态和拖动控制在 hooks/useWindows.ts。
  *
  * 面板内容只渲染一次（portal 进它自己的宿主节点），宿主在停靠位和浮动窗口之间搬动，
@@ -7,7 +7,7 @@
  */
 import React, { useLayoutEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { DIRS, PANEL_IDS, TITLES, type Dir, type PanelId } from '../../store/windows';
+import { DIRS, PANEL_IDS, PINNED, TITLES, type Dir, type PanelId } from '../../store/windows';
 import { mountHost, type HeaderProps, type WindowsApi } from '../../hooks/useWindows';
 
 /** 面板渲染时拿到的窗口信息：自己是不是吸附着、标题栏的拖动属性、标题栏右边的窗口按钮。 */
@@ -20,13 +20,13 @@ export interface PanelCtx {
 export type PanelRenderers = Record<PanelId, (ctx: PanelCtx) => React.ReactNode>;
 
 // ---------------------------------------------------------------------------
-// 标题栏右边的两个按钮：吸附 / 弹出、关闭
+// 标题栏右边的按钮：吸附 / 弹出、关闭（常驻窗口没有关闭）
 // ---------------------------------------------------------------------------
 
 const BTN = 'p-1 rounded-md text-gray-300 hover:text-gray-600 hover:bg-claude-paper transition-colors';
 
-export const WindowControls: React.FC<{ docked: boolean; onToggleDock: () => void; onClose: () => void }> = ({
-  docked, onToggleDock, onClose,
+export const WindowControls: React.FC<{ docked: boolean; closable: boolean; onToggleDock: () => void; onClose: () => void }> = ({
+  docked, closable, onToggleDock, onClose,
 }) => (
   <div className="flex items-center gap-0.5 shrink-0">
     <button
@@ -41,9 +41,11 @@ export const WindowControls: React.FC<{ docked: boolean; onToggleDock: () => voi
           : <><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M15 3v18" /></>}
       </svg>
     </button>
-    <button type="button" onClick={onClose} title="关闭" className={BTN}>
-      <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" /></svg>
-    </button>
+    {closable && (
+      <button type="button" onClick={onClose} title="关闭" className={BTN}>
+        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" /></svg>
+      </button>
+    )}
   </div>
 );
 
@@ -74,6 +76,7 @@ export const WindowPortals: React.FC<{ wm: WindowsApi; panels: PanelRenderers }>
         controls: (
           <WindowControls
             docked={docked}
+            closable={!PINNED.includes(id)}
             onToggleDock={() => (docked ? wm.float(id) : wm.dock(id))}
             onClose={() => wm.close(id)}
           />
@@ -90,6 +93,7 @@ export const WindowPortals: React.FC<{ wm: WindowsApi; panels: PanelRenderers }>
 
 export const DockSlot: React.FC<{ wm: WindowsApi }> = ({ wm }) => (
   <section ref={(el) => { wm.slotRef.current = el; }} className="flex flex-col min-h-0 min-w-0">
+    {/* 标签条只列已打开的停靠窗口；译文 / 助手常驻，字幕样式打开时才多一个 */}
     {wm.docked.length > 1 && (
       <div role="tablist" className="shrink-0 flex gap-1.5 mb-2">
         {wm.docked.map((id) => {

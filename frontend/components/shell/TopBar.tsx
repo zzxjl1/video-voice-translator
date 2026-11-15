@@ -6,7 +6,7 @@
  *        缓动用 cubic-bezier(0.175,0.885,0.32,1.275)、700ms —— 就是原来那条"弹出来"的手感。
  *
  * 与旧 Header 的差别只在内容：旧的「Reprocess / 从头开始」是整条管线重跑的概念，
- * 现在换成「补齐缺口 / 运行中（可取消）」；另外多了撤销和 AI 助手开关。
+ * 现在换成「补齐缺口 / 运行中（可取消）」；另外多了撤销。窗口的切换放到右栏标签条。
  *
  * 顶栏是 fixed 的（展开时要浮在画面上方），所以编辑页的 main 要留出顶部空间。
  */
@@ -29,17 +29,6 @@ interface Props {
   onExport: () => void;
   onHome: () => void;
   exporting: boolean;
-  /** 窗口开关：脚本 / 助手 / 字幕样式。 */
-  windows: WindowToggle[];
-}
-
-export interface WindowToggle {
-  id: string;
-  title: string;
-  open: boolean;
-  onToggle: () => void;
-  /** 24x24 描边图标的 path。 */
-  icon: string;
 }
 
 const EASE = 'ease-[cubic-bezier(0.175,0.885,0.32,1.275)]';
@@ -48,7 +37,7 @@ const GEAR = 'M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l
 
 const TopBar: React.FC<Props> = ({
   filename, targetLanguage, onLanguageChange, needs, dubbing, jobs, undoSummary, onUndo, onFill,
-  onCancelJobs, onOpenSettings, onExport, onHome, exporting, windows,
+  onCancelJobs, onOpenSettings, onExport, onHome, exporting,
 }) => {
   // 悬停展开是桌面习惯；点「Show Tools」可以钉住展开，触屏也能拿到语言/导出。
   const [hovered, setHovered] = useState(false);
@@ -211,7 +200,7 @@ const TopBar: React.FC<Props> = ({
           </button>
         </div>
 
-        {/* 右：撤销 / 助手 / 设置；收起态还带「Show Tools」药丸 */}
+        {/* 右：撤销 / 设置；收起态还带「Show Tools」药丸 */}
         <div className={`flex items-center transition-all duration-500 ${expanded ? 'gap-1' : 'gap-4'}`}>
           {!expanded && (
             <button
@@ -246,26 +235,6 @@ const TopBar: React.FC<Props> = ({
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a6 6 0 010 12H9M3 10l5-5m-5 5l5 5" />
             </svg>
           </button>
-
-          {windows.map((w) => (
-            <button
-              key={w.id}
-              onClick={w.onToggle}
-              title={`${w.open ? '收起' : '展开'}${w.title}`}
-              aria-pressed={w.open}
-              data-window-toggle={w.id}
-              className={`
-                flex items-center justify-center transition-all duration-300 rounded-full
-                ${expanded
-                  ? `w-12 h-12 ${w.open ? 'bg-claude-accent/10 text-claude-accent' : 'bg-gray-50 text-gray-500 hover:bg-gray-100'}`
-                  : `w-6 h-6 ${w.open ? 'text-claude-accent' : 'text-gray-400 hover:text-claude-accent'}`}
-              `}
-            >
-              <svg className={expanded ? 'w-6 h-6' : 'w-4 h-4'} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={w.icon} />
-              </svg>
-            </button>
-          ))}
 
           <button
             onClick={onOpenSettings}
