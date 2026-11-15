@@ -48,7 +48,8 @@ const App: React.FC = () => {
   const [enableDubbing, setEnableDubbing] = useState(true);
   const [enableVoiceClone, setEnableVoiceClone] = useState(false);
   const [cloneSmartPick, setCloneSmartPick] = useState(false);
-  const [mmEnhance, setMmEnhance] = useState(false);
+  // 落地页默认开启 omni 审听增强（纠错 + 语气标签）；用户仍可在处理设置里关掉。
+  const [mmEnhance, setMmEnhance] = useState(true);
   const [customPrompt, setCustomPrompt] = useState('');
   const [separationMode, setSeparationMode] = useState<SeparationMode>('off');
   const [backends, setBackends] = useState<SeparationBackends>({});

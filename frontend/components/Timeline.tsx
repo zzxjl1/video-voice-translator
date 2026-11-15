@@ -1,7 +1,9 @@
 /**
  * 时间线：波形 + 每一句的色块。
  *
- *   · 台词是说话人颜色的实心块；音乐 / 噪音 / 人声非语言是各自颜色的描边块，带图标。
+ *   · 台词是说话人颜色的实心块 + 对白气泡图标；非台词是各自颜色的描边块 + 自己的图标。
+ *     图标要自己能说明类型（10px 单色描边下轮廓互不混淆），所以不需要额外一行图例；
+ *     种类名和说明留在 tooltip 里。
  *     只有导出时真的会保留原声的人声非语言是实心的（它是唯一会出现在成片里的非台词）。
  *   · 同时说话的两句（时间重叠）分到不同的行里画，不叠在一起。
  *   · 鼠标指到任何一块：高亮它占的那段时间，浮出说话人 / 种类、时间、文字和状态。
@@ -30,29 +32,38 @@ interface TimelineProps {
 const LANE_H = 14;       // 每一行的高度（px）
 const LANE_GAP = 1;
 
-/** 小图标（feather 风格，描边）。 */
+/**
+ * 五类片段的图标。主要显示尺寸只有 10px、单色描边，所以只留最粗的轮廓，
+ * 彼此形状要一眼分得开：对白气泡 / 单音符 / 双音符 / 圆脸 / 锯齿折线。
+ */
 const ICON_PATHS: Record<string, React.ReactNode> = {
+  // 台词（有人说话、要翻译配音）：对白气泡，一句台词 = 一条消息
+  speech: <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />,
+  // 背景音乐（纯器乐）：一个八分音符 ♪
   music: (
     <>
-      <path d="M9 18V5l12-2v13" />
+      <path d="M9 18V5l11-2" />
       <circle cx="6" cy="18" r="3" />
-      <circle cx="18" cy="16" r="3" />
     </>
   ),
-  noise: <path d="M9.6 4.6A2 2 0 1 1 11 8H2m10.6 11.4A2 2 0 1 0 14 16H2m15.7-8.3A2.5 2.5 0 1 1 19.5 12H2" />,
+  // 歌曲（有人唱）：一段旋律 ♫。不用麦克风 —— 麦克风会被当成"音乐"本身
   song: (
     <>
-      <path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z" />
-      <path d="M19 10v2a7 7 0 01-14 0v-2M12 19v4" />
+      <path d="M9 18V5l11-2v13" />
+      <circle cx="6" cy="18" r="3" />
+      <circle cx="17" cy="16" r="3" />
     </>
   ),
+  // 人声非语言（笑、叹气、咳嗽）：一张脸，和音乐类彻底分开
   vocal: (
     <>
-      <circle cx="12" cy="12" r="10" />
-      <path d="M8 14s1.5 2 4 2 4-2 4-2" />
-      <path d="M9 9h.01M15 9h.01" />
+      <circle cx="12" cy="12" r="9" />
+      <path d="M9.5 9.5h.01M14.5 9.5h.01" />
+      <path d="M8.5 13.5s1.5 2 3.5 2 3.5-2 3.5-2" />
     </>
   ),
+  // 噪音：杂乱的尖峰波形（原来三条带圆头的横线更像"风"）
+  noise: <path d="M2 12h4l3-7 4 14 3-9 2 2h4" />,
 };
 
 export const KindIcon: React.FC<{ kind: string; size?: number; color?: string }> = ({ kind, size = 10, color }) => (
@@ -106,11 +117,6 @@ const Timeline: React.FC<TimelineProps> = ({
   const laneAreaH = laneCount * (LANE_H + LANE_GAP) + LANE_GAP;
   const hovered = hover ? segments.findIndex((s) => s.id === hover.id) : -1;
   const hoveredSeg = hovered >= 0 ? segments[hovered] : null;
-
-  const presentKinds = useMemo(
-    () => (['music', 'noise', 'vocal', 'song'] as const).filter((k) => segments.some((s) => s.kind === k)),
-    [segments],
-  );
 
   const onEnter = (e: React.MouseEvent, id: string) => {
     if (!timelineRef.current) return;
@@ -199,7 +205,7 @@ const Timeline: React.FC<TimelineProps> = ({
                 onMouseMove={(e) => onEnter(e, seg.id)}
                 onMouseLeave={() => setHover(null)}
               >
-                {!speech && showIcon(blockPx) && <KindIcon kind={seg.kind} size={10} />}
+                {showIcon(blockPx) && <KindIcon kind={seg.kind} size={10} />}
               </div>
             );
           })}
@@ -230,12 +236,12 @@ const Timeline: React.FC<TimelineProps> = ({
               <div className="flex items-center gap-1.5 mb-1">
                 {isSpeech(hoveredSeg) ? (
                   <>
-                    <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: colorOf(hoveredSeg.speakerId) }}></span>
+                    <KindIcon kind="speech" size={12} color={colorOf(hoveredSeg.speakerId)} />
                     <span className="font-medium">{speakerName.get(hoveredSeg.speakerId) ?? hoveredSeg.speakerId}</span>
                   </>
                 ) : (
                   <>
-                    <span style={{ color: colorOfSegment(hoveredSeg, colorOf) }}><KindIcon kind={hoveredSeg.kind} size={12} /></span>
+                    <KindIcon kind={hoveredSeg.kind} size={12} color={colorOfSegment(hoveredSeg, colorOf)} />
                     <span className="font-medium">{KIND_META[hoveredSeg.kind as keyof typeof KIND_META]?.label}</span>
                   </>
                 )}
@@ -266,18 +272,6 @@ const Timeline: React.FC<TimelineProps> = ({
           </div>
         )}
       </div>
-
-      {/* 图例：只列出这个工程里真有的种类 */}
-      {presentKinds.length > 0 && (
-        <div className="flex items-center gap-3 mt-2 text-[10px] text-gray-400">
-          {presentKinds.map((k) => (
-            <span key={k} className="flex items-center gap-1">
-              <span style={{ color: KIND_META[k].color }}><KindIcon kind={k} size={10} /></span>
-              {KIND_META[k].label}
-            </span>
-          ))}
-        </div>
-      )}
     </div>
   );
 };

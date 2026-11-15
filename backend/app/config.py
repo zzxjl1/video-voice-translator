@@ -364,7 +364,8 @@ TTS_TIMEOUT = _env_int("TTS_TIMEOUT", 60)
 # 译文进 TTS 时标签被渲染成语气。标注结果随工程落盘，恢复时直接复用。
 #
 # 这里【没有】全局开关：唯一的控制是工程里那个可见开关（「多模态增强识别」，
-# 随工程持久化，默认关）。曾经有个 MULTIMODAL_ENHANCE 环境变量，但没有任何
+# 随工程持久化）。落地页（intro）默认勾选；直接调 /setup 不传 mm_enhance 时仍按
+# False，老工程维持各自已存的值。曾经有个 MULTIMODAL_ENHANCE 环境变量，但没有任何
 # 代码读它 —— 一个叫得像总闸门、实际什么都不做的配置，比没有更糟。
 OMNI_MODEL = _env("OMNI_MODEL", "qwen3.8-omni-flash")
 OMNI_BASE_URL = _env("OMNI_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")

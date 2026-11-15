@@ -206,7 +206,7 @@ const ProcessingSettings: React.FC<ProcessingSettingsProps> = ({
                     <div className="flex items-center justify-between gap-3 py-1.5 px-3 bg-gray-50 rounded-xl">
                         <div className="flex items-center">
                             <span className="text-sm font-medium text-gray-700">多模态增强识别</span>
-                            <InfoTooltip text="纠正语音识别的错字漏字，并标注每句的语气（兴奋、耳语、大笑…），翻译基于纠错后的文本进行。会增加一些处理时间。" />
+                            <InfoTooltip text="默认开启：纠正语音识别的错字漏字，并标注每句的语气（兴奋、耳语、大笑…），翻译基于纠错后的文本进行。会增加一些处理时间；不需要可以关掉。" />
                         </div>
                         <Switch on={mmEnhance} onClick={() => onMmEnhanceChange(!mmEnhance)} />
                     </div>
