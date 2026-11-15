@@ -169,6 +169,26 @@ check("⑤ 音频格式正确（data URI + wav）", r[-1]["content"][1]["input_a
 check("⑤ 后续动作基于听到的结果", store.get_state(VID).segments[1].kind == "music")
 check("⑤ 音频不进持久化的聊天记录", "input_audio" not in open(os.path.join(TMP, VID, "chat.jsonl"), encoding="utf-8").read())
 
+# ⑤b 注入的说明文字必须写明听的是哪条轨：模型据此判断“没听到风声”算不算证据
+fresh()
+for name, val in (("extracted_audio.wav", b"\x01\x00"), ("vocals_asr.wav", b"\x02\x00")):   # fresh() 会清掉音轨文件
+    with wave.open(os.path.join(TMP, VID, name), "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(val * 16000 * 14)
+s = install([{"calls": [("listen", {"line": 2})]}, {"text": "听了。"}])
+say("第 2 句有风声吗？听一下")
+label = s.seen[1][-1]["content"][0]["text"]
+check("⑤b 默认听原声，说明里写的是原声（含背景音、环境声）", "原视频的声音" in label and "环境声" in label, label)
+s = install([{"calls": [("listen", {"line": 2, "track": "vocals"})]}, {"text": "听了。"}])
+say("只听人声")
+label = s.seen[1][-1]["content"][0]["text"]
+check("⑤b 听人声轨时，说明里写明背景音已被分离掉", "人声轨" in label and "分离掉" in label, label)
+os.remove(os.path.join(TMP, VID, "vocals_asr.wav"))
+s = install([{"calls": [("listen", {"line": 2, "track": "vocals"})]}, {"text": "没有人声轨。"}])
+say("只听人声")
+tool_reply = [m for m in s.seen[1] if m["role"] == "tool"][-1]["content"]
+check("⑤b 没有人声轨时，错误原因回给模型（含指路），而不是静默换成原声",
+      "没有人声轨" in tool_reply and "original" in tool_reply and not any(isinstance(m.get("content"), list) for m in s.seen[1][-1:]), tool_reply)
+
 # ------------------------------------------------------------------ ⑥ UI → AI：用户在界面上的改动
 fresh()
 s = install([{"text": "好的。"}])

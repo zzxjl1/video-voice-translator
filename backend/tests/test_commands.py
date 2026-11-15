@@ -242,6 +242,81 @@ check("⑭ 切出的是 5 秒（第 2 句 4~7 秒，前后各 1 秒）的 16k �
 check("⑭ 超过 60 秒被拒", not run("listen", {"start": 0, "end": 90})["ok"])
 check("⑭ 超出音频长度被拒", not run("listen", {"start": 50, "end": 55})["ok"])
 
+
+# ------------------------------------------------------------------ ⑭b listen 的 track：原声 / 人声 / 配音
+import subprocess
+def brief(res):
+    """失败详情里不要整段 base64 音频。"""
+    if isinstance(res, dict) and isinstance(res.get("result"), dict):
+        return {**res, "result": {k: v for k, v in res["result"].items() if k != "_audio"}}
+    return res
+def samples_of(res):
+    w = wave.open(io.BytesIO(base64.b64decode(res["result"]["_audio"])))
+    return w, w.readframes(w.getnframes())[:2]
+def put_wav(name, value, seconds=14):
+    with wave.open(os.path.join(TMP, VID, name), "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(16000); w.writeframes(value * 16000 * seconds)
+
+fresh()
+ORIG, VOC = os.path.join(TMP, VID, "extracted_audio.wav"), os.path.join(TMP, VID, "vocals_asr.wav")
+put_wav("extracted_audio.wav", b"\x01\x00")                  # fresh() 会重建工程目录，原声要自己放回去
+put_wav("vocals_asr.wav", b"\x02\x00")                       # 与原声（样本值 1）区分开
+r = run("listen", {"line": 2})
+check("⑭b 默认听原声，哪怕人声轨也在（样本值 1，不是人声轨的 2）",
+      r["ok"] and r["result"]["track"] == "original" and samples_of(r)[1] == b"\x01\x00", r.get("error"))
+r = run("listen", {"line": 2, "track": "vocals"})
+check("⑭b track=vocals 听人声轨（样本值 2）", r["ok"] and r["result"]["track"] == "vocals" and samples_of(r)[1] == b"\x02\x00", r.get("error"))
+r = run("listen", {"start": 1, "end": 3, "track": "original"})
+check("⑭b 按秒数听也认 track", r["ok"] and r["result"]["track"] == "original" and abs(samples_of(r)[0].getnframes() / 16000 - 2.0) < 0.01)
+check("⑭b 原声没有 note（没有退回）", "note" not in run("listen", {"line": 2})["result"])
+
+os.rename(ORIG, ORIG + ".bak")
+r = run("listen", {"line": 2})
+check("⑭b 没有原轨 → 退回人声轨，并在结果里如实写明（track=vocals + note）",
+      r["ok"] and r["result"]["track"] == "vocals" and "人声轨" in r["result"].get("note", "") and samples_of(r)[1] == b"\x02\x00", brief(r))
+os.rename(ORIG + ".bak", ORIG)
+
+os.rename(VOC, VOC + ".bak")
+r = run("listen", {"line": 2, "track": "vocals"})
+check("⑭b 明确要人声轨但没做过分离 → 报错并指路 original，不偷偷换成原声",
+      not r["ok"] and "人声轨" in r["error"] and "original" in r.get("hint", ""), {k: v for k, v in r.items() if k != "result"})
+check("⑭b 没有人声轨时默认（原声）照常能听", run("listen", {"line": 2})["ok"])
+os.rename(VOC + ".bak", VOC)
+r = run("listen", {"line": 2, "track": "radio"})
+check("⑭b 不认识的 track 被参数校验拦住", not r["ok"] and "track" in r["error"], r)
+
+# ---- dub：听一句配音的成品（mp3 → 16k 单声道 wav）
+fresh()
+mp3 = tts_audio_path(VID, "a"); os.makedirs(os.path.dirname(mp3), exist_ok=True)
+subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=f=330:d=1.5", "-ar", "24000", "-c:a", "libmp3lame", mp3], check=True)
+def dubbed(s):
+    a = s.segment("a"); a.tts_fp = status.expected_tts_fp(s, a); a.actual_duration = 1.5
+store.mutate(VID, dubbed, actor="system", cmd="dub", summary="dub")
+r = run("listen", {"line": 1, "track": "dub"})
+w = wave.open(io.BytesIO(base64.b64decode(r["result"]["_audio"]))) if r["ok"] else None
+check("⑭b 听配音：返回 16k 单声道 wav，wav 头里的时长约 1.5 秒（不带前后各 1 秒）",
+      r["ok"] and r["result"]["track"] == "dub" and w.getframerate() == 16000 and w.getnchannels() == 1 and abs(w.getnframes() / 16000 - 1.5) < 0.1,
+      (r.get("error"), w.getnframes() / 16000 if w else None))
+check("⑭b 说明里的秒数和实际一致", "1.5 秒" in r["result"]["listening"], r["result"]["listening"])
+check("⑭b 配音新鲜时没有 note，说明里是第几句", "note" not in r["result"] and "第 1 句" in r["result"]["listening"])
+run("set_dub_style", {"lines": [1], "instruction": "请用悲伤的语气慢慢说。"})
+r = run("listen", {"line": 1, "track": "dub"})
+check("⑭b 配音过期时仍能听，但 note 明说这是旧的", r["ok"] and "旧的配音" in r["result"].get("note", ""), brief(r))
+def translated_b(s):
+    b = s.segment("b"); b.translated_text = "Yes, let's go out"; b.tr_fp = status.expected_tr_fp(s, b)
+store.mutate(VID, translated_b, actor="system", cmd="translate", summary="translate")
+r = run("listen", {"line": 2, "track": "dub"})
+check("⑭b 这一句还没配音 → 报错并指路 redub", not r["ok"] and "还没有配音" in r["error"] and "redub" in r.get("hint", ""), r)
+run("mark_non_speech", {"lines": [3], "kind": "music"})
+r = run("listen", {"line": 3, "track": "dub"})
+check("⑭b 非语音行不配音 → 说清原因", not r["ok"] and "不配音" in r["error"], r)
+check("⑭b track=dub 不给 line 被拒", not run("listen", {"track": "dub"})["ok"])
+r = run("listen", {"line": 1, "start": 0, "end": 2, "track": "dub"})
+check("⑭b track=dub 同时给 start/end 被拒（不静默忽略）", not r["ok"] and "start" in r["error"], brief(r))
+open(mp3, "wb").write(b"not an mp3")
+r = run("listen", {"line": 1, "track": "dub"})
+check("⑭b 配音文件损坏 → 清楚的报错，不抛异常", not r["ok"] and "读不出来" in r["error"], r)
+
 # ------------------------------------------------------------------ ⑮ 字幕样式
 fresh()
 r = run("set_subtitle_style", {"font_size_percent": 6, "primary_color": "#FFD400"})

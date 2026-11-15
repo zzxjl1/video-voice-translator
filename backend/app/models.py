@@ -182,6 +182,18 @@ def tts_audio_path(video_id: str, segment_id: str) -> str:
     return os.path.join(video_dir_path(video_id), "tts", f"{segment_id}.mp3")
 
 
+def original_audio_path(video_id: str) -> Optional[str]:
+    """原视频的完整声音（16 kHz 单声道，含背景音乐、风声、环境声）。没抽过时返回 None。"""
+    path = os.path.join(video_dir_path(video_id), "extracted_audio.wav")
+    return path if os.path.exists(path) else None
+
+
+def vocals_audio_path(video_id: str) -> Optional[str]:
+    """人声分离之后的人声轨（16 kHz 单声道）。没做过人声分离时返回 None。"""
+    path = os.path.join(video_dir_path(video_id), "vocals_asr.wav")
+    return path if os.path.exists(path) else None
+
+
 def asr_audio_path(video_id: str) -> Optional[str]:
     """
     给 ASR / omni 听的 16 kHz 单声道音轨：有人声分离结果用它，否则用整条抽出的音频。

@@ -6,6 +6,7 @@
 AI 共用的坐标系。
 """
 import os
+import subprocess
 import wave
 import io
 import base64
@@ -13,7 +14,7 @@ from typing import Optional
 
 from app import config, jobs, status, store, view
 from app.commands.registry import CommandError, Ctx, command, resolve_line, resolve_speaker
-from app.models import asr_audio_path, video_dir_path
+from app.models import original_audio_path, tts_audio_path, video_dir_path, vocals_audio_path
 
 TEXT_CAP = 160       # 列表里每句最多给多少字，完整内容用 get_lines
 
@@ -228,17 +229,25 @@ def list_voices(ctx: Ctx):
 
 @command(
     "listen",
-    "听一段原视频的声音（人声轨优先）。音频会附在下一条消息里。用来判断是不是音乐、有没有多人重叠、"
-    "ASR 听错了什么。最长 60 秒。",
+    "听一段声音，音频会附在下一条消息里。用来判断是不是音乐、有没有多人重叠、ASR 听错了什么、有没有笑声/风声/撞击声。"
+    "最长 60 秒。track 选听哪条轨：original（默认）= 原视频的完整声音，含背景音乐和环境声；"
+    "vocals = 只听人声轨（要做过人声分离才有）；dub = 听某一句配音出来的成品（必须给 line）。",
     {"type": "object", "properties": {
-        "line": {"type": "integer", "minimum": 1, "description": "听第几句（自动带前后各 1 秒）"},
-        "start": {"type": "number", "minimum": 0, "description": "起点秒数（和 end 一起用，代替 line）"},
+        "line": {"type": "integer", "minimum": 1,
+                 "description": "听第几句（original/vocals 自动带前后各 1 秒；dub 只听这一句的配音）"},
+        "start": {"type": "number", "minimum": 0, "description": "起点秒数（和 end 一起用，代替 line；dub 不能用）"},
         "end": {"type": "number", "minimum": 0},
+        "track": {"type": "string", "enum": ["original", "vocals", "dub"],
+                  "description": "听哪条轨，默认 original"},
     }},
     readonly=True, group="read",
 )
-def listen(ctx: Ctx, line: Optional[int] = None, start: Optional[float] = None, end: Optional[float] = None):
+def listen(ctx: Ctx, line: Optional[int] = None, start: Optional[float] = None, end: Optional[float] = None,
+           track: str = "original"):
     state = ctx.state
+    if track == "dub":
+        return _listen_dub(ctx, line, start, end)
+
     if line is not None:
         _, seg = resolve_line(state, line)
         start, end = max(0.0, seg.start_time - 1.0), seg.end_time + 1.0
@@ -248,12 +257,71 @@ def listen(ctx: Ctx, line: Optional[int] = None, start: Optional[float] = None, 
         raise CommandError("end 必须大于 start")
     if end - start > 60:
         raise CommandError("一次最多听 60 秒；缩小范围")
-    path = asr_audio_path(ctx.video_id)
+
+    note = None
+    if track == "vocals":
+        path = vocals_audio_path(ctx.video_id)
+        if not path:
+            raise CommandError("这个工程没有人声轨（没做过人声分离）", hint="用 track=original 听原声")
+        used = "vocals"
+    else:
+        path = original_audio_path(ctx.video_id)
+        used = "original"
+        if not path:
+            path = vocals_audio_path(ctx.video_id)         # 没有原轨就退回人声轨，并如实告诉模型
+            used = "vocals"
+            note = "没有原声音轨，听到的是人声轨（背景音、环境声可能已被去掉）"
     if not path:
         raise CommandError("还没有可听的音轨（初始化还没跑到抽音频这一步）")
     wav_b64 = clip_wav_b64(path, start, end)
     # 音频本身不进返回值（要走特殊的消息通道），由 AI 循环取走 `_audio`。
-    return {"listening": f"{_fmt_t(start)}-{_fmt_t(end)}", "_audio": wav_b64}
+    result = {"track": used, "listening": f"{_fmt_t(start)}-{_fmt_t(end)}", "_audio": wav_b64}
+    if note:
+        result["note"] = note
+    return result
+
+
+def _listen_dub(ctx: Ctx, line: Optional[int], start: Optional[float], end: Optional[float]):
+    """听一句配音的成品。配音是 mp3，转成和其他轨一样的 16 kHz 单声道 wav 再交给模型。"""
+    if line is None:
+        raise CommandError("听配音要给 line（第几句）")
+    if start is not None or end is not None:
+        raise CommandError("track=dub 听的是整句配音，不能再给 start/end")
+    state = ctx.state
+    i, seg = resolve_line(state, line)
+    dub = status.tts_status(state, seg)
+    if dub == status.NONE:
+        raise CommandError(f"第 {i + 1} 句不配音（静音、非语音、没有译文，或没开配音）")
+    if dub == status.MISSING:
+        raise CommandError(f"第 {i + 1} 句还没有配音", hint="先 redub 这一句")
+    wav_b64, seconds = dub_wav_b64(tts_audio_path(ctx.video_id, seg.id))
+    result = {"track": "dub", "listening": f"第 {i + 1} 句的配音（{seconds:.1f} 秒）", "_audio": wav_b64}
+    if dub == status.STALE:
+        result["note"] = "这是旧的配音：译文或配音设置改过之后还没重新合成，听到的不是最新的"
+    return result
+
+
+def dub_wav_b64(path: str) -> tuple[str, float]:
+    """
+    mp3 → 16 kHz 单声道 wav（最多 60 秒），返回 (base64, 秒数)。
+
+    ffmpeg 只输出裸 PCM，wav 头由 `wave` 自己写：让 ffmpeg 往管道里写 wav 的话，它没法回头
+    改文件头，头里的长度是个巨大的占位值（实测解码出 13 万秒），下游会读错。
+    """
+    try:
+        r = subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", path, "-t", "60", "-ac", "1", "-ar", "16000", "-f", "s16le", "-"],
+            capture_output=True, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise CommandError(f"没能读出配音音频：{e}")
+    if r.returncode != 0 or not r.stdout:
+        raise CommandError("配音文件读不出来（可能已损坏），重新 redub 这一句试试")
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as out:
+        out.setnchannels(1); out.setsampwidth(2); out.setframerate(16000)
+        out.writeframes(r.stdout)
+    return base64.b64encode(buf.getvalue()).decode(), len(r.stdout) / 2 / 16000.0
 
 
 def clip_wav_b64(path: str, start: float, end: float) -> str:

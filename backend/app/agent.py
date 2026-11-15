@@ -62,7 +62,9 @@ SYSTEM_PROMPT = """你是这个视频配音项目的 AI 助手，和用户一起
 【怎么工作】
 - 句子用"第 N 句"（行号）称呼，和用户界面上显示的编号一致。插入/拆分/合并/删除之后行号会变，改完要重新看。
 - 动手前先看：get_overview 看全貌，list_lines / get_lines 看具体句子。不要凭空猜内容。
-- 判断"是不是音乐 / 有没有两个人同时说 / ASR 听错了什么"要用 listen 听，不要只看文字。
+- 判断"是不是音乐 / 有没有两个人同时说 / ASR 听错了什么 / 有没有笑声风声撞击声"要用 listen 听，不要只看文字。
+  listen 默认听原声（含背景音乐和环境声）；只想听人声用 track=vocals；想听某一句配出来的效果用 track=dub + line。
+  注意看返回里的 track 和 note：听到的不是原声时，"没听到风声/音乐"不代表原片里没有。
 - 翻译和配音是两步：改了原文或译文，配音会过期，要 redub；改了语气/语速，配音也过期。
 - 配音时长要和时间槽（slot_s）大致相当：dub_vs_slot 大于 1.15 说明配音太长（会被加速或裁掉），
   小于 0.8 说明太短。优先让译文更简短或调语速，而不是硬塞。
@@ -300,7 +302,20 @@ def resolve_confirmation(video_id: str, card_id: str, approve: bool) -> bool:
     return True
 
 
-async def _run_tool(chat: Chat, video_id: str, call: dict) -> tuple[dict, Optional[str]]:
+_TRACK_LABEL = {
+    "original": "原视频的声音（含背景音乐、环境声）",
+    "vocals": "原视频的人声轨（背景音已被分离掉）",
+    "dub": "配音成品",
+}
+
+
+def _audio_label(result: dict) -> str:
+    """注入音频时的说明文字：模型必须知道自己听的是哪条轨，否则会把"没有风声"当成"原片没有风声"。"""
+    what = _TRACK_LABEL.get(result.get("track"), "一段声音")
+    return f"[listen 的结果：{what}，{result.get('listening', '')}]"
+
+
+async def _run_tool(chat: Chat, video_id: str, call: dict) -> tuple[dict, Optional[dict]]:
     """执行一个 tool call。返回 (给模型的结果, 待注入的音频 base64)。"""
     name = call["name"]
     try:
@@ -322,7 +337,7 @@ async def _run_tool(chat: Chat, video_id: str, call: dict) -> tuple[dict, Option
 
     audio = None
     if outcome.get("ok") and isinstance(outcome.get("result"), dict) and "_audio" in outcome["result"]:
-        audio = outcome["result"].pop("_audio")
+        audio = {"b64": outcome["result"].pop("_audio"), "label": _audio_label(outcome["result"])}
     bus.publish(video_id, {"type": "chat", "kind": "tool_result", "id": call["id"], "name": name,
                            "conv": chat.conv,
                            "ok": bool(outcome.get("ok")),
@@ -413,7 +428,7 @@ async def _respond(chat: Chat, video_id: str, user_text: str, conv: str) -> None
             "tool_calls": [{"id": c["id"], "type": "function", "function": {"name": c["name"], "arguments": c["args"] or "{}"}}
                            for c in calls],
         })
-        injected: list[str] = []
+        injected: list[dict] = []
         for c in calls:                       # 逐个执行：后一个可能依赖前一个的改动（行号会变）
             if chat.cancel.is_set():
                 # 取消后不再动手，但每个 tool_call 仍要有回复（协议要求，也让记录自洽）
@@ -434,8 +449,8 @@ async def _respond(chat: Chat, video_id: str, user_text: str, conv: str) -> None
         for audio in injected:
             # tool 结果只能是文本：音频作为紧随其后的 user 消息注入（P0 实测可行）
             messages.append({"role": "user", "content": [
-                {"type": "text", "text": "[listen 的结果：这段原视频的声音]"},
-                {"type": "input_audio", "input_audio": {"data": f"data:;base64,{audio}", "format": "wav"}},
+                {"type": "text", "text": audio["label"]},
+                {"type": "input_audio", "input_audio": {"data": f"data:;base64,{audio['b64']}", "format": "wav"}},
             ]})
         if chat.cancel.is_set():
             stopped = True
