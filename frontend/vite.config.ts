@@ -5,10 +5,24 @@ import react from '@vitejs/plugin-react';
 // Backend port (see backend/start_server.py and backend/nginx.conf).
 const BACKEND_ORIGIN = process.env.VITE_BACKEND_ORIGIN || 'http://localhost:9100';
 
+/**
+ * Bind to loopback by default, same convention as backend/start_server.py.
+ *
+ * `0.0.0.0` put the dev server on every interface, so anyone on the same LAN (or
+ * on the host's public IP, if the firewall allows it) could reach :3100. The dev
+ * server has no auth, serves unbundled sources plus source maps, and will happily
+ * proxy /api — including multi-GB uploads — to the backend. Local development
+ * never needs that reachability: http://localhost:3100 works the same either way.
+ *
+ * Set VITE_HOST=0.0.0.0 when a device on the LAN really has to connect (phone
+ * testing), which is an explicit, per-run decision rather than the default.
+ */
+const DEV_HOST = process.env.VITE_HOST || '127.0.0.1';
+
 export default defineConfig({
   server: {
     port: 3100,
-    host: '0.0.0.0',
+    host: DEV_HOST,
     allowedHosts: ['video-voice-translator.idealbroker.cn'],
     /**
      * Forward /api to the FastAPI backend.
@@ -47,7 +61,8 @@ export default defineConfig({
   preview: {
     port: 3300,
     strictPort: true,
-    host: '0.0.0.0',
+    // Same reasoning as `server.host` above: preview proxies /api too.
+    host: DEV_HOST,
     allowedHosts: ['video-voice-translator.idealbroker.cn'],
     proxy: {
       '/api': {
