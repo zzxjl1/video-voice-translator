@@ -1001,6 +1001,251 @@ if os.path.exists(os.path.join(SAMPLE, "speech_stem.flac")):
         _tts.synthesize_speech = _orig_synth
     check("⑨ 没做人声分离：不量（原声里混着背景，不是纯人声，比不出），保持合成原样", all(g_.tts_gain_db is None for g_ in store.get_state(DV).segments), [g_.tts_gain_db for g_ in store.get_state(DV).segments])
 
+# ============================================================================ ⑩ kind=song：唱歌
+# 歌词被 ASR 当台词转写了。song：不翻译、不配音；字幕是原歌词加 ♪；分离过人声的工程导出时保留原声（主唱 + 伴奏）。
+from app.services import omni_service as OM
+
+def song(sid, a, b, lyric, **kw): return Segment(sid, "0", a, b, lyric, kind="song", **kw)
+
+# ---- 字幕：所有轨道都是原歌词，前后各一个 ♪，不翻译
+for trk in ("translated", "original", "bilingual"):
+    st_ = dataclasses.replace(sty, track=trk)
+    cues = SS.build_cues([song("g", 0.0, 4.0, "月亮代表我的心", translated_text="THE MOON REPRESENTS MY HEART")], st_, probe_audio=False)
+    check(f"⑩ 歌曲字幕（{trk} 轨）：原歌词、前后各一个 ♪，不用译文，也不重复一行",
+          len(cues) == 1 and cues[0].lines(st_) == ["♪ 月亮代表我的心 ♪"], [c.lines(st_) for c in cues])
+cues = SS.build_cues([song("g", 0.0, 4.0, "原始歌词", reviewed_text="[excited] 纠过错的歌词。")], sty, probe_audio=False)
+check("⑩ 有审听版就用它，语气标签不出现在字幕里", cues[0].lines(sty) == ["♪ 纠过错的歌词。 ♪"], cues[0].lines(sty))
+check("⑩ 隐藏的歌曲行不出字幕", SS.build_cues([song("g", 0.0, 4.0, "歌词", hidden=True)], sty, probe_audio=False) == [])
+check("⑩ 没有歌词（空文字）不出空字幕", SS.build_cues([song("g", 0.0, 4.0, "  ")], sty, probe_audio=False) == [])
+cues = SS.build_cues([sub_seg("a", 0.0, 3.0, "Hello."), song("g", 4.0, 8.0, "啦啦啦"), Segment("m", "0", 9.0, 10.0, "（音乐）", kind="music"), Segment("v", "0", 11.0, 12.0, "（笑）", kind="vocal")], sty, probe_audio=False)
+check("⑩ 台词、歌曲各出一条；音乐 / 人声非语言仍然不出字幕", [c.lines(sty) for c in cues] == [["Hello."], ["♪ 啦啦啦 ♪"]], [c.lines(sty) for c in cues])
+
+# ---- 长歌词：按字数比例切成连续的几条，♪ 只在每条的首行行首、末行行尾，不丢字、不出现孤立的 ♪
+LONG = "这是一句很长很长的歌词，唱了好几行才唱完，每一个字都应该留在字幕里，而且结尾的音符不能被挤成孤零零的一条。"
+lc = SS.build_cues([song("g", 10.0, 22.0, LONG)], sty, probe_audio=False)
+back = "".join(l.replace("♪", "").strip() for c in lc for l in c.lines(sty))
+check("⑩ 长歌词：切成多条字幕，歌词一个字不丢（不加译文）", len(lc) >= 2 and back == LONG, (len(lc), back))
+check("⑩ 长歌词：每条的首行行首、末行行尾各一个 ♪，每条不超过 max_lines 行，没有孤立的 ♪",
+      all(c.lines(sty)[0].startswith("♪ ") and c.lines(sty)[-1].endswith(" ♪") and len(c.lines(sty)) <= sty.max_lines
+          and "♪" not in [l.strip() for l in c.lines(sty)] for c in lc), [c.lines(sty) for c in lc])
+check("⑩ 长歌词：几条首尾相接、总时长正好是这句歌词的 12 秒", abs(lc[0].start - 10.0) < 1e-6 and abs(lc[-1].end - 22.0) < 1e-6
+      and all(abs(a.end - b.start) < 1e-6 for a, b in zip(lc, lc[1:])), [(c.start, c.end) for c in lc])
+check("⑩ 长歌词：每一行都不超过行宽（给 ♪ 留了位置）", all(SS._display_width(l) <= sty.max_chars_per_line for c in lc for l in c.lines(sty)), [[SS._display_width(l) for l in c.lines(sty)] for c in lc])
+dc = SS.build_cues([sub_seg("a", 0.0, 6.0, "Right."), song("g", 1.0, 6.0, "啦啦啦")], sty, probe_audio=False)
+check("⑩ 歌曲和台词同时出现（重叠）：合成一条两行字幕，歌曲那行也带 ♪", len(dc) == 1 and dc[0].lines(sty) == ["- Right.", "- ♪ 啦啦啦 ♪"], [c.lines(sty) for c in dc])
+
+# ---- 混音计划：和 vocal 一样从人声轨保留原声，长度不限
+stS, dS = mk_state()
+write_wav(os.path.join(dS, "vocals.wav"), track(44100, 20.0, [(5.0, 15.0, 880)]), 44100)
+stS.segments = [speech("s1", 1.0, 2.0, dS), song("sg", 5.0, 15.0, "歌词")]
+plS = mix_service.build_mix_plan(stS)
+eS = {e["id"]: e for e in plS["segments"]}
+check("⑩ 计划：歌曲（10 秒）有保留原声的条目，原速、不裁剪", eS.get("sg", {}).get("source") == "vocals" and eS["sg"]["atempo"] == 1.0 and eS["sg"]["trim"] is None and eS["sg"]["played"] == 10.0, eS.get("sg"))
+check("⑩ 计划：垫底仍是背景轨、不压低（伴奏原样）", plS["bed"]["kind"] == "background" and plS["bed"]["duck"] == [], plS["bed"])
+stS.segments[1].muted = True
+check("⑩ 静音的歌曲不保留", all(e["id"] != "sg" for e in mix_service.build_mix_plan(stS)["segments"]))
+stS.segments[1].muted = False
+stS2, dS2 = mk_state(with_bg=False)
+stS2.segments = [speech("s1", 1.0, 2.0, dS2), song("sg", 5.0, 15.0, "歌词")]
+p2 = mix_service.build_mix_plan(stS2)
+check("⑩ 没做人声分离：不保留（原声本来就在垫底里，再叠一份会重复），歌曲也没有配音", all(e["id"] != "sg" for e in p2["segments"]) and len(p2["segments"]) == 1)
+check("⑩ 没分离时，歌曲那段原声不被压低（不然伴奏和主唱一起没了）", all(not (4.0 < t < 16.0) for t, _ in p2["bed"]["duck"]), p2["bed"]["duck"])
+# mk_state() 每次都重建同一个工程目录（上面没分离的那份删掉了背景轨），导出检查重新来一份
+stS, dS = mk_state()
+write_wav(os.path.join(dS, "vocals.wav"), track(44100, 20.0, [(5.0, 15.0, 880)]), 44100)
+stS.segments = [speech("s1", 1.0, 2.0, dS), song("sg", 5.0, 15.0, "歌词")]
+plS_keep = mix_service.build_mix_plan(stS)
+tlS = export_service.build_dubbed_timeline(stS.video_id, stS, 20.0, plS_keep)
+kpS = export_service.build_dubbed_timeline(stS.video_id, stS, 20.0, plS_keep, kept=True)
+kx, kr = load_tl(kpS); tx, _ = load_tl(tlS)
+check("⑩ 导出：保留的原声时间轴里，歌曲整段 10 秒都在（880 Hz）", abs(peak_hz(kx, kr, 6.0, 14.0) - 880) < 20 and rms(kx, kr, 5.2, 14.8) > 500 and rms(kx, kr, 15.5, 19.0) < 50, (peak_hz(kx, kr, 6.0, 14.0), rms(kx, kr, 5.2, 14.8)))
+check("⑩ 导出：配音时间轴里没有歌曲（不用 TTS 念歌词）", rms(tx, kr, 5.2, 14.8) < 50)
+
+# ---- 视图 / 预览接口
+fresh()
+def add_song(st_):
+    st_.segments.append(song("sg", 12.0, 24.0, "啦啦啦"))
+    st_.segments.append(Segment("mu", "0", 25.0, 27.0, "（音乐）", kind="music"))
+store.mutate(VID, add_song, actor="user", cmd="t", summary="t")
+d_ = video_dir_path(VID)
+write_wav(os.path.join(d_, "background.wav"), track(44100, 30.0, []), 44100)
+write_wav(os.path.join(d_, "vocals.wav"), track(44100, 30.0, [(12.0, 24.0, 660)]), 44100)
+c10 = TestClient(app); PP = f"/api/projects/{VID}"
+sv = store.get_state(VID)
+idx = [g.id for g in sv.segments].index("sg")
+check("⑩ 视图：歌曲行带预览地址、kind=song", view.segment_view(sv, sv.segments[idx], idx)["audioUrl"] == f"{PP}/keep/sg?v=12.000-24.000" and view.segment_view(sv, sv.segments[idx], idx)["kind"] == "song")
+r = c10.get(f"{PP}/keep/sg")
+w = wave.open(io.BytesIO(r.content)) if r.status_code == 200 else None
+check("⑩ 预览接口：歌曲返回整段 12 秒，不是 8 秒上限", r.status_code == 200 and abs(w.getnframes() / w.getframerate() - 12.0) < 0.05, (r.status_code, w and w.getnframes() / w.getframerate()))
+check("⑩ 预览接口：音乐行没有可保留的原声 → 404", c10.get(f"{PP}/keep/mu").status_code == 404)
+check("⑩ 视图：音乐行没有预览地址", (lambda j: view.segment_view(sv, sv.segments[j], j)["audioUrl"] is None)([g.id for g in sv.segments].index("mu")))
+
+# ---- 命令与规则：song 可以很长、可以覆盖 ASR 转写出来的歌词行；撤销
+fresh()
+def add_long(st_): st_.segments.append(Segment("long", "0", 12.0, 42.0, "三十秒的歌词", translated_text="x"))
+store.mutate(VID, add_long, actor="user", cmd="t", summary="t")
+r = run("mark_non_speech", {"lines": [4], "kind": "vocal"})
+check("⑩ 对照：同一行标 vocal 被拒绝（30 秒不是笑声）", not r["ok"] and "整句话" in r["error"], r)
+r = run("mark_non_speech", {"lines": [4], "kind": "song"})
+stt = store.get_state(VID)
+check("⑩ 标 song：30 秒也放行（AI 也行），说明里写“歌曲”", r["ok"] and stt.segments[3].kind == "song", r)
+check("⑩ song 行：不翻译、不配音、不进待办", status.tr_status(stt, stt.segments[3]) == status.NONE and status.tts_status(stt, stt.segments[3]) == status.NONE)
+r = run("retranslate", {"lines": [4]})
+check("⑩ 对 song 行重翻译被拒绝，点明是哪一句、什么种类，并指路", not r["ok"] and "第 4 句（song）" in r["error"] and "mark_non_speech" in r.get("hint", ""), r)
+r = run("mark_non_speech", {"lines": [1, 2], "kind": "song"})
+check("⑩ 连续几句（和别的台词挨着、重叠）一起标 song 也行（歌词本来就是被当台词转写的）", r["ok"] and [g.kind for g in store.get_state(VID).segments][:2] == ["song", "song"], r)
+store.undo(VID, actor="user")
+check("⑩ 撤销：回到上一步", [g.kind for g in store.get_state(VID).segments][:2] == ["speech", "speech"])
+run("mark_non_speech", {"lines": [4], "kind": "speech"}, actor="user")
+check("⑩ 标回 speech 就恢复", store.get_state(VID).segments[3].kind == "speech")
+
+# ---- omni：识别唱歌（只认明确的 true）
+class _Msg:
+    def __init__(self, c): self.content = c
+class _Ch:
+    def __init__(self, c): self.message = _Msg(c)
+class _Rsp:
+    def __init__(self, c): self.choices = [_Ch(c)]
+omni_calls = []
+def fake_chat(payloads):
+    it = iter(payloads)
+    async def f(video_id, detail, **kw):
+        omni_calls.append(kw); return _Rsp(json.dumps(next(it), ensure_ascii=False))
+    return f
+ITEMS = [{"id": "a", "text": "你好"}, {"id": "b", "text": "啦啦啦"}, {"id": "c", "text": "再见"}, {"id": "d", "text": "嗯"}, {"id": "e", "text": "哈"}]
+GOOD = {"lines": [{"id": "a", "text": "你好", "sung": False}, {"id": "b", "text": "啦啦啦", "sung": True}, {"id": "c", "text": "再见", "sung": "yes"},
+                  {"id": "d", "text": "嗯"}, {"id": "e", "text": "哈", "sung": 1}]}
+_orig_chat = OM._chat
+OM._chat = fake_chat([GOOD])
+try:
+    texts, sung_ids = asyncio.run(OM.enhance_transcript("v", ITEMS, "https://x/a.wav"))
+finally:
+    OM._chat = _orig_chat
+check("⑩ omni：只有明确的 true 算唱歌（\"yes\"、1、缺字段都不算）", sung_ids == {"b"}, sung_ids)
+check("⑩ omni：文字照常返回，每个 id 都在", set(texts) == {"a", "b", "c", "d", "e"} and texts["b"] == "啦啦啦")
+prompt = omni_calls[-1]["messages"][0]["content"][0]["text"]
+check("⑩ omni：提示词里有判断唱歌的要求，且说明“不确定就是 false”、不许因为是唱的就改歌词", "SINGING" in prompt and "When unsure, false" in prompt and "never drop or reword lyrics" in prompt and '"sung": false' in prompt)
+check("⑩ omni：分段仍然是权威（提示词里那句没被动）", "SEGMENTATION IS AUTHORITATIVE" in prompt)
+OM._chat = fake_chat([{"lines": [{"id": "a", "text": "x", "sung": True}]}, GOOD])
+try:
+    texts, sung_ids = asyncio.run(OM.enhance_transcript("v", ITEMS, "https://x/a.wav"))
+finally:
+    OM._chat = _orig_chat
+check("⑩ omni：第一次回答缺行 → 重试，唱歌标记只取成功的那一次（不沾第一次的）", sung_ids == {"b"} and len(texts) == 5, (sung_ids, len(texts)))
+OM._chat = fake_chat([{"lines": []}, {"lines": []}])
+try:
+    try:
+        asyncio.run(OM.enhance_transcript("v", ITEMS, "https://x/a.wav")); raised = False
+    except RuntimeError:
+        raised = True
+finally:
+    OM._chat = _orig_chat
+check("⑩ omni：两次都不行 → 抛 RuntimeError（和以前一样）", raised)
+check("⑩ omni：没有输入 / 没有音频地址 → 空结果", asyncio.run(OM.enhance_transcript("v", [], "u")) == ({}, set()) and asyncio.run(OM.enhance_transcript("v", ITEMS, "")) == ({}, set()))
+
+# ---- step_review：听出唱歌的行直接标上，一条可撤销的记录；用户改过的不动
+class _JR:
+    cancel = type("E", (), {"is_set": staticmethod(lambda: False)})()
+    id = "j"; kind = "init"; lines = set(); total = done = 0
+    def check(self): pass
+def review_with(fake, mm=True):
+    fresh(); store.mutate(VID, lambda st_: setattr(st_, "mm_enhance", mm), actor="system", cmd="s", summary="s")
+    orig = OM.enhance_transcript; OM.enhance_transcript = fake
+    try:
+        return asyncio.run(jobs.step_review(VID, _JR(), "http://x"))
+    finally:
+        OM.enhance_transcript = orig
+async def enh(video_id, items, audio_url): return {i["id"]: f"[sad] {i['text']}" for i in items}, {"b"}
+ids = review_with(enh); stt = store.get_state(VID)
+check("⑩ step_review：听出唱歌的行（b）被标成 song，返回它的 id", ids == ["b"] and [g.kind for g in stt.segments] == ["speech", "song", "speech"], (ids, [g.kind for g in stt.segments]))
+check("⑩ step_review：校对结果照常落（唱歌的行也有审听版，字幕用它）", all(g.reviewed_text.startswith("[sad]") for g in stt.segments))
+und = store.can_undo(VID)
+check("⑩ step_review：标歌曲是一条可撤销的记录（和校对分开）", und and "标为歌曲" in und["summary"], und)
+store.undo(VID, actor="user"); stt = store.get_state(VID)
+check("⑩ 撤销：只撤销“标为歌曲”，校对结果还在", [g.kind for g in stt.segments] == ["speech"] * 3 and stt.segments[1].reviewed_text.startswith("[sad]"))
+async def enh_edit(video_id, items, audio_url):
+    store.mutate(VID, lambda st_: setattr(st_.segment("b"), "text", "用户改过的"), actor="user", cmd="e", summary="e")
+    return {i["id"]: f"[sad] {i['text']}" for i in items}, {"b"}
+ids = review_with(enh_edit); stt = store.get_state(VID)
+check("⑩ 听的时候用户改了原文：这一行不标歌曲、也不落审听版（以用户的为准）", ids == [] and stt.segments[1].kind == "speech" and stt.segments[1].reviewed_text == "", (ids, stt.segments[1].kind))
+async def enh_none(video_id, items, audio_url): return {i["id"]: i["text"] for i in items}, set()
+check("⑩ 没听出唱歌：什么都不标", review_with(enh_none) == [] and all(g.kind == "speech" for g in store.get_state(VID).segments))
+async def enh_boom(video_id, items, audio_url): raise RuntimeError("omni 挂了")
+check("⑩ omni 失败：只降级，不标、不抛", review_with(enh_boom) == [] and all(g.kind == "speech" for g in store.get_state(VID).segments))
+async def enh_must_not_run(video_id, items, audio_url): raise AssertionError("审听增强关着，不该调用 omni")
+check("⑩ 审听增强没开：不调用 omni，不标", review_with(enh_must_not_run, mm=False) == [])
+
+# ---- 欢迎消息
+fresh()
+def seed_songs(st_):
+    st_.segments[1].kind = "song"
+    st_.init_report = {"songs": {"ids": ["b"]}}
+store.mutate(VID, seed_songs, actor="system", cmd="init_report", summary="r", undoable=False)
+w = agent.welcome_text(VID)
+check("⑩ 欢迎消息：说了第几句是歌、怎么处理、不对怎么改", "第 2 句（共 1 句）是在唱歌" in w and "不翻译、不配音" in w and "♪" in w and "保留原声" in w and "改回语音" in w, w)
+check("⑩ 欢迎消息：歌曲不再被“被标成了非语音”重复提一遍", "被标成了非语音" not in w, w)
+store.mutate(VID, lambda st_: setattr(st_.segments[1], "kind", "speech"), actor="user", cmd="m", summary="m")
+check("⑩ 欢迎消息：用户已经改回语音就不再说“听出是唱歌”", "是在唱歌" not in agent.welcome_text(VID))
+check("⑩ 系统提示：告诉 AI 有 song，要先听再改", "mark_non_speech kind=song" in agent.SYSTEM_PROMPT and "track=vocals" in agent.SYSTEM_PROMPT)
+
+# ---- 端到端：真实样本 + 真实 ASR 输出，走完整 initialize（审听增强打开，omni 桩成“第 5 句是唱的”）→ 真导出，量成片里主唱在不在
+if os.path.exists(os.path.join(SAMPLE, "speech_stem.flac")) and os.path.exists(os.path.join(SAMPLE, "asr_baseline", "asr_vocals.json")) and "fake_asr" in globals():
+    import shutil as _sh3, time as _t3
+    SID = "songe2e0000000000000000000000000"
+    if store.exists(SID): store.delete(SID)
+    smp4 = os.path.join(TMP, "song.mp4"); _sh3.copy(os.path.join(SAMPLE, "problem_sample.mp4"), smp4)
+    store.create(SID, "song.mp4", smp4); sdir = video_dir_path(SID)
+    for src_name, out_name in (("speech_stem.flac", "vocals.wav"), ("background_stem.flac", "background.wav")):
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-i", os.path.join(SAMPLE, src_name), "-ac", "1", "-ar", "44100", os.path.join(sdir, out_name)], check=True)
+    seen["translate"].clear(); seen["tts"].clear()
+    async def enh_e2e(video_id, items, audio_url):
+        return {i["id"]: i["text"] for i in items}, {"seg-r5"}
+    _orig_enh = OM.enhance_transcript; OM.enhance_transcript = enh_e2e
+    def wait_song_init(timeout=40):
+        t0 = _t3.time()
+        while _t3.time() - t0 < timeout:
+            if not any(j["kind"] == "init" for j in jobs.active_snapshot(SID)): return True
+            _t3.sleep(0.05)
+        return False
+    try:
+        with TestClient(app) as cs:
+            r = cs.post(f"/api/projects/{SID}/setup", json={"target_language": "English", "enable_dubbing": True, "mm_enhance": True})
+            check("⑩ 端到端：setup（审听增强打开）启动初始化", r.status_code == 200, r.text)
+            check("⑩ 端到端：等初始化结束", wait_song_init()); _t3.sleep(0.3)
+            v = cs.get(f"/api/projects/{SID}").json(); segs = v["segments"]
+            sg = next(x for x in segs if x["id"] == "seg-r5"); n5 = sg["line"]
+            check("⑩ 端到端：第 5 句被标成 song，其余台词仍是 speech（另有 3 处非语言声）",
+                  sg["kind"] == "song" and sum(1 for x in segs if x["kind"] == "speech") == 6 and sum(1 for x in segs if x["kind"] == "vocal") == 3, [(x["id"], x["kind"]) for x in segs])
+            check("⑩ 端到端：歌曲没有被翻译、没有被配音（省钱）；其余 6 句翻译、配音各 6 次",
+                  "seg-r5" not in seen["translate"] and "seg-r5" not in seen["tts"] and len(seen["tts"]) == 6 and len(seen["translate"]) == 6, seen)
+            check("⑩ 端到端：歌曲行译文 / 配音状态都是 none，带预览地址", sg["trStatus"] == "none" and sg["ttsStatus"] == "none" and sg["audioUrl"], sg)
+            mp = v["mix"]["plan"]
+            check("⑩ 端到端：混音计划 = 6 句配音 + 3 条笑叹 + 1 条歌曲（4 条保留原声）", sum(1 for e in mp["segments"] if e.get("source") == "vocals") == 4 and len(mp["segments"]) == 10, len(mp["segments"]))
+            check("⑩ 端到端：报告里记着这次听出的歌曲", v["initReport"].get("songs", {}).get("ids") == ["seg-r5"], v["initReport"])
+            welcome = next(m["text"] for m in cs.get(f"/api/projects/{SID}/chat").json()["messages"] if m.get("system"))
+            check(f"⑩ 端到端：聊天第一条消息说了第 {n5} 句是在唱歌", f"第 {n5} 句（共 1 句）是在唱歌" in welcome, welcome)
+            cu = SS.build_cues(store.get_state(SID).segments, SS.default_style(), probe_audio=False)
+            song_cues = [c for c in cu if any("♪" in l for l in c.lines(sty))]
+            plain_cues = [c for c in cu if c not in song_cues]
+            lyric_back = "".join(l.replace("♪", "").strip() for c in song_cues for l in c.lines(sty))
+            check("⑩ 端到端：歌曲字幕是原歌词（一个字没丢、没有译文），每条首行行首、末行行尾各一个 ♪，没有孤立的 ♪；其余 6 条台词字幕",
+                  len(plain_cues) == 6 and song_cues and lyric_back == "接下来是第二个问题，关于字幕的位置，我觉得这个方案很好，应该马上执行。"
+                  and all(c.lines(sty)[0].startswith("♪ ") and c.lines(sty)[-1].endswith(" ♪") and "♪" not in [l.strip() for l in c.lines(sty)] for c in song_cues)
+                  and not any("[en]" in "".join(c.lines(sty)) for c in song_cues), [c.lines(sty) for c in cu])
+
+            def song_window_db(path, a_=17.0, b_=19.0):
+                raw = subprocess.run(["ffmpeg", "-v", "error", "-ss", str(a_), "-t", str(b_ - a_), "-i", path, "-vn", "-ac", "1", "-ar", "16000", "-f", "f32le", "-"], capture_output=True, check=True).stdout
+                y = np.frombuffer(raw, dtype=np.float32).astype(np.float64)
+                return 20 * np.log10(np.sqrt(np.mean(y ** 2)) + 1e-9)
+            kept_db = song_window_db(asyncio.run(export_service.export_video(SID)).path)
+            store.mutate(SID, lambda st_: setattr(st_.segment("seg-r5"), "muted", True), actor="user", cmd="m", summary="m")
+            muted_db = song_window_db(asyncio.run(export_service.export_video(SID)).path)
+            check(f"⑩ 端到端：成片里这一段主唱确实在（保留 {kept_db:.1f} dB，静音后只剩伴奏 {muted_db:.1f} dB，差 ≥ 6 dB）", kept_db - muted_db >= 6.0, (kept_db, muted_db))
+    finally:
+        OM.enhance_transcript = _orig_enh
+else:
+    print("SKIP ⑩ 端到端（samples/problem_video 不在，或 ⑦ 没跑）")
+
 # ============================================================================ 收尾
 print(f"\n合计 {'全部通过' if not fails else str(len(fails)) + ' 项失败: ' + ', '.join(fails)}")
 sys.exit(1 if fails else 0)

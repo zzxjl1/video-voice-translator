@@ -560,7 +560,9 @@ def build_cues(
             if next_start > start:
                 end = min(end, max(start + 0.2, next_start - 0.04))
 
-        if len(picked) == 1:
+        if len(picked) == 1 and getattr(picked[0][0], "kind", "speech") == "song":
+            cues.extend(_song_cues(_song_lyric(picked[0][0]), style, start, max(end, start + 0.2)))
+        elif len(picked) == 1:
             _, primary, secondary = picked[0]
             cue = Cue(start=start, end=max(end, start + 0.2), text=primary, secondary=secondary)
             cues.extend(_split_oversized(cue, style))
@@ -676,10 +678,39 @@ def strip_subtitle_tags(text: str) -> str:
 SONG_MARK = "♪"
 
 
+def _song_lyric(seg) -> str:
+    """歌曲行的歌词：有审听版（纠过错的）就用它，语气标签不出现在字幕里。歌词不翻译（译了也唱不出来）。"""
+    return strip_subtitle_tags(((getattr(seg, "reviewed_text", "") or getattr(seg, "text", "") or "")).strip())
+
+
+def _song_cues(lyric: str, style: SubtitleStyle, start: float, end: float) -> list[Cue]:
+    """
+    一句歌词 → 一条或几条字幕，每条的第一行行首、最后一行行尾各一个 ♪。
+
+    先按"每行少两格"排版，给前后的 ♪ 留位置：把 ♪ 拼进文字再排版，歌词长的时候结尾那个 ♪ 会被挤到
+    单独一行、再被按时间切成一条只有 ♪ 的字幕。歌词超过 `max_lines` 行就按字数比例切成连续的几条
+    （和 `_split_oversized` 同一个做法：词不丢，只是在屏幕上多停一会儿）。
+    """
+    parts = _wrap(lyric, max(4, style.max_chars_per_line - 2))
+    chunks = [parts[i:i + style.max_lines] for i in range(0, len(parts), style.max_lines)]
+    weights = [sum(_display_width(l) for l in chunk) or 1.0 for chunk in chunks]
+    total = sum(weights)
+    duration = max(0.2, end - start)
+    out: list[Cue] = []
+    t = start
+    for chunk, weight in zip(chunks, weights):
+        lines = list(chunk)
+        lines[0] = f"{SONG_MARK} {lines[0]}"
+        lines[-1] = f"{lines[-1]} {SONG_MARK}"
+        out.append(Cue(start=t, end=t + duration * weight / total, text="", forced_lines=lines))
+        t += duration * weight / total
+    return out
+
+
 def _select_text(seg, track: str) -> tuple[str, str]:
     if getattr(seg, "kind", "speech") == "song":
-        # 歌词不翻译（译了也唱不出来），所有轨道都是原歌词，前后各一个音符。有审听版就用它（纠过错的）。
-        lyric = strip_subtitle_tags(((getattr(seg, "reviewed_text", "") or getattr(seg, "text", "") or "")).strip())
+        # 所有轨道都是原歌词。这里是和别人重叠（合成两行字幕）时用的内联写法；单独一条的歌曲走 `_song_cues`。
+        lyric = _song_lyric(seg)
         return (f"{SONG_MARK} {lyric} {SONG_MARK}" if lyric else ""), ""
     translated = strip_subtitle_tags((getattr(seg, "translated_text", "") or "").strip())
     original = strip_subtitle_tags((getattr(seg, "text", "") or "").strip())

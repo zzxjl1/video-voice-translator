@@ -60,8 +60,15 @@ async def retranslate(ctx: Ctx, lines: Optional[list] = None, length: Optional[s
                       instruction: str = ""):
     state = ctx.state
     ids = [s.id for s in resolve_lines(state, lines)] if lines else None
+    skipped: list[str] = []
     if ids:
         _guard(ctx, [state.segment(i) for i in ids])
+        # 音乐 / 噪音 / 人声非语言 / 歌曲不翻译。以前它们被悄悄跳过、结果里却照样写"已重译"，AI 会信。
+        speech_ids = [i for i in ids if state.segment(i).kind == "speech"]
+        skipped = [f"第 {state.segments.index(state.segment(i)) + 1} 句（{state.segment(i).kind}）" for i in ids if i not in speech_ids]
+        if not speech_ids:
+            raise CommandError(f"{'、'.join(skipped)}不是台词，不翻译", hint="要翻译就先 mark_non_speech kind=speech 标回语音")
+        ids = speech_ids
     job = await jobs.run(
         ctx.video_id, "translate", "翻译", ctx.actor,
         lambda job: jobs.translate_lines(ctx.video_id, job, ids=ids, length_hint=length, extra_prompt=instruction),
@@ -74,7 +81,8 @@ async def retranslate(ctx: Ctx, lines: Optional[list] = None, length: Optional[s
     after = store.require_state(ctx.video_id)
     shown = [after.segments.index(after.segment(i)) + 1 for i in (ids or []) if after.segment(i)]
     return {"retranslated": shown or "全部缺失/过期的行", "failed": len(failed or []),
-            "note": "配音已过期；调用 redub 重新合成"}
+            "note": "配音已过期；调用 redub 重新合成",
+            **({"skipped_not_speech": skipped} if skipped else {})}
 
 
 @command(
