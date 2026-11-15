@@ -23,7 +23,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
-from app import config, status, store
+from app import asr_words, config, status, store
 from app.bus import bus
 from app.models import (
     STAGE_FAILED, STAGE_INITIALIZING, STAGE_READY, Segment, Speaker, get_video_dir,
@@ -211,6 +211,10 @@ async def step_transcribe(video_id: str, job: Job, server_url: str) -> None:
         s.speakers = [old.get(i) or Speaker(id=i, name=f"Speaker {i}") for i in ids]
 
     store.mutate(video_id, apply, actor="system", cmd="transcribe", summary=f"转写完成：{len(lines)} 句")
+    try:
+        asr_words.save(video_id, lines)          # 词级时间戳旁路文件；存不下不影响转写本身
+    except OSError as e:
+        logger.warning(f"[{video_id}] could not save word timestamps: {e}")
     _emit(video_id, job, {"phase": "asr", "status": "done", "lines": len(lines)})
 
 

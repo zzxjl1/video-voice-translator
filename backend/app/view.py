@@ -45,11 +45,20 @@ def speaker_view(state: VideoState, speaker: Speaker) -> dict:
     }
 
 
+def _keep_available(video_id: str) -> bool:
+    from app.services import mix_service
+    return mix_service.keep_available(video_id)
+
+
 def segment_view(state: VideoState, seg: Segment, index: int) -> dict:
     audio_url: Optional[str] = None
     if seg.audio_path:
         # ?v=<指纹>：同一路径被覆盖重写后，浏览器缓存自然失效。
         audio_url = f"/api/projects/{state.video_id}/tts/{seg.id}?v={seg.tts_fp}"
+    elif seg.kind == "vocal" and not seg.muted and _keep_available(state.video_id):
+        # 保留原声：从人声轨现切，没有存储的文件，所以没有"过期"的问题；
+        # ?v= 带上时间窗，改了起止浏览器缓存自然失效。
+        audio_url = f"/api/projects/{state.video_id}/keep/{seg.id}?v={seg.start_time:.3f}-{seg.end_time:.3f}"
     return {
         "id": seg.id,
         "line": index + 1,                       # 人和 AI 说的"第 N 句"

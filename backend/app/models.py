@@ -65,7 +65,10 @@ class Segment:
     end_time: float
     text: str                            # 原文（ASR，或用户/AI 改过的）
     translated_text: str = ""
-    # speech 正常；music / noise 是 ASR 把非语音误识成了话 —— 不翻译、不配音、不出字幕。
+    # speech 正常。其余都是"不是台词"的行：不翻译、不配音、不出字幕、不进克隆参考。
+    #   music / noise  ASR 把音乐、环境声误识成了话（声音本来就在背景轨里，不用处理）
+    #   vocal          人发出的非语言声（笑、叹、咳、呼吸）。分离之后它在人声轨里，导出时会被 TTS 取代的
+    #                  人声一起丢掉 —— 所以导出/预览时从人声轨里把这一段**原声**放回去，而不是让 TTS 重造。
     kind: str = "speech"
     # 静音：不合成配音，这一格没有声音。隐藏：这一行不出字幕。两者互补。
     muted: bool = False

@@ -13,6 +13,7 @@ import base64
 from typing import Optional
 
 from app import config, jobs, status, store, view
+from app.services import audio_energy
 from app.commands.registry import CommandError, Ctx, command, resolve_line, resolve_speaker
 from app.models import original_audio_path, tts_audio_path, video_dir_path, vocals_audio_path
 
@@ -225,6 +226,30 @@ def list_voices(ctx: Ctx):
         ],
         "accents": list(config.CHINESE_ACCENTS) if state.target_language == "Chinese" else [],
     }
+
+
+@command(
+    "find_uncovered_sounds",
+    "找出音轨上有声音、但没有任何一句台词覆盖的时间段：ASR 漏掉的笑声、叹息、咳嗽，或被吞掉的话。"
+    "返回每段的起止和\"在第几句之后\"。看到之后用 listen 听一下，再决定：是人发出的非语言声 → "
+    "insert_line kind=vocal（做过人声分离的工程会保留这段原声）；是话 → insert_line（补上这句）。"
+    "压在别人说话中间的声音（比如说话时咳嗽）这里找不到，因为那里本来就有台词。",
+    {"type": "object", "properties": {}},
+    readonly=True, group="read",
+)
+def find_uncovered_sounds(ctx: Ctx):
+    sounds = audio_energy.find_candidates(ctx.video_id, ctx.state.segments)
+    if sounds is None:
+        raise CommandError("还没有可分析的音轨（初始化还没跑到抽音频这一步）")
+    shown = [{"after_line": s["after_line"], "start": s["start"], "end": s["end"],
+              "seconds": round(s["end"] - s["start"], 2)} for s in sounds[:30]]
+    result: dict = {"count": len(sounds), "sounds": shown}
+    if len(sounds) > 30:
+        result["note"] = f"只列出了前 30 段，共 {len(sounds)} 段"
+    if not audio_energy.is_separated(ctx.video_id):
+        result["warning"] = ("这个工程没做人声分离，分析的是整条原声：风声、背景音乐也会被算成\"有声音\"，"
+                             "结果会偏多、边界不准。务必先 listen 确认再动手")
+    return result
 
 
 @command(

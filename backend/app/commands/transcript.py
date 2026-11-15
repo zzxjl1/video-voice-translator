@@ -173,11 +173,12 @@ def retime_line(ctx: Ctx, line: int, start: Optional[float] = None, end: Optiona
 
 
 @command(
-    "mark_non_speech", "把某些句标成音乐/噪音（ASR 把它们误识成了话）：不翻译、不配音、不出字幕。"
-    "标回 speech 就恢复。",
+    "mark_non_speech", "把某些句标成不是台词的声音：music 音乐 / noise 环境噪音（ASR 把它们误识成了话）/ "
+    "vocal 人发出的非语言声（笑、叹气、咳嗽、呼吸）。都不翻译、不配音、不出字幕。vocal 在做过人声分离的工程里"
+    "导出时会保留这一段原声，不用 TTS 重造。标回 speech 就恢复。",
     {"type": "object", "properties": {
         "lines": {"type": "array", "items": {"type": "integer", "minimum": 1}},
-        "kind": {"type": "string", "enum": ["music", "noise", "speech"]},
+        "kind": {"type": "string", "enum": ["music", "noise", "vocal", "speech"]},
     }, "required": ["lines", "kind"]},
 )
 def mark_non_speech(ctx: Ctx, lines: list, kind: str):
@@ -191,7 +192,7 @@ def mark_non_speech(ctx: Ctx, lines: list, kind: str):
             if x.id in ids:
                 x.kind = kind
     nums = "、".join(str(state.segments.index(s) + 1) for s in segs)
-    ctx.change(apply, f"把第 {nums} 句标为{ {'music': '音乐', 'noise': '噪音', 'speech': '语音'}[kind] }")
+    ctx.change(apply, f"把第 {nums} 句标为{ {'music': '音乐', 'noise': '噪音', 'vocal': '人声非语言', 'speech': '语音'}[kind] }")
     return {"lines": [state.segments.index(s) + 1 for s in segs], "kind": kind}
 
 
@@ -247,15 +248,19 @@ def rename_speaker(ctx: Ctx, speaker: str, name: str):
 
 
 @command(
-    "insert_line", "在某句后面插入一句新的（ASR 漏掉的话）。需要给出时间和原文。",
+    "insert_line", "在某句后面插入一句新的。默认是 ASR 漏掉的话（需要时间、原文、说话人）。"
+    "kind=vocal 是 ASR 漏掉的人发出的非语言声（笑、叹气、咳嗽）：text 写个标签（如「（笑声）」），不用说话人，"
+    "不配音，做过人声分离的工程导出时保留这段原声。时间窗不能和别的台词重叠（那里有人在说话，原声会漏出来）。",
     {"type": "object", "properties": {
         "after_line": {"type": "integer", "minimum": 0, "description": "插在第几句之后；0 = 插到最前面"},
         "start": {"type": "number", "minimum": 0}, "end": {"type": "number", "minimum": 0},
         "text": {"type": "string", "maxLength": 2000},
-        "speaker": {"type": "string"},
-    }, "required": ["after_line", "start", "end", "text", "speaker"]},
+        "speaker": {"type": "string", "description": "说话人；kind=speech 时必填"},
+        "kind": {"type": "string", "enum": ["speech", "vocal"], "description": "默认 speech"},
+    }, "required": ["after_line", "start", "end", "text"]},
 )
-def insert_line(ctx: Ctx, after_line: int, start: float, end: float, text: str, speaker: str):
+def insert_line(ctx: Ctx, after_line: int, start: float, end: float, text: str, speaker: Optional[str] = None,
+                kind: str = "speech"):
     state = ctx.state
     if not 0 <= after_line <= len(state.segments):
         raise CommandError(f"after_line 要在 0~{len(state.segments)} 之间")
@@ -264,13 +269,25 @@ def insert_line(ctx: Ctx, after_line: int, start: float, end: float, text: str, 
     text = text.strip()
     if not text:
         raise CommandError("原文不能为空")
-    sp = resolve_speaker(state, speaker)
+    if kind == "vocal":
+        # 非语言声没有说话人：借前一句的（没有就用第一个说话人），只影响时间线上的颜色
+        if speaker:
+            speaker_id = resolve_speaker(state, speaker).id
+        elif after_line > 0:
+            speaker_id = state.segments[after_line - 1].speaker_id
+        else:
+            speaker_id = state.speakers[0].id if state.speakers else "0"
+    else:
+        if not speaker:
+            raise CommandError("kind=speech 要给 speaker（说话人）")
+        speaker_id = resolve_speaker(state, speaker).id
     new_id = _new_id()
 
     def apply(s):
-        s.segments.insert(after_line, Segment(id=new_id, speaker_id=sp.id, start_time=start, end_time=end, text=text))
-    ctx.change(apply, f"在第 {after_line} 句后插入新句")
-    return {"line": after_line + 1, "id": new_id}
+        s.segments.insert(after_line, Segment(id=new_id, speaker_id=speaker_id, start_time=start, end_time=end,
+                                              text=text, kind=kind))
+    ctx.change(apply, f"在第 {after_line} 句后插入{'人声非语言' if kind == 'vocal' else '新句'}")
+    return {"line": after_line + 1, "id": new_id, "kind": kind}
 
 
 @command(

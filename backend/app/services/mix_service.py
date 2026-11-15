@@ -160,9 +160,28 @@ def _duck_breakpoints(
     return cleaned
 
 
+def keep_available(video_id: str) -> bool:
+    """
+    "保留原声"有没有条件：必须做过人声分离（垫底是背景轨、人声轨在手）。
+
+    没分离时垫底就是整条原声，笑声叹息本来就在里面，不需要也不应该再叠一份。
+    """
+    return (os.path.exists(os.path.join(video_dir_path(video_id), "background.wav"))
+            and vocals_audio_path_full(video_id) is not None)
+
+
+def vocals_audio_path_full(video_id: str) -> "str | None":
+    """全频带人声轨（浏览器上传的 vocals.wav）；保留原声从它切，不用 16k 的派生版。"""
+    path = os.path.join(video_dir_path(video_id), "vocals.wav")
+    return path if os.path.exists(path) else None
+
+
 def _segment_entries(state: VideoState) -> list[dict]:
     """
     每段配音的摆位条目。
+
+    `kind=vocal` 的行（笑、叹、咳）在能保留原声时也有条目，带 `source: "vocals"`：音频不是 TTS，
+    而是人声轨里这一行的时间窗，原速、不拉伸、不裁剪。播放和导出都按同一个条目摆。
 
     旧工程没有 actual_duration（以前只写日志不落盘）：这里用 ffprobe 现量。
     **纯函数、不写盘**：这个函数在 `/status` 的每次轮询里都会被调到，而它拿到
@@ -173,10 +192,25 @@ def _segment_entries(state: VideoState) -> list[dict]:
     from app.services.subtitle_service import probe_duration
 
     entries: list[dict] = []
+    keep = keep_available(state.video_id)
     for seg in state.segments:
+        if getattr(seg, "muted", False):
+            continue
+        if getattr(seg, "kind", "speech") == "vocal":
+            slot = max(0.0, (seg.end_time or 0.0) - (seg.start_time or 0.0))
+            if keep and slot > 0:
+                entries.append({
+                    "id": seg.id,
+                    "start": round(max(0.0, seg.start_time or 0.0), 4),
+                    "end": round(max(0.0, seg.end_time or 0.0), 4),
+                    "atempo": 1.0, "videoRate": 1.0, "trim": None,
+                    "played": round(slot, 4),
+                    "source": "vocals",
+                })
+            continue
         if not seg.audio_path or not os.path.exists(seg.audio_path):
             continue
-        if getattr(seg, "muted", False) or getattr(seg, "kind", "speech") != "speech":
+        if getattr(seg, "kind", "speech") != "speech":
             continue
         slot = max(0.0, (seg.end_time or 0.0) - (seg.start_time or 0.0))
         if slot <= 0:
@@ -243,7 +277,7 @@ def build_mix_plan(state: VideoState) -> dict:
         return plan
 
     entries = _segment_entries(state)
-    if not entries:
+    if not any(e.get("source") != "vocals" for e in entries):
         raise RuntimeError("没有任何可混音的配音 —— 先完成合成")
 
     video_dir = video_dir_path(state.video_id)
@@ -261,7 +295,7 @@ def build_mix_plan(state: VideoState) -> dict:
             "gain": round(db_to_gain(ORIGINAL_GAIN_DB), 5),
             "duck": _duck_breakpoints(
                 _merge_spans(
-                    [(e["start"], e["end"]) for e in entries],
+                    [(e["start"], e["end"]) for e in entries if e.get("source") != "vocals"],
                     DUCK_ATTACK_S + DUCK_RELEASE_S,
                 ),
                 db_to_gain(ORIGINAL_DUCK_DB),

@@ -37,7 +37,7 @@ from app.commands import registry as R
 from app.deps import enforce_separator_token, validate_video_id
 from app.http_range import iter_file_range, parse_range
 from app.models import STAGE_INITIALIZING, asr_audio_path, get_video_dir, tts_audio_path, video_dir_path
-from app.services import export_service, subtitle_service, token_service, tts_service, voice_clone_service
+from app.services import audio_clip, export_service, mix_service, subtitle_service, token_service, tts_service, voice_clone_service
 
 logger = logging.getLogger(__name__)
 
@@ -461,6 +461,30 @@ def serve_dub(video_id: str, segment_id: str):
         raise HTTPException(status_code=404, detail="这一句的配音不存在或已过期")
     return FileResponse(tts_audio_path(video_id, segment_id), media_type="audio/mpeg",
                         headers={"Cache-Control": "private, max-age=31536000, immutable"})
+
+
+@router.get("/{video_id}/keep/{segment_id}")
+def serve_kept_original(video_id: str, segment_id: str):
+    """
+    保留原声的预览：从全频带人声轨里现切这一行的时间窗（kind=vocal 的行，笑、叹、咳）。
+
+    没有存储的文件，所以没有"过期"一说；`?v=` 带着时间窗，起止变了浏览器缓存自然失效。
+    导出用同一个切法（audio_clip），所以预览听到的就是成片里的。
+    """
+    if not tts_service.is_safe_segment_id(segment_id):
+        raise HTTPException(status_code=400, detail="malformed segment id")
+    state = _need(video_id)
+    seg = state.segment(segment_id)
+    if seg is None or seg.kind != "vocal" or seg.muted:
+        raise HTTPException(status_code=404, detail="这一行没有可保留的原声")
+    source = mix_service.vocals_audio_path_full(video_id)
+    if not mix_service.keep_available(video_id) or not source:
+        raise HTTPException(status_code=404, detail="没做过人声分离，原声本来就在垫底的声音里")
+    try:
+        wav = audio_clip.clip_wav_bytes(source, seg.start_time, seg.end_time, config.EXPORT_SAMPLE_RATE)
+    except audio_clip.ClipError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return Response(wav, media_type="audio/wav", headers={"Cache-Control": "private, max-age=31536000, immutable"})
 
 
 @router.get("/{video_id}/voice-sample/{speaker_id}")

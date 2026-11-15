@@ -218,10 +218,22 @@ async def execute(video_id: str, name: str, args: dict, *, actor: str = "user",
         err = _validate(cmd.params, args or {})
         if err:
             return {"ok": False, "error": f"参数不对：{err}"}
-        result = cmd.fn(ctx, **(args or {}))
+        args = dict(args or {})
+        notes: list = []
+        if actor == "ai":
+            # 规则拦截层（见 guards.py）：只拦 AI。放行 / 改写（说明写进结果）/ 拒绝（原因回给模型）
+            from app.commands import guards
+            try:
+                args, notes = guards.run(ctx, name, args)
+            except guards.Reject as r:
+                return {"ok": False, "error": r.error, **({"hint": r.hint} if r.hint else {})}
+        result = cmd.fn(ctx, **args)
         if inspect.isawaitable(result):
             result = await result
-        return {"ok": True, "result": result if result is not None else {}}
+        result = result if result is not None else {}
+        if notes and isinstance(result, dict):
+            result = {**result, "guard_notes": notes}
+        return {"ok": True, "result": result}
     except CommandError as e:
         return {"ok": False, "error": e.message, **({"hint": e.hint} if e.hint else {})}
     except store.ProjectNotFound:

@@ -515,7 +515,9 @@ def build_cues(
       * starts at the segment's original start,
       * lasts at least `min_duration`,
       * is extended to cover the ACTUAL dubbed audio when it is longer,
-      * is clamped just before the next cue so two never overlap on screen.
+      * is clamped just before the next cue so two never overlap on screen —
+        EXCEPT lines that genuinely overlap in time (two people talking at once):
+        those become ONE two-line cue, one speaker per line (`_group_overlapping`).
     """
     # 隐藏的行不进字幕：预览叠加、SRT 下载、导出内嵌三条路都走这里，所以在这
     # 一处过滤就够。它的配音在时间轴上照常 —— 隐藏只管画面上的字。
@@ -530,36 +532,82 @@ def build_cues(
     )
 
     cues: list[Cue] = []
-    for index, seg in enumerate(ordered):
-        primary, secondary = _select_text(seg, style.track)
-        if not primary:
+    groups = _group_overlapping(ordered)
+    for index, group in enumerate(groups):
+        picked = [(seg, *_select_text(seg, style.track)) for seg in group]
+        picked = [p for p in picked if p[1]]
+        if not picked:
             continue
 
-        start = max(0.0, float(getattr(seg, "start_time", 0.0) or 0.0))
-        end = max(float(getattr(seg, "end_time", start) or start), start + style.min_duration)
-
-        # Cover the real dub. Speech-rate fitting can leave the audio longer
-        # than the ASR slot, and a cue that ends early looks like a bug.
-        if probe_audio:
-            audio_duration = getattr(seg, "actual_duration", None)
-            audio_path = getattr(seg, "audio_path", None)
-            if not audio_duration and audio_path and os.path.exists(audio_path):
-                audio_duration = probe_duration(audio_path)
-            if audio_duration:
-                end = max(end, start + audio_duration)
+        start = max(0.0, min(float(getattr(seg, "start_time", 0.0) or 0.0) for seg, _, _ in picked))
+        end = start + style.min_duration
+        for seg, _, _ in picked:
+            seg_start = max(0.0, float(getattr(seg, "start_time", 0.0) or 0.0))
+            end = max(end, float(getattr(seg, "end_time", seg_start) or seg_start))
+            # Cover the real dub. Speech-rate fitting can leave the audio longer
+            # than the ASR slot, and a cue that ends early looks like a bug.
+            if probe_audio:
+                audio_duration = getattr(seg, "actual_duration", None)
+                audio_path = getattr(seg, "audio_path", None)
+                if not audio_duration and audio_path and os.path.exists(audio_path):
+                    audio_duration = probe_duration(audio_path)
+                if audio_duration:
+                    end = max(end, seg_start + audio_duration)
 
         # Never overlap the next cue.
-        if index + 1 < len(ordered):
-            next_start = float(getattr(ordered[index + 1], "start_time", 0.0) or 0.0)
+        if index + 1 < len(groups):
+            next_start = min(float(getattr(g, "start_time", 0.0) or 0.0) for g in groups[index + 1])
             if next_start > start:
                 end = min(end, max(start + 0.2, next_start - 0.04))
 
-        cues.extend(_split_oversized(
-            Cue(start=start, end=max(end, start + 0.2), text=primary, secondary=secondary),
-            style,
-        ))
+        if len(picked) == 1:
+            _, primary, secondary = picked[0]
+            cue = Cue(start=start, end=max(end, start + 0.2), text=primary, secondary=secondary)
+            cues.extend(_split_oversized(cue, style))
+        else:
+            cues.append(_dual_cue(picked, style, start, max(end, start + 0.2)))
 
     return cues
+
+
+# 两句话的时间重叠超过这么多秒，就当作"同时在说"：合成一条两行的字幕。ASR 的边界本来就有几十毫秒的
+# 误差，所以不能一有交叠就算。
+OVERLAP_MERGE_S = 0.25
+
+
+def _group_overlapping(ordered: list) -> list[list]:
+    """
+    按开始时间排好的行，把互相重叠的相邻几行分成一组。
+
+    以前"字幕永不重叠"的做法是把前一条截到后一条开始之前 —— 两个人同时说话时，前一个人还在说，
+    他的字幕已经没了。重叠的对话改成**一条**字幕、每人一行（业界对话字幕的惯例，在 SRT 的软字幕、
+    样式化字幕、浏览器烧录里表现一致；真的叠两条同时显示，各播放器处理不一）。
+    """
+    groups: list[list] = []
+    group_end = 0.0
+    for seg in ordered:
+        start = float(getattr(seg, "start_time", 0.0) or 0.0)
+        end = float(getattr(seg, "end_time", start) or start)
+        if groups and start < group_end - OVERLAP_MERGE_S:
+            groups[-1].append(seg)
+            group_end = max(group_end, end)
+        else:
+            groups.append([seg])
+            group_end = end
+    return groups
+
+
+def _dual_cue(picked: list, style: SubtitleStyle, start: float, end: float) -> Cue:
+    """每个说话的人一行，前面加 "- "。双语轨道时，每个人的另一语言跟在后面。"""
+    lines: list[str] = []
+    for _, primary, _ in picked:
+        lines.extend(_wrap(f"- {primary}", style.max_chars_per_line))
+    if style.track == "bilingual":
+        for _, _, secondary in picked:
+            if secondary:
+                lines.extend(_wrap(f"- {secondary}", style.max_chars_per_line))
+    # 不再按 max_lines 在时间上切开：切开就不是"同时"了。宁可多一行，不丢话。
+    return Cue(start=start, end=end, text="", secondary="", forced_lines=lines)
 
 
 def _split_oversized(cue: Cue, style: SubtitleStyle) -> list[Cue]:

@@ -28,7 +28,7 @@ from typing import Callable, Optional
 from app import config
 from app import store
 from app.models import VideoState, get_video_dir, video_dir_path
-from app.services import mix_service, subtitle_service
+from app.services import audio_clip, mix_service, subtitle_service
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +200,8 @@ def build_dubbed_timeline(
 
     sample_rate = config.EXPORT_SAMPLE_RATE
     path_by_id = {seg.id: seg.audio_path for seg in state.segments}
+    # 保留原声的条目（kind=vocal：笑、叹、咳）：音频是人声轨里这一行的时间窗，不是 TTS
+    vocals_path = mix_service.vocals_audio_path_full(video_id)
     entries = plan["segments"]
     if not entries:
         logger.warning(f"[{video_id}] No synthesized segments available for export")
@@ -218,14 +220,18 @@ def build_dubbed_timeline(
     fade_samples = max(0, int(plan.get("voiceFadeS", 0.02) * sample_rate))
     placed = 0
     for index, entry in enumerate(entries):
-        audio_path = path_by_id.get(entry["id"])
+        keep_original = entry.get("source") == "vocals"
+        audio_path = vocals_path if keep_original else path_by_id.get(entry["id"])
         if not audio_path or not os.path.exists(audio_path):
             logger.warning(
                 f"[{video_id}] plan segment {entry['id']}: audio file missing, skipped"
             )
             continue
         try:
-            pcm = _decode_to_pcm(audio_path, sample_rate, entry.get("atempo") or 1.0)
+            if keep_original:
+                pcm = audio_clip.decode_clip_pcm(audio_path, entry["start"], entry["end"], sample_rate)
+            else:
+                pcm = _decode_to_pcm(audio_path, sample_rate, entry.get("atempo") or 1.0)
         except Exception as e:
             logger.warning(f"[{video_id}] Skipping segment {entry['id']}: {e}")
             continue

@@ -151,7 +151,7 @@ async def poll_transcription_result(
 async def parse_asr_results(results: list[dict]) -> list[dict]:
     """
     Parse Ali ASR result JSON into a list of plain line dicts
-    (`id, speaker_id, start_time, end_time, text`). Persisting them is the
+    (`id, speaker_id, start_time, end_time, text, words`). Persisting them is the
     caller's job (`store.mutate`): this service only talks to the provider.
     Each result contains a transcription_url that we need to fetch.
     """
@@ -174,17 +174,34 @@ async def parse_asr_results(results: list[dict]) -> list[dict]:
             for transcript in transcripts:
                 sentences = transcript.get("sentences", [])
                 for sentence in sentences:
-                    seg_id = f"seg-{uuid.uuid4().hex[:8]}"
-                    speaker_id = str(sentence.get("speaker_id", "0"))
-                    segments.append({
-                        "id": seg_id,
-                        "speaker_id": speaker_id,
-                        "start_time": sentence.get("begin_time", 0) / 1000.0,  # ms -> seconds
-                        "end_time": sentence.get("end_time", 0) / 1000.0,
-                        "text": sentence.get("text", ""),
-                    })
+                    segments.append(sentence_to_line(sentence, f"seg-{uuid.uuid4().hex[:8]}"))
 
     return segments
+
+
+def sentence_to_line(sentence: dict, seg_id: str) -> dict:
+    """
+    ASR 的一个句子 → 一行。时间换成秒。
+
+    `words` 是词级时间戳（`b`/`e` 秒、`t` 词、`p` 词后的标点）：以前解析时直接丢了。它不进
+    `Segment`，由 `asr_words.save` 存成旁路文件，只用来在一句话内部定位。缺了或格式不对的词
+    直接跳过，不影响这一行本身。
+    """
+    words = []
+    for w in sentence.get("words") or []:
+        try:
+            words.append({"b": round(float(w["begin_time"]) / 1000.0, 3), "e": round(float(w["end_time"]) / 1000.0, 3),
+                          "t": str(w.get("text") or ""), "p": str(w.get("punctuation") or "")})
+        except (KeyError, TypeError, ValueError):
+            continue
+    return {
+        "id": seg_id,
+        "speaker_id": str(sentence.get("speaker_id", "0")),
+        "start_time": sentence.get("begin_time", 0) / 1000.0,  # ms -> seconds
+        "end_time": sentence.get("end_time", 0) / 1000.0,
+        "text": sentence.get("text", ""),
+        "words": words,
+    }
 
 
 def _build_attempt_plan() -> list[tuple[str, bool]]:
