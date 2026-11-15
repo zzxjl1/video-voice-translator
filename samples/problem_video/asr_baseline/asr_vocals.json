@@ -1,0 +1,473 @@
+{
+  "model": "qwen-audio-3.1-asr-flash-filetrans",
+  "diarization": true,
+  "usage": {
+    "duration": 21,
+    "total_tokens": 436,
+    "output_tokens": 61,
+    "input_tokens": 375
+  },
+  "parsed_lines": [
+    {
+      "id": "seg-58d7d6ea",
+      "speaker_id": "0",
+      "start_time": 1.04,
+      "end_time": 3.84,
+      "text": "大家好，欢迎收看今天的节目。"
+    },
+    {
+      "id": "seg-d14d10e4",
+      "speaker_id": "0",
+      "start_time": 4.28,
+      "end_time": 6.84,
+      "text": "今天我们聊一聊视频翻译这件事。"
+    },
+    {
+      "id": "seg-fa0ce1df",
+      "speaker_id": "0",
+      "start_time": 8.89,
+      "end_time": 10.97,
+      "text": "你听到刚才那声巨响了吗？"
+    },
+    {
+      "id": "seg-b2ab15a0",
+      "speaker_id": "0",
+      "start_time": 14.71,
+      "end_time": 16.07,
+      "text": "好吧，我们继续。"
+    },
+    {
+      "id": "seg-8ecfb7ec",
+      "speaker_id": "0",
+      "start_time": 16.43,
+      "end_time": 22.99,
+      "text": "接下来是第二个问题，关于字幕的位置，我觉得这个方案很好，应该马上执行。"
+    },
+    {
+      "id": "seg-6366056b",
+      "speaker_id": "0",
+      "start_time": 26.32,
+      "end_time": 29.88,
+      "text": "好，回到正题，我们来看最后一个例子。"
+    },
+    {
+      "id": "seg-eeceb66e",
+      "speaker_id": "0",
+      "start_time": 30.2,
+      "end_time": 32.28,
+      "text": "谢谢大家，我们下期再见。"
+    }
+  ],
+  "raw_transcripts": [
+    {
+      "file_url": "<redacted temporary signed url>",
+      "properties": {
+        "audio_format": "pcm_s16le",
+        "channels": [
+          0
+        ],
+        "original_sampling_rate": 16000,
+        "original_duration_in_milliseconds": 34494
+      },
+      "transcripts": [
+        {
+          "channel_id": 0,
+          "content_duration_in_milliseconds": 21000,
+          "text": "大家好，欢迎收看今天的节目。今天我们聊一聊视频翻译这件事。你听到刚才那声巨响了吗？好吧，我们继续。接下来是第二个问题，关于字幕的位置，我觉得这个方案很好，应该马上执行。好，回到正题，我们来看最后一个例子。谢谢大家，我们下期再见。",
+          "sentences": [
+            {
+              "begin_time": 1040,
+              "end_time": 3840,
+              "text": "大家好，欢迎收看今天的节目。",
+              "sentence_id": 1,
+              "speaker_id": 0,
+              "words": [
+                {
+                  "begin_time": 1040,
+                  "end_time": 1640,
+                  "text": "大家好",
+                  "punctuation": "，",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 1960,
+                  "end_time": 2440,
+                  "text": "欢迎",
+                  "punctuation": "",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 2440,
+                  "end_time": 2920,
+                  "text": "收看",
+                  "punctuation": "",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 2920,
+                  "end_time": 3480,
+                  "text": "今天的",
+                  "punctuation": "",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 3480,
+                  "end_time": 3840,
+                  "text": "节目",
+                  "punctuation": "。",
+                  "confidence": 1.0
+                }
+              ]
+            },
+            {
+              "begin_time": 4280,
+              "end_time": 6840,
+              "text": "今天我们聊一聊视频翻译这件事。",
+              "sentence_id": 2,
+              "speaker_id": 0,
+              "words": [
+                {
+                  "begin_time": 4280,
+                  "end_time": 5000,
+                  "text": "今天我们",
+                  "punctuation": "",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 5000,
+                  "end_time": 5480,
+                  "text": "聊一聊",
+                  "punctuation": "",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 5480,
+                  "end_time": 5880,
+                  "text": "视频",
+                  "punctuation": "",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 5880,
+                  "end_time": 6280,
+                  "text": "翻译",
+                  "punctuation": "",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 6280,
+                  "end_time": 6840,
+                  "text": "这件事",
+                  "punctuation": "。",
+                  "confidence": 1.0
+                }
+              ]
+            },
+            {
+              "begin_time": 8890,
+              "end_time": 10970,
+              "text": "你听到刚才那声巨响了吗？",
+              "sentence_id": 3,
+              "speaker_id": 0,
+              "words": [
+                {
+                  "begin_time": 8890,
+                  "end_time": 9050,
+                  "text": "你",
+                  "punctuation": "",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 9050,
+                  "end_time": 9490,
+                  "text": "听到",
+                  "punctuation": "",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 9490,
+                  "end_time": 9810,
+                  "text": "刚才",
+                  "punctuation": "",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 9810,
+                  "end_time": 9970,
+                  "text": "那",
+                  "punctuation": "",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 9970,
+                  "end_time": 10210,
+                  "text": "声",
+                  "punctuation": "",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 10210,
+                  "end_time": 10650,
+                  "text": "巨响",
+                  "punctuation": "",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 10650,
+                  "end_time": 10970,
+                  "text": "了吗",
+                  "punctuation": "？",
+                  "confidence": 1.0
+                }
+              ]
+            },
+            {
+              "begin_time": 14710,
+              "end_time": 16070,
+              "text": "好吧，我们继续。",
+              "sentence_id": 4,
+              "speaker_id": 0,
+              "words": [
+                {
+                  "begin_time": 14710,
+                  "end_time": 15110,
+                  "text": "好吧",
+                  "punctuation": "，",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 15350,
+                  "end_time": 15670,
+                  "text": "我们",
+                  "punctuation": "",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 15670,
+                  "end_time": 16070,
+                  "text": "继续",
+                  "punctuation": "。",
+                  "confidence": 1.0
+                }
+              ]
+            },
+            {
+              "begin_time": 16430,
+              "end_time": 22990,
+              "text": "接下来是第二个问题，关于字幕的位置，我觉得这个方案很好，应该马上执行。",
+              "sentence_id": 5,
+              "speaker_id": 0,
+              "words": [
+                {
+                  "begin_time": 16430,
+                  "end_time": 16870,
+                  "text": "接下来",
+                  "punctuation": "",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 16870,
+                  "end_time": 17030,
+                  "text": "是",
+                  "punctuation": "",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 17030,
+                  "end_time": 17510,
+                  "text": "第二个",
+                  "punctuation": "",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 17510,
+                  "end_time": 17910,
+                  "text": "问题",
+                  "punctuation": "，",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 18190,
+                  "end_time": 18590,
+                  "text": "关于",
+                  "punctuation": "",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 18590,
+                  "end_time": 18870,
+                  "text": "字幕",
+                  "punctuation": "",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 18870,
+                  "end_time": 19350,
+                  "text": "的位置",
+                  "punctuation": "，",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 19750,
+                  "end_time": 20190,
+                  "text": "我觉得",
+                  "punctuation": "",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 20190,
+                  "end_time": 20470,
+                  "text": "这个",
+                  "punctuation": "",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 20470,
+                  "end_time": 20790,
+                  "text": "方案",
+                  "punctuation": "",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 20790,
+                  "end_time": 21110,
+                  "text": "很好",
+                  "punctuation": "，",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 21590,
+                  "end_time": 21910,
+                  "text": "应该",
+                  "punctuation": "",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 21910,
+                  "end_time": 22230,
+                  "text": "马上",
+                  "punctuation": "",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 22230,
+                  "end_time": 22990,
+                  "text": "执行",
+                  "punctuation": "。",
+                  "confidence": 1.0
+                }
+              ]
+            },
+            {
+              "begin_time": 26320,
+              "end_time": 29880,
+              "text": "好，回到正题，我们来看最后一个例子。",
+              "sentence_id": 6,
+              "speaker_id": 0,
+              "words": [
+                {
+                  "begin_time": 26320,
+                  "end_time": 26560,
+                  "text": "好",
+                  "punctuation": "，",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 26880,
+                  "end_time": 27200,
+                  "text": "回到",
+                  "punctuation": "",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 27200,
+                  "end_time": 27440,
+                  "text": "正",
+                  "punctuation": "",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 27440,
+                  "end_time": 27720,
+                  "text": "题",
+                  "punctuation": "，",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 28120,
+                  "end_time": 28440,
+                  "text": "我们",
+                  "punctuation": "",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 28440,
+                  "end_time": 28880,
+                  "text": "来看",
+                  "punctuation": "",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 28880,
+                  "end_time": 29520,
+                  "text": "最后一个",
+                  "punctuation": "",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 29520,
+                  "end_time": 29880,
+                  "text": "例子",
+                  "punctuation": "。",
+                  "confidence": 1.0
+                }
+              ]
+            },
+            {
+              "begin_time": 30200,
+              "end_time": 32280,
+              "text": "谢谢大家，我们下期再见。",
+              "sentence_id": 7,
+              "speaker_id": 0,
+              "words": [
+                {
+                  "begin_time": 30200,
+                  "end_time": 30960,
+                  "text": "谢谢大家",
+                  "punctuation": "，",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 31200,
+                  "end_time": 31520,
+                  "text": "我们",
+                  "punctuation": "",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 31520,
+                  "end_time": 31920,
+                  "text": "下期",
+                  "punctuation": "",
+                  "confidence": 1.0
+                },
+                {
+                  "begin_time": 31920,
+                  "end_time": 32280,
+                  "text": "再见",
+                  "punctuation": "。",
+                  "confidence": 1.0
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "usage": {
+        "input_tokens": 375,
+        "output_tokens": 61,
+        "total_Tokens": 436
+      }
+    }
+  ]
+}
