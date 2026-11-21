@@ -229,7 +229,7 @@ export function reduce(layout: Layout, action: Action, vp: Viewport): Layout {
 // ---------------------------------------------------------------------------
 
 /** 布局版本号：默认布局改了就升一号，别再复用浏览器里旧版的开合状态。 */
-export const STORAGE_KEY = 'vvt.windows.v2';
+export const STORAGE_KEY = 'vvt.windows.v3';
 /** 旧版只有助手一个浮动窗口，位置存在这个 key 里。 */
 export const LEGACY_CHAT_KEY = 'vvt.chat.window';
 
