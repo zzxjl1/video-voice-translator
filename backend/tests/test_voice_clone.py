@@ -230,6 +230,17 @@ r = run("preview_voice_candidates", {"speaker": "0"})
 check("⑦ 试听：当前音色没有试听就补上，已有的不重做（不重复花钱）", r["ok"] and r["result"]["synthesized"] == 1 and len(synth_calls) == n0 + 1, r)
 r = run("preview_voice_candidates", {"speaker": "0"})
 check("⑦ 再试听一次：全部已有，0 次合成", r["ok"] and r["result"]["synthesized"] == 0, r)
+# 只点某一行时只合成这一行，并把地址直接返回（不必刷新视图才能播放）
+name = vp.preview_filename("CUR", vp.preview_sentence("Chinese"))
+path = vc.preview_path(VID, "0", name)
+if os.path.exists(path):
+    os.remove(path)
+r = run("preview_voice_candidates", {"speaker": "0", "voice_id": "CUR"})
+check("⑦ 指定 voice_id：只补这一行并返回 preview_url",
+      r["ok"] and r["result"]["synthesized"] == 1 and bool(r["result"].get("preview_url")), r)
+r = run("preview_voice_candidates", {"speaker": "0", "voice_id": "CUR"})
+check("⑦ 已有试听时仍返回 preview_url（第二次点也能播放）",
+      r["ok"] and r["result"]["synthesized"] == 0 and bool(r["result"].get("preview_url")), r)
 # 视图
 sv = view.speaker_view(store.get_state(VID), store.get_state(VID).speaker("0"))
 check("⑧ 视图：素材量现算", sv["material"]["total"] == 22.5 and sv["material"]["longest"] == 24.0, sv["material"])

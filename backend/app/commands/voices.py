@@ -7,6 +7,7 @@
 克隆音色有"当前选用"（`Speaker.clone`，导出 / 配音只认它）和"候选"
 （`Speaker.clone_candidates`，同一说话人用不同取材预设做的几个音色，让用户听着挑）。
 """
+import asyncio
 import os
 import time
 import uuid
@@ -142,8 +143,14 @@ async def _synth_previews(ctx: Ctx, sp, voices: list[tuple[str, str]]) -> int:
         name = vp.preview_filename(voice_id, text)
         if os.path.exists(vc.preview_path(ctx.video_id, sp.id, name)):
             continue
-        await vc.preview_voice(ctx.video_id, voice_id, vc.clone_target_model(), state.target_language,
-                               sp.id, text=text, name=name)
+        try:
+            await asyncio.wait_for(
+                vc.preview_voice(ctx.video_id, voice_id, vc.clone_target_model(), state.target_language,
+                                 sp.id, text=text, name=name),
+                timeout=config.TTS_CALL_TIMEOUT + 10,
+            )
+        except asyncio.TimeoutError:
+            raise RuntimeError("试听合成超时（DashScope 无响应），稍后再试") from None
         made += 1
     return made
 
@@ -246,18 +253,35 @@ async def generate_voice_candidates(ctx: Ctx, speaker: str, presets: Optional[li
 
 @command(
     "preview_voice_candidates",
-    "让某个说话人当前音色和所有候选音色都念同一句固定的试听句，方便对比。已有试听的不重做（不重复花钱）。",
-    {"type": "object", "properties": {"speaker": {"type": "string"}}, "required": ["speaker"]},
+    "让某个说话人的当前音色或某个候选音色念同一句固定的试听句。voice_id 不给 = 当前音色 + 所有候选；"
+    "给了就只合成那一个（界面点哪一行就只做哪一行，不用等全部）。已有试听的不重做（不重复花钱）。",
+    {"type": "object", "properties": {
+        "speaker": {"type": "string"},
+        "voice_id": {"type": "string", "description": "只合成这个音色；不给=全部"},
+    }, "required": ["speaker"]},
     group="job",
 )
-async def preview_voice_candidates(ctx: Ctx, speaker: str):
+async def preview_voice_candidates(ctx: Ctx, speaker: str, voice_id: Optional[str] = None):
+    from app.services import voice_clone_service as vc
     state = ctx.state
     sp = resolve_speaker(state, speaker)
     voices = _preview_voices(state, sp)
     if not voices:
         raise CommandError(f"{sp.name} 还没有克隆音色")
+    if voice_id:
+        match = next((v for v in voices if v[0] == voice_id), None)
+        if match is None:
+            raise CommandError("这个音色不属于该说话人（可能已经被删除）")
+        voices = [match]
     made = await _synth_previews(ctx, sp, voices)
-    return {"speaker": sp.id, "text": vp.preview_sentence(state.target_language), "synthesized": made}
+    preview_url = None
+    if len(voices) == 1:
+        text = vp.preview_sentence(state.target_language)
+        name = vp.preview_filename(voices[0][0], text)
+        if os.path.exists(vc.preview_path(ctx.video_id, sp.id, name)):
+            preview_url = f"/api/projects/{ctx.video_id}/voice-preview/{sp.id}/{name}"
+    return {"speaker": sp.id, "text": vp.preview_sentence(state.target_language),
+            "synthesized": made, "voice_id": voice_id, "preview_url": preview_url}
 
 
 @command(

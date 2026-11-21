@@ -42,6 +42,8 @@ export interface Line {
 export interface CloneVoiceView {
   /** 候选有 id；当前选用的没有。 */
   id: string | null;
+  /** DashScope 音色 id；试听合成要指定它。 */
+  voiceId: string | null;
   preset: string | null;
   presetLabel: string | null;
   /** 取材用了哪几句（行号）。 */

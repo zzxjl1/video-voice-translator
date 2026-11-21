@@ -45,6 +45,7 @@ def _voice_item(state: VideoState, speaker: Speaker, rec: dict) -> dict:
     index = {s.id: i + 1 for i, s in enumerate(state.segments)}
     return {
         "id": rec.get("id"),
+        "voiceId": rec.get("voice_id"),
         "preset": rec.get("preset"),
         "presetLabel": vp.PRESET_LABELS.get(rec.get("preset") or "", "手动指定" if rec.get("preset") == "manual" else None),
         "lines": [index[i] for i in rec.get("lines") or [] if i in index],

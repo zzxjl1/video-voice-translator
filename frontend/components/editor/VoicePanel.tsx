@@ -193,8 +193,16 @@ const SpeakerVoices: React.FC<VoicesProps> = ({ speaker, lines, player, run, onN
     if (player.playing === `v-${row.key}`) { player.stop(); return; }
     if (row.v.previewUrl) { player.play(`v-${row.key}`, row.v.previewUrl); return; }
     setWantPlay(row.key);
-    const r = await act('prev', () => run('preview_voice_candidates', { speaker: speaker.id }), '合成试听失败');
-    if (!r.ok) setWantPlay(null);
+    const r = await act('prev', () => run<{ preview_url?: string | null }>('preview_voice_candidates', {
+      speaker: speaker.id,
+      ...(row.v.voiceId ? { voice_id: row.v.voiceId } : {}),
+    }), '合成试听失败');
+    if (!r.ok) { setWantPlay(null); return; }
+    // 试听文件是这次请求刚写的，视图里的 previewUrl 可能还是 null（没有状态变更）；
+    // 直接用接口返回的地址播放，避免“点一次没反应，刷新后才好用”。
+    const url = (r.result as { preview_url?: string | null } | undefined)?.preview_url;
+    if (url) { player.play(`v-${row.key}`, url); setWantPlay(null); }
+    else setWantPlay(null);
   };
 
   // 克隆这一种取材方式：花钱，所以点了才问；费用只写在确认框里
