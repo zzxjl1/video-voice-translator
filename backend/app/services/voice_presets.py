@@ -250,30 +250,34 @@ def preset_options(segments: list[Segment], speaker_id: str) -> list[dict]:
 
 
 # ----------------------------------------------------------------------------
-# 试听：固定的一句话
+# 试听：固定的一段平台介绍
 # ----------------------------------------------------------------------------
 #
-# 所有音色（当前的和候选）都念**同一句固定的话**，对比才公平；而且这句话不依赖工程里有没有
+# 所有音色（当前的和候选）都念**同一段固定的话**，对比才公平；而且这段话不依赖工程里有没有
 # 译文、译文是什么，换了工程也能横向比较。
 #
-# 这句话是照着"最容易听出口音 / 语调泄漏"来写的：
+# 内容是一段简短的平台介绍：这是用户最终会听到的东西（成片旁白），比随便一句生活用语更能
+# 判断"这个音色配我的视频像不像样"；同时也把平台做什么说清楚了。
+#
+# 写法上仍然照着"最容易听出口音 / 语调泄漏"来：
 #   · 平静的陈述句，没有疑问、感叹、强调 —— 听到的是音色，不是表演；
-#   · 7~9 秒，足够听出语速和节奏，又不会让人听到不耐烦；
-#   · 带一个数字、两个分句和一个转折，能听出换气、停顿和句内语调的走向；
-#   · 没有专有名词、品牌和外来词 —— 那些词的读法本来就因语言而异，会干扰判断。
-# 十种目标语言各一句，意思相同。
+#   · 9~12 秒，两个句子、中间一个句号，能听出换气、停顿和句内语调的走向；
+#   · 第二句是"识别说话人、翻译台词、配音、保留音乐和字幕"四个动作的并列，
+#     语速、节奏、轻重音都在里面，藏不住；
+#   · 没有专有名词、品牌、缩写和外来词 —— 那些词的读法本来就因语言而异，会干扰判断。
+# 十种目标语言各一段，意思相同。
 
 PREVIEW_SENTENCES = {
-    "Chinese": "今天上午我去了一趟图书馆，借了三本书，其中一本讲的是这座城市的历史，我打算周末好好读一读。",
-    "English": "This morning I went to the library and borrowed three books. One of them is about the history of this city, and I plan to read it properly this weekend.",
-    "Japanese": "今朝、図書館に行って本を三冊借りました。そのうちの一冊はこの街の歴史についての本で、週末にじっくり読むつもりです。",
-    "Korean": "오늘 아침에 도서관에 가서 책을 세 권 빌렸습니다. 그중 한 권은 이 도시의 역사에 관한 책인데, 주말에 차분히 읽어 볼 생각입니다.",
-    "French": "Ce matin, je suis allé à la bibliothèque et j'ai emprunté trois livres. L'un d'eux parle de l'histoire de cette ville, et je compte le lire tranquillement ce week-end.",
-    "German": "Heute Morgen war ich in der Bibliothek und habe mir drei Bücher ausgeliehen. Eines davon handelt von der Geschichte dieser Stadt, und ich möchte es am Wochenende in Ruhe lesen.",
-    "Portuguese": "Hoje de manhã fui à biblioteca e emprestei três livros. Um deles fala da história desta cidade, e pretendo lê-lo com calma no fim de semana.",
-    "Italian": "Stamattina sono andato in biblioteca e ho preso in prestito tre libri. Uno di essi parla della storia di questa città, e penso di leggerlo con calma durante il fine settimana.",
-    "Vietnamese": "Sáng nay tôi đã đến thư viện và mượn ba cuốn sách. Một trong số đó nói về lịch sử của thành phố này, và tôi định đọc thật kỹ vào cuối tuần.",
-    "Indonesian": "Pagi ini saya pergi ke perpustakaan dan meminjam tiga buku. Salah satunya tentang sejarah kota ini, dan saya berencana membacanya dengan tenang di akhir pekan.",
+    "Chinese": "这是一个视频翻译与配音平台。它会识别说话人、翻译台词，用原来的音色配音，并保留背景音乐和字幕。",
+    "English": "This is a platform for video translation and dubbing. It identifies speakers, translates dialogue, dubs it in the original voice, and keeps the music and subtitles.",
+    "Japanese": "これは動画翻訳と吹き替えのプラットフォームです。話者を見分けてセリフを翻訳し、元の声に近い音声で吹き替え、音楽と字幕はそのまま残します。",
+    "Korean": "이것은 영상 번역과 더빙을 위한 플랫폼입니다. 화자를 구분해 대사를 번역하고, 원래 목소리에 가까운 음성으로 더빙하며, 음악과 자막은 그대로 유지합니다.",
+    "French": "C'est une plateforme de traduction et de doublage de vidéos. Elle distingue les locuteurs, traduit les dialogues, les double avec une voix proche de l'original et garde la musique et les sous-titres.",
+    "German": "Das ist eine Plattform für Videoübersetzung und Synchronisation. Sie erkennt Sprecher, übersetzt Dialoge, synchronisiert nahe am Original und behält Musik und Untertitel.",
+    "Portuguese": "Esta é uma plataforma de tradução e dublagem de vídeos. Ela identifica falantes, traduz diálogos, dubla com voz próxima da original e mantém música e legendas.",
+    "Italian": "Questa è una piattaforma per la traduzione e il doppiaggio dei video. Riconosce chi parla, traduce i dialoghi, doppia con una voce vicina all'originale e conserva musica e sottotitoli.",
+    "Vietnamese": "Đây là một nền tảng dịch và lồng tiếng video. Nền tảng nhận biết người nói, dịch lời thoại, lồng tiếng bằng giọng gần với giọng gốc và giữ nguyên nhạc nền cùng phụ đề.",
+    "Indonesian": "Ini platform terjemahan dan sulih suara video. Ia mengenali pembicara, menerjemahkan dialog, menyulihsuarakan mendekati suara asli, dan menjaga musik serta subtitel.",
 }
 
 

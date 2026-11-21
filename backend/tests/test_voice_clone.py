@@ -95,9 +95,16 @@ check("② 预设清单：smart 在有素材时可选", {o["id"]: o for o in vp.
 
 # ------------------------------------------------------------------ ③ 固定试听句
 check("③ 十种目标语言都有试听句", set(vp.PREVIEW_SENTENCES) == set(config.TARGET_LANGUAGES), set(config.TARGET_LANGUAGES) ^ set(vp.PREVIEW_SENTENCES))
-check("③ 试听句都不是空的、也不太短（要能听出语速和节奏）", all(len(t) >= 30 for t in vp.PREVIEW_SENTENCES.values()))
-check("③ 按目标语言取", vp.preview_sentence("Chinese").startswith("今天上午") and vp.preview_sentence("English").startswith("This morning"))
+check("③ 长度适合朗读（够听出语速和节奏，又不至于让人等太久）",
+      all(30 <= len(t) <= 260 for t in vp.PREVIEW_SENTENCES.values()),
+      {k: len(v) for k, v in vp.PREVIEW_SENTENCES.items()})
+check("③ 都是一段两句话：句号处有自然停顿，能听出换气", all(t.count("。") + t.count(".") == 2 for t in vp.PREVIEW_SENTENCES.values()))
+check("③ 按目标语言取", vp.preview_sentence("Chinese").startswith("这是一个视频翻译与配音平台")
+      and vp.preview_sentence("English").startswith("This is a platform for video translation and dubbing"))
 check("③ 没收录的语言退到英文，不会试听不了", vp.preview_sentence("Klingon") == vp.preview_sentence("English") == vp.preview_sentence(None))
+check("③ 内容是平台介绍（用户最终会听到的成片旁白），不是随手一句生活用语",
+      all(k in vp.preview_sentence("Chinese") for k in ("视频", "翻译", "配音", "字幕"))
+      and all(k in vp.preview_sentence("English") for k in ("video", "translation", "dubbing", "subtitles")))
 check("③ 试听句是平静的陈述句：没有问号 / 感叹号 / 情绪标签",
       all(not any(c in t for c in "?？!！[]") for t in vp.PREVIEW_SENTENCES.values()))
 a = vp.preview_filename("v1", "你好"); b = vp.preview_filename("v1", "你好吗")
