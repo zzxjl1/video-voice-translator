@@ -25,6 +25,7 @@ import { DockSlot, WindowLayer, WindowPortals, type PanelRenderers } from '../wi
 import SettingsPanel from './SettingsPanel';
 import Timeline from '../Timeline';
 import SubtitleStylePanel from '../SubtitleStylePanel';
+import VoicePanel from './VoicePanel';
 import ExportModal, { type SubtitleDelivery } from '../ExportModal';
 
 interface Props {
@@ -51,6 +52,8 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
   const onQuoteRemove = useCallback(() => setQuote(null), []);
   const [waveform, setWaveform] = useState<number[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
+  // 从脚本点某个说话人的"音色"进来时，音色面板滚到这个说话人
+  const [voiceFocus, setVoiceFocus] = useState<string | null>(null);
 
   // 字幕样式：以服务端为准；拖滑块时本地先行，停下再保存（防抖）
   const [styleOverride, setStyleOverride] = useState<Partial<SubtitleStyle> | null>(null);
@@ -143,6 +146,7 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
     } else if (ui.action === 'open_panel') {
       const p = ui.panel as string;
       if (p === 'script' || p === 'subtitle_style') openWindow(p === 'script' ? 'script' : 'subtitle');
+      else if (p === 'voice') openWindow('voice');
       else if (p === 'export') setShowExport(true);
       else if (p === 'settings') setShowSettings(true);
     } else if (ui.action === 'play_voice_preview') {
@@ -215,6 +219,17 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
     retranslate: async (l: Line, hint) => { const r = await run('retranslate', { lines: [l.line], ...(hint ? { length: hint } : {}) }); if (!r.ok) setNotice(r.error ?? '翻译失败'); },
     mark: async (l: Line, kind) => { const r = await run('mark_non_speech', { lines: [l.line], kind }); if (!r.ok) setNotice(r.error ?? '标记失败'); },
     askAbout: (l: Line) => { openWindow('chat'); setQuote({ line: l.line, label: `第 ${l.line} 句` }); },
+    openVoice: (speakerId: string) => { setVoiceFocus(speakerId); openWindow('voice'); },
+    setVoice: async (l: Line, candidateId: string | null) => {
+      const r = await run('set_dub_style', { lines: [l.line], ...(candidateId ? { clone_candidate: candidateId } : { voice: '' }) });
+      if (!r.ok) { setNotice(r.error ?? '修改失败'); return; }
+      // 改了音色这一句的配音就过期了；重新配音要花钱，所以问一句，不替用户决定
+      if (l.kind === 'speech' && l.translation.trim() && !l.muted
+        && window.confirm(`第 ${l.line} 句的音色已改，要现在重新配音吗？\n（会产生 TTS 费用；选“取消”则这一句标为「需更新」，之后点顶栏的「补」。）`)) {
+        const d = await run('redub', { lines: [l.line] });
+        if (!d.ok) setNotice(d.error ?? '配音失败');
+      }
+    },
   }), [run, seek, openWindow]);
 
   const colorOf = useCallback((sid: string) => speakerColor(project!, sid), [project]);
@@ -277,6 +292,13 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
     subtitle: (c) => (
       <SubtitleStylePanel
         style={style} onStyleChange={onStyleChange}
+        docked={c.docked} dragProps={c.headerProps} windowControls={c.controls}
+      />
+    ),
+    voice: (c) => (
+      <VoicePanel
+        speakers={project!.speakers} lines={lines} colorOf={colorOf} dubbing={dubbing}
+        focusSpeaker={voiceFocus} run={run} onNotice={setNotice}
         docked={c.docked} dragProps={c.headerProps} windowControls={c.controls}
       />
     ),
@@ -355,6 +377,25 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
             >
               字幕样式
             </button>
+
+            {dubbing && (
+              <button
+                type="button"
+                onClick={() => { setVoiceFocus(null); wm.toggle('voice'); }}
+                title="看每个说话人的克隆音色，试听对比、换用"
+                style={{ writingMode: 'vertical-rl' }}
+                className={[
+                  'absolute left-0 top-1/2 mt-[4.5rem] -translate-x-full z-20',
+                  'px-1 py-3 rounded-l-lg border transition-colors cursor-pointer',
+                  'text-[10px] font-bold tracking-[0.25em]',
+                  wm.layout.panels.voice.open
+                    ? 'bg-claude-accent text-white border-claude-accent shadow-md shadow-claude-accent/25'
+                    : 'bg-white text-claude-accent border-claude-accent shadow-sm hover:bg-claude-accent/10',
+                ].join(' ')}
+              >
+                音色
+              </button>
+            )}
           </div>
 
           <div className="shrink-0">

@@ -28,19 +28,34 @@ from app.commands.transcript import _guard
         "instruction": {"type": "string", "maxLength": 100,
                         "description": "语气指令，如“请用悲伤的语气慢慢说”“语速快一点，带点兴奋”。必须与译文是同一种语言的说法习惯；空串=清除"},
         "rate": {"type": "number", "minimum": 0, "maximum": 2.0, "description": "语速倍率 0.5~2.0，1.0 为正常；0 = 清除（回到按时间槽自动估算）"},
-        "voice": {"type": "string", "description": "单句音色 id（见 list_voices）；空串=清除"},
+        "voice": {"type": "string", "description": "单句音色 id（见 list_voices）；空串=清除（回到跟随说话人）"},
+        "clone_candidate": {"type": "string", "description": "单句改用这些句子的说话人的某个候选克隆音色（候选 id，"
+                                                              "见说话人的 candidates）；和 voice 二选一"},
     }, "required": ["lines"]},
 )
 def set_dub_style(ctx: Ctx, lines: list, instruction: Optional[str] = None, rate: Optional[float] = None,
-                  voice: Optional[str] = None):
+                  voice: Optional[str] = None, clone_candidate: Optional[str] = None):
     state = ctx.state
     segs = resolve_lines(state, lines)
     _guard(ctx, segs)
-    if instruction is None and rate is None and voice is None:
-        raise CommandError("至少给 instruction / rate / voice 之一")
+    if instruction is None and rate is None and voice is None and clone_candidate is None:
+        raise CommandError("至少给 instruction / rate / voice / clone_candidate 之一")
+    if clone_candidate is not None:
+        if voice is not None:
+            raise CommandError("voice 和 clone_candidate 只能给一个")
+        owners = {x.speaker_id for x in segs}
+        if len(owners) != 1:
+            raise CommandError("clone_candidate 只能用在同一个说话人的句子上")
+        sp = state.speaker(owners.pop())
+        cand = next((c for c in (sp.clone_candidates if sp else []) if c.get("id") == clone_candidate), None)
+        if cand is None:
+            raise CommandError(f"{sp.name if sp else '该说话人'} 没有候选 {clone_candidate!r}")
+        if cand.get("target_model") != config.TTS_MODEL:
+            raise CommandError("这个候选是按别的 TTS 模型克隆的，不能用了；重新生成")
+        voice = cand["voice_id"]
     if rate is not None and rate != 0 and rate < config.TTS_RATE_MIN:
         raise CommandError(f"语速要在 {config.TTS_RATE_MIN}~{config.TTS_RATE_MAX} 之间（或 0 表示清除），收到 {rate}")
-    if voice:
+    if voice and clone_candidate is None:
         pool = config.voices_for_language(state.target_language)
         if voice not in pool:
             raise CommandError(f"音色 {voice!r} 不能用于{state.target_language}", hint="用 list_voices 看可选的")

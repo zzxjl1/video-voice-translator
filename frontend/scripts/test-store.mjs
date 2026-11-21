@@ -540,6 +540,18 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   check('㊾ 旧版位置是坏的：忽略，用默认', js(P(restore(null, '{bad', VP), 'chat').rect) === js(P(init(), 'chat').rect));
   check('㊾ 存储 key 带版本号', /\.v\d+$/.test(STORAGE_KEY));
   check('㊾ normalize 幂等', js(normalize(normalize(l))) === js(normalize(l)));
+
+  // 音色面板：第四个窗口，默认收着，由画面左边缘的挂耳打开
+  const V = init();
+  check('㊿ 音色面板：默认收着，不在停靠位标签里', !P(V, 'voice').open && !dockedOpen(V).includes('voice'));
+  check('㊿ 音色面板：不是常驻窗口，能关', !PINNED.includes('voice') && !P(R(R(V, { type: 'open', id: 'voice' }), { type: 'close', id: 'voice' }), 'voice').open);
+  const Vo = R(V, { type: 'open', id: 'voice' });
+  check('㊿ 音色面板：打开后成为停靠位里的标签，排在字幕样式之后', P(Vo, 'voice').open && dockedOpen(R(Vo, { type: 'open', id: 'subtitle' })).join() === 'script,chat,subtitle,voice' && activeDock(Vo) === 'voice');
+  check('㊿ 音色面板：切换', P(R(V, { type: 'toggle', id: 'voice' }), 'voice').open && !P(R(Vo, { type: 'toggle', id: 'voice' }), 'voice').open);
+  const oldSave = js({ panels: { script: { open: true, docked: true, rect: defaultRect('script', VP) }, chat: { open: true, docked: true, rect: defaultRect('chat', VP) }, subtitle: { open: true, docked: true, rect: defaultRect('subtitle', VP) } }, active: 'subtitle' });
+  const migrated = restore(oldSave, null, VP);
+  check('㊿ 音色面板：没有它的旧存档读回来，别的窗口原样、它用默认（收着）', P(migrated, 'subtitle').open && !P(migrated, 'voice').open && js(P(migrated, 'voice').rect) === js(defaultRect('voice', VP)));
+  check('㊿ 音色面板：存取往返', P(restore(serialize(Vo), null, VP), 'voice').open);
 }
 
 console.log(failures === 0 ? '\n合计 全部通过' : `\n合计 ${failures} 项失败`);

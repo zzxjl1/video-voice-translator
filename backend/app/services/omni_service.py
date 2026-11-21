@@ -194,7 +194,9 @@ async def enhance_transcript(
 # 重选。这两个数【必须】与下面校验块一致 —— 前置可行性检查靠它们判断"omni 有
 # 没有可能选出一个合格答案"。
 _PICK_MIN_TOTAL_S = 5.0
-_PICK_MAX_TOTAL_S = 30.0
+# 服务端预处理只认 ≤20 秒（见 voice_clone_service.SAMPLE_MAX_DURATION），拼接还要加句间
+# 间隔，所以这里给语音本身留 18 秒。旧值 30 会让 omni 选出一份被服务端截掉后半段的样本。
+_PICK_MAX_TOTAL_S = 18.0
 
 
 async def pick_samples(
@@ -202,11 +204,14 @@ async def pick_samples(
     speaker_id: str,
     candidates: list[dict],
     audio_url: str,
+    target_language: str = "",
 ) -> tuple[list[str] | None, str]:
     """
     让 omni 听音频，通过 tool call 挑选克隆参考段。
 
     candidates: [{"id", "start", "end", "duration", "text"}]（同一说话人）。
+    target_language: 配音的目标语言。跨语言克隆时参考音频的口音、语调、节奏会一起被
+        "学进"音色（口音 / 韵律泄漏），告诉模型目标语言，它才知道该避开什么。
 
     返回 `(ids, reason)`：
       * 成功 → `(选中的 id 列表, "")`
@@ -246,29 +251,59 @@ async def pick_samples(
     )
 
     by_id = {str(c["id"]): c for c in candidates}
+
+    def _pace(c: dict) -> str:
+        # 字符数 / 秒：给模型一个语速的参照，快速排除明显过快或过慢的句子
+        text = (c.get("text") or "").strip()
+        dur = float(c.get("duration") or 0)
+        return f"{len(text) / dur:.1f} chars/s" if dur > 0 and text else "?"
+
     listing = "\n".join(
         f'id={c["id"]}  [{c["start"]:.2f}-{c["end"]:.2f}]s  {c["duration"]:.1f}s  '
-        f'"{c["text"][:60]}"'
+        f'{_pace(c)}  "{c["text"][:60]}"'
         for c in candidates
     )
+    target = target_language or "another language"
     system = (
-        "You are a voice-cloning casting director. You hear the ORIGINAL audio "
-        "and must pick the reference segments for cloning ONE speaker's voice.\n\n"
+        "You are a voice-cloning casting director. You hear the ORIGINAL audio and "
+        "must pick the reference segments used to clone ONE speaker's voice.\n\n"
+        f"CONTEXT: the clone will speak {target}, but the reference is in the original "
+        "language. A clone copies EVERYTHING in the reference — timbre, but also the "
+        "accent, intonation contour, rhythm and speaking habits. When those belong to "
+        f"the original language they LEAK into the {target} speech and it sounds like "
+        "a foreigner reading. Your job is to pick references that carry timbre and "
+        "as little language-specific delivery as possible.\n\n"
         "HARD RULES for every pick:\n"
-        "- The span must contain ONLY that speaker's clean speech. Skip any span "
-        "where another voice talks over them — overlapping speech poisons the "
-        "timbre.\n"
-        "- Skip extreme emotion: shouting, crying, laughing fits, panicked or "
-        "whispered lines. Timbre comes from the reference; emotion is added "
-        "later by tags. Pick neutral, normal-paced delivery.\n"
-        "- Skip noise and music-heavy spans.\n"
+        "- ONLY that speaker's clean speech. Skip any span where another voice, "
+        "music, applause or noise is present — it poisons the timbre.\n"
+        "- The picks must be consistent with each other: same loudness, same energy, "
+        "same speaking pace, same room. Never mix a calm line with an excited one.\n"
         f"- Together the picks must total {min_total:.1f}-{_PICK_MAX_TOTAL_S:.0f} "
         "seconds and must not overlap each other in time."
-        f"{material_note}\n"
-        "- Prefer longer, complete sentences over fragments.\n\n"
-        "You MUST answer by calling the select_samples tool with the chosen ids "
-        "and a one-line reason for each. If a previous attempt was rejected, fix "
-        "the reported problem and call the tool again."
+        f"{material_note}\n\n"
+        "HOW TO AVOID ACCENT / PROSODY LEAKAGE (this is the main criterion):\n"
+        "- Prefer calm, flat, declarative statements delivered at a steady, "
+        "conversational pace. Think 'reading a neutral sentence aloud'.\n"
+        "- AVOID: questions and rising end-of-sentence intonation; exclamations; "
+        "emphasis, stress on single words, dramatic or theatrical delivery; "
+        "slogans and pitch-style delivery; slowed or stretched words; "
+        "rushed or mumbled speech; whispering; shouting; laughing; sighing; "
+        "filler words and hesitations ('um', 'you know'); trailing-off or "
+        "unfinished sentences; reading lists in a sing-song rhythm.\n"
+        "- AVOID lines packed with proper nouns, brand names, numbers or foreign "
+        "words — those are pronounced in a distinctive, language-specific way.\n"
+        "- PREFER medium length: roughly 3-8 seconds per line. Very long lines carry "
+        "more intonation swings; very short ones carry too little timbre. Use one "
+        "line of at least 5 seconds as the anchor so the sample has a continuous "
+        "stretch, and fill the rest with similar-sounding lines.\n"
+        "- The pace column (chars/s) is a hint: avoid lines far faster or slower than "
+        "this speaker's typical lines.\n"
+        "- Fewer, cleaner, more uniform lines beat more lines. If every candidate is "
+        "expressive, pick the least expressive ones.\n\n"
+        "You MUST answer by calling the select_samples tool with the chosen ids and a "
+        "one-line reason for each — the reason should say why the delivery is neutral "
+        "and steady (pace, intonation, cleanliness). If a previous attempt was "
+        "rejected, fix the reported problem and call the tool again."
     )
     user_text = f"Speaker: {speaker_id}\nCandidate segments:\n{listing}"
     tools = [{

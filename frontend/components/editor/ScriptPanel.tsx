@@ -23,6 +23,10 @@ export interface ScriptActions {
   retranslate: (line: Line, hint?: 'longer' | 'shorter') => void;
   mark: (line: Line, kind: 'music' | 'noise' | 'vocal' | 'song' | 'speech') => void;
   askAbout: (line: Line) => void;
+  /** 打开音色面板并定位到这个说话人。 */
+  openVoice: (speakerId: string) => void;
+  /** 单句改用说话人的某个候选音色；null = 清除，回到跟随说话人。 */
+  setVoice: (line: Line, candidateId: string | null) => void;
 }
 
 interface Props {
@@ -155,6 +159,7 @@ const LineCard = memo(({ line, speaker, color, active, flashBy, mixEntry, dubbin
           >
             {speaker?.name ?? `Speaker ${line.speakerId}`}
           </button>
+          {line.ttsVoice && !nonSpeech && <Tag tone="bg-sky-50 text-sky-600 border-sky-200" title="这一句单独指定了音色，不跟随说话人">单句音色</Tag>}
           {nonSpeech && <Tag tone="bg-purple-50 text-purple-600 border-purple-200">{KIND_LABEL[line.kind] ?? line.kind}</Tag>}
           {line.muted && <Tag tone="bg-gray-100 text-gray-500 border-gray-200">已静音</Tag>}
           {line.hidden && <Tag tone="bg-amber-50 text-amber-600 border-amber-200">字幕隐藏</Tag>}
@@ -181,7 +186,7 @@ const LineCard = memo(({ line, speaker, color, active, flashBy, mixEntry, dubbin
             <button onClick={() => setMenu((v) => !v)} data-line-menu-trigger className="p-1.5 rounded-md hover:bg-claude-paper text-gray-400 hover:text-gray-600 transition-colors" title="更多">
               <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
             </button>
-            {menu && <LineMenu line={line} dubbing={dubbing} actions={actions} onClose={() => setMenu(false)} />}
+            {menu && <LineMenu line={line} speaker={speaker} dubbing={dubbing} actions={actions} onClose={() => setMenu(false)} />}
           </div>
         </div>
       </div>
@@ -429,7 +434,7 @@ const Editable: React.FC<EditableProps> = ({ label, value, placeholder, secondar
 
 // ----------------------------------------------------------------------------
 
-const LineMenu: React.FC<{ line: Line; dubbing: boolean; actions: ScriptActions; onClose: () => void }> = ({ line, dubbing, actions, onClose }) => {
+const LineMenu: React.FC<{ line: Line; speaker?: SpeakerView; dubbing: boolean; actions: ScriptActions; onClose: () => void }> = ({ line, speaker, dubbing, actions, onClose }) => {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
@@ -455,12 +460,35 @@ const LineMenu: React.FC<{ line: Line; dubbing: boolean; actions: ScriptActions;
   );
 
   const nonSpeech = line.kind !== 'speech';
+  const candidates = speaker?.candidates.filter((c) => c.id && c.usable) ?? [];
+  const [voices, setVoices] = useState(false);
   return (
     <div ref={ref} className="absolute right-0 top-full mt-1.5 w-52 bg-white border border-claude-border rounded-xl shadow-xl z-30 py-1.5 overflow-hidden">
       {!nonSpeech && item('重新翻译', () => actions.retranslate(line))}
       {!nonSpeech && item('译文长一点', () => actions.retranslate(line, 'longer'))}
       {!nonSpeech && item('译文短一点', () => actions.retranslate(line, 'shorter'))}
       {dubbing && !nonSpeech && item('重新配音', () => actions.redub(line))}
+      {dubbing && !nonSpeech && (candidates.length > 0 || line.ttsVoice) && (
+        <>
+          <button
+            onClick={() => setVoices((v) => !v)}
+            className="w-full text-left px-3.5 py-2 text-[12px] hover:bg-claude-paper transition-colors text-claude-text flex items-center justify-between"
+          >
+            <span className="font-medium">这句用别的音色</span>
+            <span className="text-[10px] text-gray-400">{voices ? '▾' : '▸'}</span>
+          </button>
+          {voices && (
+            <div className="bg-[#fbfbf9] border-y border-claude-border/60">
+              {line.ttsVoice && item('跟随说话人', () => actions.setVoice(line, null), '清除这一句单独的音色')}
+              {candidates.map((c) => item(
+                c.presetLabel ?? '候选音色',
+                () => actions.setVoice(line, c.id),
+                c.lines.length ? `第 ${c.lines.join('、')} 句取材` : undefined,
+              ))}
+            </div>
+          )}
+        </>
+      )}
       <div className="my-1 border-t border-claude-border/60" />
       {item(line.muted ? '取消静音' : '静音', () => actions.toggleMute(line), line.muted ? undefined : '这一格不配音')}
       {item(line.hidden ? '显示字幕' : '隐藏字幕', () => actions.toggleHide(line), line.hidden ? undefined : '配音照常')}

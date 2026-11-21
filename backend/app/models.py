@@ -45,6 +45,11 @@ class Speaker:
     voice: Optional[str] = None          # 系统音色（自动分配或手动指定，都在这）
     # 克隆音色：{"voice_id", "target_model", "created_at"}。绑定 TTS 模型，换模型即失效。
     clone: Optional[dict] = None
+    # 候选克隆音色：同一说话人用不同取材方式（预设）做的几个音色，让用户听着挑。
+    # 每项 {"id", "voice_id", "target_model", "preset", "lines"(行 id), "seconds", "created_at"}。
+    # 只存**历史事实**（怎么做的、用了哪几句）——素材总量、能做哪些预设都是现算的，不落盘。
+    # 当前选用的音色仍是上面的 `clone`，导出 / 配音链路不认候选。
+    clone_candidates: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)

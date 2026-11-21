@@ -1,5 +1,5 @@
 /**
- * 窗口布局：脚本与译文 / AI 助手 / 字幕样式 三个面板，各自是一个窗口。
+ * 窗口布局：脚本与译文 / AI 助手 / 字幕样式 / 音色 四个面板，各自是一个窗口。
  *
  *   · 吸附（docked）：固定在右栏那一个"停靠位"里，大小由布局决定，不能调。标签条只列已打开的
  *     停靠窗口，一次显示一个；译文 / 助手是常驻窗口（一直开着、关不掉），字幕样式默认不打开。
@@ -10,8 +10,8 @@
  * 存取。拖动时的指针事件在 hooks/useWindows.ts。
  */
 
-export type PanelId = 'script' | 'chat' | 'subtitle';
-export const PANEL_IDS: readonly PanelId[] = ['script', 'chat', 'subtitle'];
+export type PanelId = 'script' | 'chat' | 'subtitle' | 'voice';
+export const PANEL_IDS: readonly PanelId[] = ['script', 'chat', 'subtitle', 'voice'];
 /** 常驻窗口：一直开着，没有关闭按钮，所以右栏的译文 / 助手切换永远都在。 */
 export const PINNED: readonly PanelId[] = ['script', 'chat'];
 
@@ -37,12 +37,14 @@ export const TITLES: Record<PanelId, string> = {
   script: '脚本 & 译文',
   chat: 'AI 助手',
   subtitle: '字幕样式',
+  voice: '音色',
 };
 
 export const MIN_SIZE: Record<PanelId, { w: number; h: number }> = {
   script: { w: 360, h: 300 },
   chat: { w: 320, h: 320 },
   subtitle: { w: 320, h: 300 },
+  voice: { w: 360, h: 340 },
 };
 
 /** 顶栏收起时的高度：浮动窗口不要压住它。 */
@@ -125,7 +127,7 @@ export function defaultRect(id: PanelId, vp: Viewport): Rect {
 export function defaultLayout(vp: Viewport): Layout {
   const mk = (id: PanelId, open: boolean, docked: boolean): PanelWin => ({ open, docked, rect: defaultRect(id, vp), z: 0 });
   return normalize({
-    panels: { script: mk('script', true, true), chat: mk('chat', true, true), subtitle: mk('subtitle', false, true) },
+    panels: { script: mk('script', true, true), chat: mk('chat', true, true), subtitle: mk('subtitle', false, true), voice: mk('voice', false, true) },
     active: 'script',
   });
 }

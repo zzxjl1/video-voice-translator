@@ -34,14 +34,43 @@ def settings_view(state: VideoState) -> dict:
     }
 
 
+def _voice_item(state: VideoState, speaker: Speaker, rec: dict) -> dict:
+    """一个克隆音色（当前选用的或候选）给界面看的样子。试听文件在不在是现查的。"""
+    from app.services import voice_presets as vp
+    preview = None
+    if rec.get("voice_id"):
+        name = vp.preview_filename(rec["voice_id"], vp.preview_sentence(state.target_language))
+        if os.path.exists(os.path.join(video_dir_path(state.video_id), "voice_clone", speaker.id, name)):
+            preview = f"/api/projects/{state.video_id}/voice-preview/{speaker.id}/{name}"
+    index = {s.id: i + 1 for i, s in enumerate(state.segments)}
+    return {
+        "id": rec.get("id"),
+        "preset": rec.get("preset"),
+        "presetLabel": vp.PRESET_LABELS.get(rec.get("preset") or "", "手动指定" if rec.get("preset") == "manual" else None),
+        "lines": [index[i] for i in rec.get("lines") or [] if i in index],
+        "seconds": rec.get("seconds"),
+        "usable": rec.get("target_model") == config.TTS_MODEL,
+        "previewUrl": preview,
+    }
+
+
 def speaker_view(state: VideoState, speaker: Speaker) -> dict:
+    from app.services import voice_presets as vp
+    cloned = status.clone_voice_id(state, speaker) is not None
     return {
         "id": speaker.id,
         "name": speaker.name,
         "voice": speaker.voice,
         "voiceLabel": config.voice_label(speaker.voice) if speaker.voice else None,
-        "cloned": status.clone_voice_id(state, speaker) is not None,
+        "cloned": cloned,
         "lines": sum(1 for s in state.segments if s.speaker_id == speaker.id),
+        # 素材量、能做哪些预设：每次现算，不落盘（改了时间轴 / 静音 / 重新分离都会跟着变）
+        "material": vp.material(state.segments, speaker.id),
+        "presetOptions": vp.preset_options(state.segments, speaker.id) if state.enable_dubbing else [],
+        "currentClone": _voice_item(state, speaker, speaker.clone) if cloned else None,
+        "candidates": [_voice_item(state, speaker, c) for c in speaker.clone_candidates],
+        # 所有音色都念这一句固定的话（随目标语言）
+        "previewText": vp.preview_sentence(state.target_language),
     }
 
 

@@ -375,19 +375,21 @@ async def clone_speakers(video_id: str, job: Job, server_url: str, only: Optiona
             if speaker and status.clone_voice_id(current, speaker) and await vc.verify_voice(speaker.clone["voice_id"]):
                 _emit(video_id, job, {**base, "status": "done", "reused": True})
                 continue
-            selected = await vc.pick_reference_lines(
+            plan = await vc.pick_plan(
                 video_id, current.segments, sp.id,
-                AUDIO_URL.format(base=server_url, vid=video_id), current.clone_smart_pick,
+                audio_url=AUDIO_URL.format(base=server_url, vid=video_id),
+                target_language=current.target_language, smart=current.clone_smart_pick,
                 emit=lambda e: _async_emit(video_id, job, e),
             )
-            voice_id = await vc.enroll_voice(video_id, sp.id, selected, server_url,
+            voice_id = await vc.enroll_voice(video_id, sp.id, plan,
                                              emit=lambda e: _async_emit(video_id, job, e))
 
-            def apply(s, voice_id=voice_id, sid=sp.id):
+            def apply(s, voice_id=voice_id, sid=sp.id, plan=plan):
                 target = s.speaker(sid)
                 if target is not None:
                     target.clone = {"voice_id": voice_id, "target_model": vc.clone_target_model(),
-                                    "created_at": int(time.time())}
+                                    "created_at": int(time.time()), "preset": plan.preset,
+                                    "lines": plan.line_ids}
 
             store.mutate(video_id, apply, actor="system", cmd="clone", summary=f"{sp.name} 的克隆音色就绪")
             _emit(video_id, job, {**base, "status": "done", "voice_id": voice_id, "reused": False})

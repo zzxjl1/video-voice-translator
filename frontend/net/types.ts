@@ -38,6 +38,32 @@ export interface Line {
   audioDuration: number | null;
 }
 
+/** 一个克隆音色（当前选用的，或候选）。 */
+export interface CloneVoiceView {
+  /** 候选有 id；当前选用的没有。 */
+  id: string | null;
+  preset: string | null;
+  presetLabel: string | null;
+  /** 取材用了哪几句（行号）。 */
+  lines: number[];
+  seconds: number | null;
+  /** 是按当前 TTS 模型克隆的；否则不能再用。 */
+  usable: boolean;
+  /** 固定试听句的音频；还没合成就是 null。 */
+  previewUrl: string | null;
+}
+
+export interface VoicePresetOption {
+  id: string;
+  label: string;
+  hint: string;
+  available: boolean;
+  /** 做不了的原因（available=false 时）。 */
+  reason: string | null;
+  seconds: number | null;
+  lines: number[];
+}
+
 export interface SpeakerView {
   id: string;
   name: string;
@@ -45,6 +71,13 @@ export interface SpeakerView {
   voiceLabel: string | null;
   cloned: boolean;
   lines: number;
+  /** 素材量：服务端现算，不落盘。 */
+  material: { total: number; longest: number; lines: number };
+  presetOptions: VoicePresetOption[];
+  currentClone: CloneVoiceView | null;
+  candidates: CloneVoiceView[];
+  /** 所有音色都念的那句固定试听句（随目标语言）。 */
+  previewText: string;
 }
 
 export interface Settings {

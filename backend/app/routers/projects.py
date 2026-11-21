@@ -23,6 +23,7 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import shutil
 import uuid
 from typing import Optional
@@ -518,6 +519,17 @@ def voice_preview(video_id: str, speaker_id: str):
     if not tts_service.is_safe_segment_id(speaker_id):
         raise HTTPException(status_code=400, detail="malformed speaker id")
     path = voice_clone_service.preview_path(video_id, speaker_id)
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Preview not found")
+    return FileResponse(path, media_type="audio/mpeg")
+
+
+@router.get("/{video_id}/voice-preview/{speaker_id}/{name}")
+def voice_preview_file(video_id: str, speaker_id: str, name: str):
+    """候选音色的对比试听（文件名由音色 + 试听句内容决定，见 voice_presets.preview_filename）。"""
+    if not tts_service.is_safe_segment_id(speaker_id) or not re.fullmatch(r"pv_[0-9a-f]{12}\.mp3", name):
+        raise HTTPException(status_code=400, detail="malformed name")
+    path = voice_clone_service.preview_path(video_id, speaker_id, name)
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="Preview not found")
     return FileResponse(path, media_type="audio/mpeg")
