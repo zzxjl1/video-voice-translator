@@ -204,6 +204,22 @@ const SpeakerVoices: React.FC<VoicesProps> = ({ speaker, lines, player, run, onN
     await act(`gen-${row.key}`, () => run('generate_voice_candidates', { speaker: speaker.id, presets: [row.preset] }), '克隆失败');
   };
 
+  // 默认克隆：和初始化完全一样（clone_voice 不带参数）——素材够就用中句拼接，不够退到连读 / 单句；
+  // 开了智能选材就先让 AI 挑。做完直接成为这个人当前的音色。
+  const hasMaterial = presetOptions.some((o) => o.id !== 'smart' && o.available);
+  const cloneDefault = async () => {
+    if (!window.confirm(`克隆 ${speaker.name} 的音色？\n约 ${PRICE_PER_VOICE.toFixed(2)} 元，要几十秒。`)) return;
+    const r = await act('gen-default', () => run('clone_voice', { speaker: speaker.id }), '克隆失败');
+    if (!r.ok) return;
+    const todo = translated.filter((l) => !l.muted).map((l) => l.line);
+    if (!todo.length) return;
+    // 和换音色一样：克隆不花配音的钱，重新配音才花；问清楚，取消就先保持现有配音
+    const go = window.confirm(
+      `${speaker.name} 的克隆音色做好了。\n${todo.length} 句配音要用新音色重新合成，会产生 TTS 费用。\n\n现在重新配音吗？\n（选“取消”则先保持现有配音，这些句子会标为「需更新」，之后点顶栏的「补」。）`,
+    );
+    if (go) await act('redub', () => run('redub', { lines: todo }), '重新配音失败');
+  };
+
   const use = async (row: MadeRow) => {
     if (!row.v.id) return;
     const r = await act(`use-${row.v.id}`, () => run('use_voice_candidate', { speaker: speaker.id, candidate: row.v.id }), '换用失败');
@@ -234,9 +250,22 @@ const SpeakerVoices: React.FC<VoicesProps> = ({ speaker, lines, player, run, onN
       <section className="space-y-2">
         <h4 className="text-[11px] font-bold tracking-wider text-gray-400">音色</h4>
         {!currentClone && (
-          <p className="text-[12px] text-gray-500 leading-relaxed">
-            {speaker.voiceLabel ? `现在用的是系统音色「${speaker.voiceLabel}」。` : ''}选一种方式克隆这个人的声音。
-          </p>
+          <div className="rounded-2xl border border-dashed border-claude-accent/40 bg-claude-accent/5 px-4 py-4 space-y-3">
+            <p className="text-[12px] text-gray-500 leading-relaxed">
+              {speaker.voiceLabel ? `现在用的是系统音色「${speaker.voiceLabel}」。` : ''}用原片里这个人的声音来配音。
+            </p>
+            <button
+              type="button"
+              disabled={busy !== null || !hasMaterial}
+              onClick={() => void cloneDefault()}
+              className="w-full text-[14px] font-bold text-white bg-claude-accent hover:opacity-90 rounded-xl py-3 disabled:opacity-40 transition-opacity"
+            >
+              {busy === 'gen-default' ? '克隆中，要几十秒…' : '克隆这个人的音色'}
+            </button>
+            {!hasMaterial && (
+              <p className="text-[11px] text-gray-400">这个人没有可用的素材，做不了克隆。</p>
+            )}
+          </div>
         )}
 
         <ul className="space-y-2">

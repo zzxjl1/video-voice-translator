@@ -335,6 +335,17 @@ FakeEnroll.created.clear()
 r = run("clone_voice", {"speaker": "0", "preset": "long_one"})
 sp = store.get_state(VID).speaker("0")
 check("⑪ clone_voice 指定预设 → 记下预设和参考句", r["ok"] and sp.clone["preset"] == "long_one" and sp.clone["lines"] == ["s2"], r)
+fresh()
+r0 = run("clone_voice", {"speaker": "0"}); r1 = run("clone_voice", {"speaker": "1"})
+st = store.get_state(VID)
+check("⑪ 界面上的“克隆这个人的音色”= 不带参数的 clone_voice，和初始化选同一个预设",
+      r0["ok"] and r1["ok"]
+      and st.speaker("0").clone["preset"] == vp.default_plan(st.segments, "0").preset
+      and st.speaker("1").clone["preset"] == vp.default_plan(st.segments, "1").preset,
+      (st.speaker("0").clone, st.speaker("1").clone))
+check("⑪ 默认克隆直接成为当前音色，不产生候选", status.clone_voice_id(st, st.speaker("0")) and st.speaker("0").clone_candidates == [])
+check("⑪ 素材多的用中句拼接，素材少的退到连读 / 单句（不硬凑）",
+      st.speaker("0").clone["preset"] == "mid_concat" and st.speaker("1").clone["preset"] in ("continuous", "long_one"))
 r = run("clone_voice", {"speaker": "0", "reference_lines": [1, 4]})
 sp = store.get_state(VID).speaker("0")
 check("⑪ clone_voice 指定参考句 → 预设记为 manual", r["ok"] and sp.clone["preset"] == "manual" and sp.clone["lines"] == ["s0", "s3"], r)
