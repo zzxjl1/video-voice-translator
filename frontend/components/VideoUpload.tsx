@@ -10,6 +10,7 @@ import {
   hasAccents,
 } from '../utils/languages';
 import { formatRelativeTime, type RecentProject } from '../utils/recentProjects';
+import { LanguageSwitch } from '@/i18n';
 
 /**
  * Dot colour for a project's server status. Absent (server unreachable at
@@ -198,6 +199,7 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
 
   return (
     <div className="relative flex flex-col items-center justify-center min-h-screen overflow-hidden bg-claude-bg">
+      <LanguageSwitch className="absolute top-5 right-6 z-30" />
       {/* Animated watermark background */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none select-none" aria-hidden="true">
         <div className="absolute inset-0" style={{ transform: 'rotate(-18deg)', transformOrigin: 'center center' }}>
@@ -633,7 +635,7 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
                         <span
                           className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusDotClass(project.status)}`}
                         />
-                        <span className="flex-1 min-w-0 truncate text-xs text-gray-700">
+                        <span data-i18n-skip className="flex-1 min-w-0 truncate text-xs text-gray-700">
                           {project.filename || project.videoId.slice(0, 8)}
                         </span>
                         <span className="shrink-0 text-[10px] text-gray-400">

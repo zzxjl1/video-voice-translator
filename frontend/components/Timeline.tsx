@@ -251,7 +251,7 @@ const Timeline: React.FC<TimelineProps> = ({
                 <span className="text-gray-500"> · {(hoveredSeg.end - hoveredSeg.start).toFixed(1)}s</span>
               </div>
               {isSpeech(hoveredSeg) ? (
-                <div className="text-gray-400 text-[10px] mt-0.5 max-w-[220px] truncate">
+                <div data-i18n-skip className="text-gray-400 text-[10px] mt-0.5 max-w-[220px] truncate">
                   {/* 有译文就显示译文（用户看到的就是这句），否则回退原文 */}
                   {hoveredSeg.translation || hoveredSeg.text}
                 </div>

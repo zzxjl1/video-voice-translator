@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { t } from '@/i18n';
 import type { CloneVoiceView, CommandResult, Line, SpeakerView, VoicePresetOption } from '../../net/types';
 import type { HeaderProps } from '../../hooks/useWindows';
 
@@ -208,7 +209,7 @@ const SpeakerVoices: React.FC<VoicesProps> = ({ speaker, lines, player, run, onN
   // 克隆这一种取材方式：花钱，所以点了才问；费用只写在确认框里
   const clone = async (row: Row) => {
     if (!row.preset) return;
-    if (!window.confirm(`用「${row.name}」克隆 ${speaker.name} 的音色？\n约 ${PRICE_PER_VOICE.toFixed(2)} 元，要几十秒，做好后可以直接试听。`)) return;
+    if (!window.confirm(t("用「{0}」克隆 {1} 的音色？\n约 {2} 元，要几十秒，做好后可以直接试听。", [t(row.name), speaker.name, PRICE_PER_VOICE.toFixed(2)]))) return;
     await act(`gen-${row.key}`, () => run('generate_voice_candidates', { speaker: speaker.id, presets: [row.preset] }), '克隆失败');
   };
 
@@ -216,14 +217,14 @@ const SpeakerVoices: React.FC<VoicesProps> = ({ speaker, lines, player, run, onN
   // 开了智能选材就先让 AI 挑。做完直接成为这个人当前的音色。
   const hasMaterial = presetOptions.some((o) => o.id !== 'smart' && o.available);
   const cloneDefault = async () => {
-    if (!window.confirm(`克隆 ${speaker.name} 的音色？\n约 ${PRICE_PER_VOICE.toFixed(2)} 元，要几十秒。`)) return;
+    if (!window.confirm(t("克隆 {0} 的音色？\n约 {1} 元，要几十秒。", [speaker.name, PRICE_PER_VOICE.toFixed(2)]))) return;
     const r = await act('gen-default', () => run('clone_voice', { speaker: speaker.id }), '克隆失败');
     if (!r.ok) return;
     const todo = translated.filter((l) => !l.muted).map((l) => l.line);
     if (!todo.length) return;
     // 和换音色一样：克隆不花配音的钱，重新配音才花；问清楚，取消就先保持现有配音
     const go = window.confirm(
-      `${speaker.name} 的克隆音色做好了。\n${todo.length} 句配音要用新音色重新合成，会产生 TTS 费用。\n\n现在重新配音吗？\n（选“取消”则先保持现有配音，这些句子会标为「需更新」，之后点顶栏的「补」。）`,
+      t("{0} 的克隆音色做好了。\n{1} 句配音要用新音色重新合成，会产生 TTS 费用。\n\n现在重新配音吗？\n（选“取消”则先保持现有配音，这些句子会标为「需更新」，之后点顶栏的「补」。）", [speaker.name, todo.length]),
     );
     if (go) await act('redub', () => run('redub', { lines: todo }), '重新配音失败');
   };
@@ -236,13 +237,13 @@ const SpeakerVoices: React.FC<VoicesProps> = ({ speaker, lines, player, run, onN
     if (!todo.length) return;
     // 换音色不花钱，重新配音才花钱：先问清楚。取消 = 保持现有配音，那些句子标成「需更新」。
     const go = window.confirm(
-      `已换成「${row.name}」。\n${speaker.name} 的 ${todo.length} 句配音要用新音色重新合成，会产生 TTS 费用。\n\n现在重新配音吗？\n（选“取消”则先保持现有配音，这些句子会标为「需更新」，之后点顶栏的「补」。）`,
+      t("已换成「{0}」。\n{1} 的 {2} 句配音要用新音色重新合成，会产生 TTS 费用。\n\n现在重新配音吗？\n（选“取消”则先保持现有配音，这些句子会标为「需更新」，之后点顶栏的「补」。）", [t(row.name), speaker.name, todo.length]),
     );
     if (go) await act('redub', () => run('redub', { lines: todo }), '重新配音失败');
   };
 
   const clean = async () => {
-    if (!window.confirm(`删掉 ${speaker.name} 没在用的 ${candidates.length} 个音色？\n服务端的也会一起删除，无法找回。`)) return;
+    if (!window.confirm(t("删掉 {0} 没在用的 {1} 个音色？\n服务端的也会一起删除，无法找回。", [speaker.name, candidates.length]))) return;
     await act('clean', () => run('delete_voice_candidates', { speaker: speaker.id }), '清理失败');
   };
 

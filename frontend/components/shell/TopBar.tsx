@@ -12,6 +12,7 @@
  */
 import React, { useState } from 'react';
 import { ALL_LANGUAGES } from '../../utils/languages';
+import { LanguageSwitch } from '@/i18n';
 import type { JobInfo, Needs } from '../../net/types';
 
 interface Props {
@@ -84,6 +85,7 @@ const TopBar: React.FC<Props> = ({
           <div className="flex flex-col min-w-0">
             <div className="flex items-center gap-3 min-w-0">
               <h1
+                data-i18n-skip
                 className={`
                   font-serif font-bold text-gray-900 tracking-tight transition-all duration-500 truncate
                   ${expanded ? 'text-xl' : 'text-[11px] uppercase tracking-[0.15em] text-gray-600 font-sans max-w-[18ch]'}
@@ -104,7 +106,7 @@ const TopBar: React.FC<Props> = ({
               )}
             </div>
             {expanded && (
-              <span className="text-[10px] uppercase tracking-widest font-bold text-gray-400 mt-0.5 truncate max-w-[32ch]">
+              <span data-i18n-skip className="text-[10px] uppercase tracking-widest font-bold text-gray-400 mt-0.5 truncate max-w-[32ch]">
                 {filename}
               </span>
             )}
@@ -200,8 +202,9 @@ const TopBar: React.FC<Props> = ({
           </button>
         </div>
 
-        {/* 右：撤销 / 设置；收起态还带「Show Tools」药丸 */}
-        <div className={`flex items-center transition-all duration-500 ${expanded ? 'gap-1' : 'gap-4'}`}>
+        {/* 右：语言 / 撤销 / 设置；收起态还带「Show Tools」药丸 */}
+        <div className={`flex items-center transition-all duration-500 ${expanded ? 'gap-3' : 'gap-4'}`}>
+          <LanguageSwitch className="shrink-0" />
           {!expanded && (
             <button
               onClick={() => setPinned(true)}

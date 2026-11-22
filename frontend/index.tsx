@@ -6,6 +6,7 @@ import ReactDOM from 'react-dom/client';
 import 'streamdown/styles.css';
 import './index.css';
 import App from './App';
+import { I18nRoot } from './i18n';
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {
@@ -15,6 +16,8 @@ if (!rootElement) {
 const root = ReactDOM.createRoot(rootElement);
 root.render(
   <React.StrictMode>
-    <App />
+    <I18nRoot>
+      <App />
+    </I18nRoot>
   </React.StrictMode>
 );

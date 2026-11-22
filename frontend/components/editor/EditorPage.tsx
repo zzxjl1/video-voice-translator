@@ -6,6 +6,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as api from '../../net/client';
+import { t } from '@/i18n';
 import { burnSubtitles } from '../../utils/burnSubtitles';
 import { downloadFile } from '../../utils/helpers';
 import { probeBurnCapability, type BurnCapability } from '../../utils/burnCapability';
@@ -225,7 +226,7 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
       if (!r.ok) { setNotice(r.error ?? '修改失败'); return; }
       // 改了音色这一句的配音就过期了；重新配音要花钱，所以问一句，不替用户决定
       if (l.kind === 'speech' && l.translation.trim() && !l.muted
-        && window.confirm(`第 ${l.line} 句的音色已改，要现在重新配音吗？\n（会产生 TTS 费用；选“取消”则这一句标为「需更新」，之后点顶栏的「补」。）`)) {
+        && window.confirm(t("第 {0} 句的音色已改，要现在重新配音吗？\n（会产生 TTS 费用；选“取消”则这一句标为「需更新」，之后点顶栏的「补」。）", [l.line]))) {
         const d = await run('redub', { lines: [l.line] });
         if (!d.ok) setNotice(d.error ?? '配音失败');
       }
@@ -255,7 +256,7 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
   const changeLanguage = useCallback(async (language: string) => {
     if (language === project!.settings.targetLanguage) return;
     const has = project!.segments.some((l) => l.translation);
-    if (has && !window.confirm(`把目标语言改成 ${language}？\n所有译文和配音都会过期，需要重新翻译和配音。`)) return;
+    if (has && !window.confirm(t("把目标语言改成 {0}？\n所有译文和配音都会过期，需要重新翻译和配音。", [language]))) return;
     const r = await run('set_settings', { target_language: language });
     if (!r.ok) setNotice(r.error ?? '修改失败');
   }, [project, run]);

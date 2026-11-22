@@ -17,6 +17,7 @@ import VideoUpload from './components/VideoUpload';
 import InitView from './components/init/InitView';
 import EditorPage from './components/editor/EditorPage';
 import { detectBrowserLanguage } from './utils/languages';
+import { t } from '@/i18n';
 import {
   forgetRecentProject, loadRecentProjects, touchRecentProject, type RecentProject,
 } from './utils/recentProjects';
@@ -180,13 +181,13 @@ const App: React.FC = () => {
   }, [targetLanguage, targetAccent, enableDubbing, enableVoiceClone, cloneSmartPick, mmEnhance, customPrompt, separationMode, open]);
 
   const deleteProject = useCallback(async (id: string, filename: string) => {
-    if (!window.confirm(`删除「${filename || id.slice(0, 8)}」？服务器上的所有数据都会被清除，无法恢复。`)) return;
+    if (!window.confirm(t("删除「{0}」？服务器上的所有数据都会被清除，无法恢复。", [filename || id.slice(0, 8)]))) return;
     try {
       await api.deleteProject(id);
       forgetRecentProject(id);
       refreshRecent();
     } catch (e) {
-      window.alert(`删除失败：${e instanceof Error ? e.message : e}`);
+      window.alert(t("删除失败：{0}", [e instanceof Error ? e.message : String(e)]));
     }
   }, [refreshRecent]);
 

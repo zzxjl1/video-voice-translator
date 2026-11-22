@@ -20,14 +20,16 @@ interface Props {
 }
 
 const Markdown: React.FC<Props> = ({ text, streaming = false }) => (
-  <Streamdown
-    mode={streaming ? 'streaming' : 'static'}
-    isAnimating={streaming}
-    components={SAFE_COMPONENTS}
-    className="text-[13px] leading-relaxed [&_table]:my-2"
-  >
-    {text}
-  </Streamdown>
+  <div data-i18n-skip>
+    <Streamdown
+      mode={streaming ? 'streaming' : 'static'}
+      isAnimating={streaming}
+      components={SAFE_COMPONENTS}
+      className="text-[13px] leading-relaxed [&_table]:my-2"
+    >
+      {text}
+    </Streamdown>
+  </div>
 );
 
 export default Markdown;

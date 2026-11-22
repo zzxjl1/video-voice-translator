@@ -196,7 +196,7 @@ const LineCard = memo(({ line, speaker, color, active, flashBy, mixEntry, dubbin
         <Editable label="Original" value={line.text} secondary onCommit={(v) => actions.edit(line.id, 'text', v, line.line)} />
         {line.reviewedText && line.reviewedText !== line.text && (
           <div className="text-[11px] text-gray-400 leading-relaxed -mt-2 pl-0.5">
-            <span className="font-bold uppercase tracking-widest text-[9px] text-claude-accent/70 mr-1.5">审听版</span>{line.reviewedText}
+            <span className="font-bold uppercase tracking-widest text-[9px] text-claude-accent/70 mr-1.5">审听版</span><span data-i18n-skip>{line.reviewedText}</span>
           </div>
         )}
         {!nonSpeech && (
@@ -357,6 +357,7 @@ const Editable: React.FC<EditableProps> = ({ label, value, placeholder, secondar
         {hasTags && (
           <div
             aria-hidden="true"
+            data-i18n-skip
             className={`pointer-events-none absolute inset-0 overflow-hidden px-3 py-2 leading-relaxed whitespace-pre-wrap break-words ${typography} ${textColor} transition-all duration-300 ${
               editing ? '' : 'group-hover/field:blur-[2px]'
             }`}
