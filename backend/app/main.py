@@ -8,6 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app import commands  # noqa: F401  - 导入即注册全部命令
 from app import config
+from app.auth import router as auth_router
+from app.auth.db import cleanup_expired, init_db
 from app.bus import bus
 from app.routers import meta, models, projects, subtitles
 
@@ -24,6 +26,9 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     # 线程池里的命令/任务要回到事件循环线程去投递事件，得知道循环是哪个。
     bus.bind(asyncio.get_running_loop())
+    init_db()
+    cleanup_expired()
+    logger.info("Auth DB ready: %s", config.AUTH_DB_PATH)
 
     parts = [
         f"{name}={'available' if info['available'] else 'unavailable (' + info['reason'] + ')'}"
@@ -45,8 +50,8 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=config.CORS_ORIGINS,
-    # 通配来源与 credentials 不能同时成立（浏览器会拒绝）。本服务没有 cookie 登录态，
-    # 路径令牌才是凭据，所以通配时关掉它。
+    # 通配来源与 credentials 不能同时成立（浏览器会拒绝）。因此生产/开发
+    # 都走同源 /api 反向代理；如果确实需要跨源，CORS_ORIGINS 必须写具体来源。
     allow_credentials="*" not in config.CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -71,6 +76,7 @@ async def health():
 # upload 没有 {video_id}，所以在带校验依赖的 router 之外
 api.include_router(projects.upload_router)
 api.include_router(projects.router)
+api.include_router(auth_router.router)
 api.include_router(meta.router)
 api.include_router(models.router)
 api.include_router(subtitles.router)

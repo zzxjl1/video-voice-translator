@@ -7,6 +7,8 @@ import 'streamdown/styles.css';
 import './index.css';
 import App from './App';
 import { I18nRoot } from './i18n';
+import { AuthProvider } from './auth/AuthProvider';
+import { LegalPage } from './legal/LegalPage';
 
 const rootElement = document.getElementById('root');
 if (!rootElement) {
@@ -14,10 +16,22 @@ if (!rootElement) {
 }
 
 const root = ReactDOM.createRoot(rootElement);
+const legalKind = window.location.pathname === '/privacy'
+  ? 'privacy'
+  : window.location.pathname === '/terms'
+    ? 'terms'
+    : null;
+
 root.render(
   <React.StrictMode>
     <I18nRoot>
-      <App />
+      {legalKind ? (
+        <LegalPage kind={legalKind} />
+      ) : (
+        <AuthProvider>
+          <App />
+        </AuthProvider>
+      )}
     </I18nRoot>
   </React.StrictMode>
 );

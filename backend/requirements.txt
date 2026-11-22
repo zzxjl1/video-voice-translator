@@ -5,6 +5,8 @@ python-dotenv>=1.0.0
 openai>=1.60.0
 requests>=2.32.0
 httpx>=0.27.0
+# Verify Google OIDC ID tokens; this is a library, not hosted auth infrastructure.
+PyJWT[crypto]>=2.8.0
 # Export mixes the dubbed timeline with numpy (memory-mapped, chunked).
 numpy>=1.26
 # `instruction`（方言/口音）参数从 1.27.1 才有：1.27.0 及以前传它会让每个

@@ -8,6 +8,8 @@
 import React, { useEffect, useRef } from 'react';
 import { overallProgress, type InitState, type InitStep, type LogLine } from '../../store/init';
 import { LanguageSwitch } from '@/i18n';
+import { AccountMenu } from '../../auth/AccountMenu';
+import { AuthErrorToast } from '../../auth/AuthErrorToast';
 
 interface Props {
   filename: string;
@@ -64,7 +66,11 @@ const InitView: React.FC<Props> = ({ filename, init, error, currentStep, elapsed
 
   return (
     <div className="relative min-h-screen bg-claude-bg flex items-center justify-center p-4 lg:p-8">
-      <LanguageSwitch className="absolute top-5 right-6 z-30" />
+      <div className="absolute top-5 right-6 z-30 flex items-center gap-2">
+        <LanguageSwitch />
+        <AccountMenu />
+      </div>
+      <AuthErrorToast />
       <div className="w-full max-w-5xl grid lg:grid-cols-5 gap-5">
         {/* 左：步骤 */}
         <div className="lg:col-span-2 bg-white border border-claude-border rounded-3xl shadow-sm p-7 flex flex-col">

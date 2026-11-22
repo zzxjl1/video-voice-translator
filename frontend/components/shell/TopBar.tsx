@@ -12,6 +12,7 @@
  */
 import React, { useState } from 'react';
 import { ALL_LANGUAGES } from '../../utils/languages';
+import { AccountMenu } from '../../auth/AccountMenu';
 import type { JobInfo, Needs } from '../../net/types';
 
 interface Props {
@@ -227,6 +228,8 @@ const TopBar: React.FC<Props> = ({
                   <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                 </svg>
               </button>
+
+              <AccountMenu className="ml-1" />
             </>
           )}
 

@@ -450,5 +450,12 @@
   "克隆 {0} 的音色？\n约 {1} 元，要几十秒。": "Clonare la voce di {0}?\nCirca {1} ¥, richiede decine di secondi.",
   "{0} 的克隆音色做好了。\n{1} 句配音要用新音色重新合成，会产生 TTS 费用。\n\n现在重新配音吗？\n（选“取消”则先保持现有配音，这些句子会标为「需更新」，之后点顶栏的「补」。）": "La voce clonata di {0} è pronta.\n{1} frasi doppiate possono essere rigenerate con essa; comporta costi TTS.\n\nRidoppiare ora?\n(Se scegli «Annulla», il doppiaggio attuale resta e queste frasi vengono contrassegnate come «Da aggiornare»; in seguito usa «Completa» nella barra in alto.)",
   "已换成「{0}」。\n{1} 的 {2} 句配音要用新音色重新合成，会产生 TTS 费用。\n\n现在重新配音吗？\n（选“取消”则先保持现有配音，这些句子会标为「需更新」，之后点顶栏的「补」。）": "Passato a «{0}».\nLe {2} frasi doppiate di {1} possono essere rigenerate con essa; comporta costi TTS.\n\nRidoppiare ora?\n(Se scegli «Annulla», il doppiaggio attuale resta e queste frasi vengono contrassegnate come «Da aggiornare»; in seguito usa «Completa» nella barra in alto.)",
-  "删掉 {0} 没在用的 {1} 个音色？\n服务端的也会一起删除，无法找回。": "Eliminare {1} voci inutilizzate di {0}?\nVerranno rimosse anche dal server e non potranno essere recuperate."
+  "删掉 {0} 没在用的 {1} 个音色？\n服务端的也会一起删除，无法找回。": "Eliminare {1} voci inutilizzate di {0}?\nVerranno rimosse anche dal server e non potranno essere recuperate.",
+  "登录": "Accedi",
+  "账号": "Account",
+  "退出登录": "Esci",
+  "登录以继续": "Accedi per continuare",
+  "登录后才能上传和导出视频": "Accedi per caricare ed esportare video",
+  "使用 Google 登录": "Continua con Google",
+  "登录失败": "Accesso non riuscito"
 }

@@ -33,6 +33,8 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
 from app import agent, config, jobs, status, store, view
+from app.auth import users as auth_users
+from app.auth.dependencies import require_project_access, require_user
 from app.bus import bus
 from app.commands import registry as R
 from app.deps import enforce_separator_token, validate_video_id
@@ -42,7 +44,11 @@ from app.services import audio_clip, export_service, mix_service, subtitle_servi
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/projects", tags=["projects"], dependencies=[Depends(validate_video_id)])
+router = APIRouter(
+    prefix="/projects",
+    tags=["projects"],
+    dependencies=[Depends(validate_video_id), Depends(require_project_access)],
+)
 HEARTBEAT_S = 15
 
 
@@ -66,11 +72,11 @@ def _md5(path: str) -> str:
 
 
 # 上传不带 {video_id}，不能挂在上面那个带校验依赖的 router 上 → 单独的 router
-upload_router = APIRouter(prefix="/projects", tags=["projects"])
+upload_router = APIRouter(prefix="/projects", tags=["projects"], dependencies=[Depends(require_user)])
 
 
 @upload_router.post("")
-def upload(file: UploadFile = File(...)):
+def upload(file: UploadFile = File(...), user: dict = Depends(require_user)):
     """
     上传视频。返回工程 id（文件 MD5）以及是否已存在。**不会自动开始处理** —— 开始是一个
     命令（`run_initialize`），要带上用户选的设置，见 `POST /projects/{id}/setup`。
@@ -98,6 +104,12 @@ def upload(file: UploadFile = File(...)):
                 out.write(chunk)
 
         video_id = _md5(temp_path)
+        owner = auth_users.owner_of(video_id)
+        if owner is not None and owner != user["id"]:
+            raise HTTPException(status_code=409, detail="This video already belongs to another account")
+        if owner is None and store.exists(video_id):
+            # Old anonymous projects are intentionally not claimed in code.
+            raise HTTPException(status_code=409, detail="This video already exists and has no owner")
         base = get_video_dir(video_id)
         final_path = os.path.join(base, f"original_video{ext}")
         existed = os.path.exists(final_path)
@@ -106,6 +118,11 @@ def upload(file: UploadFile = File(...)):
         else:
             os.rename(temp_path, final_path)
         state = store.create(video_id, file.filename or f"video{ext}", final_path)
+        if owner is None:
+            try:
+                auth_users.assign_project(video_id, user["id"])
+            except auth_users.ProjectOwnedError:
+                raise HTTPException(status_code=409, detail="This video already belongs to another account")
         return {"id": video_id, "filename": state.filename, "exists": existed, "stage": state.stage,
                 "hasLines": bool(state.segments)}
     except HTTPException:
@@ -147,6 +164,7 @@ def delete_project(video_id: str):
     _need(video_id)
     agent.forget(video_id)
     store.delete(video_id)
+    auth_users.remove_project(video_id)
     return {"deleted": True, "id": video_id}
 
 

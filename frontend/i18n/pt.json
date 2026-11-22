@@ -450,5 +450,12 @@
   "克隆 {0} 的音色？\n约 {1} 元，要几十秒。": "Clonar a voz de {0}?\nCerca de ¥{1}; leva algumas dezenas de segundos.",
   "{0} 的克隆音色做好了。\n{1} 句配音要用新音色重新合成，会产生 TTS 费用。\n\n现在重新配音吗？\n（选“取消”则先保持现有配音，这些句子会标为「需更新」，之后点顶栏的「补」。）": "A voz clonada de {0} está pronta.\n{1} linhas dubladas podem ser regeradas com ela; custos de TTS se aplicam.\n\nRedublar agora?\n(Se escolher \"Cancelar\", o áudio atual é mantido e essas linhas são marcadas como \"Precisa atualizar\"; use \"Completar\" depois.)",
   "已换成「{0}」。\n{1} 的 {2} 句配音要用新音色重新合成，会产生 TTS 费用。\n\n现在重新配音吗？\n（选“取消”则先保持现有配音，这些句子会标为「需更新」，之后点顶栏的「补」。）": "Trocado para \"{0}\".\n{2} linhas dubladas de {1} podem ser regeradas com ela; custos de TTS se aplicam.\n\nRedublar agora?\n(Se escolher \"Cancelar\", o áudio atual é mantido e essas linhas são marcadas como \"Precisa atualizar\"; use \"Completar\" depois.)",
-  "删掉 {0} 没在用的 {1} 个音色？\n服务端的也会一起删除，无法找回。": "Excluir {1} voz(es) não usada(s) de {0}?\nElas também serão removidas do servidor e não poderão ser recuperadas."
+  "删掉 {0} 没在用的 {1} 个音色？\n服务端的也会一起删除，无法找回。": "Excluir {1} voz(es) não usada(s) de {0}?\nElas também serão removidas do servidor e não poderão ser recuperadas.",
+  "登录": "Entrar",
+  "账号": "Conta",
+  "退出登录": "Sair",
+  "登录以继续": "Entre para continuar",
+  "登录后才能上传和导出视频": "Entre para enviar e exportar vídeos",
+  "使用 Google 登录": "Continuar com Google",
+  "登录失败": "Falha ao entrar"
 }

@@ -10,20 +10,10 @@ import {
   hasAccents,
   sortAsrLanguages,
 } from '../utils/languages';
-import { formatRelativeTime, type RecentProject } from '../utils/recentProjects';
 import { LanguageSwitch } from '@/i18n';
-
-/**
- * Dot colour for a project's server status. Absent (server unreachable at
- * validation time) stays neutral rather than pretending to know.
- */
-function statusDotClass(status?: string): string {
-  if (status === 'completed') return 'bg-emerald-500';
-  if (status === 'error') return 'bg-red-400';
-  if (!status) return 'bg-gray-300';
-  // processing / uploaded / anything else still in flight
-  return 'bg-amber-400';
-}
+import { AccountMenu } from '../auth/AccountMenu';
+import { AuthErrorToast } from '../auth/AuthErrorToast';
+import { useAuth } from '../auth/AuthProvider';
 
 interface VideoUploadProps {
   /** The user picked a file. Nothing is uploaded until they press start. */
@@ -56,12 +46,6 @@ interface VideoUploadProps {
   onSeparationModeChange: (mode: SeparationMode) => void;
   separationBackends: SeparationBackends;
   bgmSeparationLocked?: boolean;
-  /** Projects this browser opened before, validated against the server. */
-  recentProjects: RecentProject[];
-  /** Open a previous project — the app recovers it from the URL. */
-  onOpenProject: (videoId: string) => void;
-  /** 删除一个工程（服务器数据一起删）。调用方负责确认，这里只发事件。 */
-  onDeleteProject?: (videoId: string, filename: string) => void;
 }
 
 
@@ -102,7 +86,9 @@ const FEATURES: { label: string; sub: string; icon: React.ReactNode }[] = [
   },
 ];
 
-const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName, onStart, isLoading, targetLanguage, onLanguageChange, targetAccent, onAccentChange, enableVoiceClone, onVoiceCloneChange, mmEnhance, onMmEnhanceChange, enableDubbing, onDubbingChange, cloneSmartPick, onCloneSmartPickChange, customPrompt, onCustomPromptChange, separationMode, onSeparationModeChange, separationBackends, bgmSeparationLocked, recentProjects, onOpenProject, onDeleteProject }) => {
+const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName, onStart, isLoading, targetLanguage, onLanguageChange, targetAccent, onAccentChange, enableVoiceClone, onVoiceCloneChange, mmEnhance, onMmEnhanceChange, enableDubbing, onDubbingChange, cloneSmartPick, onCloneSmartPickChange, customPrompt, onCustomPromptChange, separationMode, onSeparationModeChange, separationBackends, bgmSeparationLocked }) => {
+  const { user, login } = useAuth();
+
   /**
    * Whether the second column exists yet.
    *
@@ -192,6 +178,10 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
   };
 
   const handleClick = () => {
+    if (!user) {
+      login();
+      return;
+    }
     inputRef.current?.click();
   };
 
@@ -200,7 +190,11 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
 
   return (
     <div className="relative flex flex-col items-center justify-center min-h-screen overflow-hidden bg-claude-bg">
-      <LanguageSwitch className="absolute top-5 right-6 z-30" />
+      <div className="absolute top-5 right-6 z-30 flex items-center gap-2">
+        <LanguageSwitch />
+        <AccountMenu />
+      </div>
+      <AuthErrorToast />
       {/* Animated watermark background */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none select-none" aria-hidden="true">
         <div className="absolute inset-0" style={{ transform: 'rotate(-18deg)', transformOrigin: 'center center' }}>
@@ -609,83 +603,6 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
         <div className="flex min-w-0 flex-col gap-5">
         {/* 最近工程卡负责吃掉右列的剩余高度（`grow`）：糅合卡保持自然紧凑
             高度，多出来的空间给列表行，条目在卡内均匀分布。 */}
-        {!hasFile && (
-          <div className="flex min-h-[260px] w-full grow flex-col rounded-2xl border border-gray-200/80 bg-white/80 p-6 shadow-[0_8px_30px_rgba(0,0,0,0.06)] backdrop-blur-xl">
-            <div className="mb-2 flex items-baseline justify-between">
-              <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">
-                最近工程
-              </span>
-              <span className="text-[10px] text-gray-400">
-                仅本浏览器
-              </span>
-            </div>
-            {recentProjects.length > 0 ? (
-              <>
-                <div className="flex flex-1 flex-col justify-evenly gap-0.5">
-                  {recentProjects.map(project => (
-                    /* 容器是 div 不是 button：行内还要放一个删除按钮，而按钮
-                       嵌在按钮里是非法 HTML（浏览器会把内层弹出去）。 */
-                    <div
-                      key={project.videoId}
-                      className="group flex items-center gap-1 rounded-lg pr-1 hover:bg-gray-50 transition-colors"
-                    >
-                      <button
-                        onClick={() => onOpenProject(project.videoId)}
-                        className="flex flex-1 min-w-0 items-center gap-2.5 rounded-lg px-2.5 py-2 text-left cursor-pointer"
-                      >
-                        <span
-                          className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusDotClass(project.status)}`}
-                        />
-                        <span data-i18n-skip className="flex-1 min-w-0 truncate text-xs text-gray-700">
-                          {project.filename || project.videoId.slice(0, 8)}
-                        </span>
-                        <span className="shrink-0 text-[10px] text-gray-400">
-                          {formatRelativeTime(project.updatedAt)}
-                        </span>
-                      </button>
-                      {onDeleteProject && (
-                        /* 悬停才出现：它是列表的次要（且不可逆）动作，常驻会跟"打开"
-                           抢注意力；focus 时也显示，键盘/Tab 用户不会看不到它。
-                           用垃圾桶而不是叉号：这里删的是服务器上的工程，不是"关掉
-                           这一条"。 */
-                        <button
-                          onClick={() =>
-                            onDeleteProject(
-                              project.videoId,
-                              project.filename || ''
-                            )
-                          }
-                          title="删除工程（服务器上的文件一起删除，不可恢复）"
-                          aria-label="删除工程"
-                          className="shrink-0 rounded p-1.5 text-gray-300 opacity-0 transition-all hover:bg-red-50 hover:text-red-500 focus:opacity-100 group-hover:opacity-100 cursor-pointer"
-                        >
-                          <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
-                          </svg>
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-                <p className="mt-2 text-[10px] text-gray-400">
-                  点开即回到当时的进度和设置。
-                </p>
-              </>
-            ) : (
-              /* 空态占位：告诉首次访客这个位置将来会是什么 —— 不是坏掉的
-                  空白，而是一个还没开始用的清单。 */
-              <div className="flex flex-1 flex-col items-center justify-center gap-1 text-center">
-                <p className="text-xs font-medium text-gray-400">还没有工程</p>
-                <p className="text-[10px] leading-relaxed text-gray-300">
-                  上传视频后，这里会记住它，
-                  <br />
-                  点开即回到当时的进度和设置。
-                </p>
-              </div>
-            )}
-          </div>
-        )}
-
         {/* A+C 糅合：怎么用 + 你会得到，一张卡上下两段。
             紧跟最近工程下方，填住右列的下半 —— 上段回答"接下来会发生什么"，
             下段回答"产出是什么"，两个都是落地页此前没答的小白疑问。
@@ -819,7 +736,7 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
               We'll transcribe, translate to <span className="font-bold text-claude-accent">{targetLanguage}</span>, and re-voice your video with AI.
             </p>
             <button
-              onClick={onStart}
+              onClick={user ? onStart : () => login()}
               disabled={isLoading}
               className={`shrink-0 px-5 py-3 bg-claude-accent text-white text-sm font-semibold rounded-xl hover:bg-claude-accentHover disabled:bg-gray-300 disabled:cursor-not-allowed transition-all duration-300 shadow-lg shadow-claude-accent/20 hover:shadow-xl hover:shadow-claude-accent/30 active:scale-[0.98] ${isLoading ? '' : 'start-cta start-cta-live'}`}
             >

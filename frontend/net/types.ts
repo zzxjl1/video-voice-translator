@@ -6,6 +6,16 @@
  */
 
 export type LineStatus = 'none' | 'missing' | 'stale' | 'fresh';
+
+/** Logged-in Google account, as exposed by GET /api/auth/me. */
+export interface AuthUser {
+  id: string;
+  email: string | null;
+  emailVerified: boolean;
+  name: string | null;
+  picture: string | null;
+}
+
 /**
  * vocal = 人发出的非语言声（笑、叹、咳）：分离过人声的工程导出时保留这段原声，不用 TTS 重造。
  * song  = 在唱歌（歌词被 ASR 当台词转写了）：不翻译、不配音，字幕显示原歌词加 ♪，导出同样保留原声。

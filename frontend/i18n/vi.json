@@ -450,5 +450,12 @@
   "克隆 {0} 的音色？\n约 {1} 元，要几十秒。": "Nhân bản giọng của {0}?\nKhoảng {1} tệ, mất vài chục giây.",
   "{0} 的克隆音色做好了。\n{1} 句配音要用新音色重新合成，会产生 TTS 费用。\n\n现在重新配音吗？\n（选“取消”则先保持现有配音，这些句子会标为「需更新」，之后点顶栏的「补」。）": "Giọng nhân bản của {0} đã xong.\n{1} câu lồng tiếng sẽ được tổng hợp lại bằng giọng mới, phát sinh chi phí TTS.\n\nLồng tiếng lại ngay bây giờ?\n(Chọn \"Hủy\" thì giữ lồng tiếng hiện tại, các câu đó được đánh dấu \"Cần cập nhật\", sau đó bấm \"Bổ sung\" trên thanh trên cùng.)",
   "已换成「{0}」。\n{1} 的 {2} 句配音要用新音色重新合成，会产生 TTS 费用。\n\n现在重新配音吗？\n（选“取消”则先保持现有配音，这些句子会标为「需更新」，之后点顶栏的「补」。）": "Đã chuyển sang \"{0}\".\n{2} câu lồng tiếng của {1} sẽ được tổng hợp lại bằng giọng mới, phát sinh chi phí TTS.\n\nLồng tiếng lại ngay bây giờ?\n(Chọn \"Hủy\" thì giữ lồng tiếng hiện tại, các câu đó được đánh dấu \"Cần cập nhật\", sau đó bấm \"Bổ sung\" trên thanh trên cùng.)",
-  "删掉 {0} 没在用的 {1} 个音色？\n服务端的也会一起删除，无法找回。": "Xóa {1} giọng chưa dùng của {0}?\nChúng cũng sẽ bị xóa khỏi máy chủ và không thể khôi phục."
+  "删掉 {0} 没在用的 {1} 个音色？\n服务端的也会一起删除，无法找回。": "Xóa {1} giọng chưa dùng của {0}?\nChúng cũng sẽ bị xóa khỏi máy chủ và không thể khôi phục.",
+  "登录": "Đăng nhập",
+  "账号": "Tài khoản",
+  "退出登录": "Đăng xuất",
+  "登录以继续": "Đăng nhập để tiếp tục",
+  "登录后才能上传和导出视频": "Đăng nhập để tải lên và xuất video",
+  "使用 Google 登录": "Tiếp tục với Google",
+  "登录失败": "Đăng nhập thất bại"
 }

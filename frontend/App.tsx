@@ -16,11 +16,10 @@ import { separateInBrowser } from './features/separation';
 import VideoUpload from './components/VideoUpload';
 import InitView from './components/init/InitView';
 import EditorPage from './components/editor/EditorPage';
+import { AuthGate } from './auth/AuthGate';
+import { useAuth } from './auth/AuthProvider';
 import { detectBrowserLanguage } from './utils/languages';
 import { t } from '@/i18n';
-import {
-  forgetRecentProject, loadRecentProjects, touchRecentProject, type RecentProject,
-} from './utils/recentProjects';
 import { emptyInit, reduceInit, type InitState } from './store/init';
 import { pageFor } from './store/page';
 import type { BackendAvailability, SeparationBackends, SeparationMode } from './net/types';
@@ -38,6 +37,7 @@ function writeId(id: string | null, replace = false): void {
 }
 
 const App: React.FC = () => {
+  const auth = useAuth();
   const [videoId, setVideoId] = useState<string | null>(readId);
   // 刚在这个页面选的文件：浏览器端分离时直接用它解码（刷新后没有，分离会改为向服务器取音频）
   const fileRef = useRef<File | undefined>(undefined);
@@ -57,9 +57,8 @@ const App: React.FC = () => {
   const [backends, setBackends] = useState<SeparationBackends>({});
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
-  const [recent, setRecent] = useState<RecentProject[]>([]);
 
-  const project = useProject(videoId);
+  const project = useProject(auth.loading || !auth.user ? null : videoId);
   const { project: view, loadError, notFound } = project;
   // start() 在 open() 之前创建，它闭包里的 project 还是"没有工程"的那一份；
   // 要在 setup 之后取最新视图，必须经过 ref 拿当前这一帧的 reload。
@@ -92,21 +91,6 @@ const App: React.FC = () => {
     });
   }, []);
 
-  const refreshRecent = useCallback(() => {
-    void loadRecentProjects(async (id) => {
-      try {
-        const p = await api.getProject(id);
-        return { filename: p.filename, status: p.stage === 'ready' ? 'completed' : p.stage === 'failed' ? 'error' : 'processing' };
-      } catch (e) {
-        if (e instanceof api.ApiError && e.status === 404) return null;
-        throw e;
-      }
-    }).then(setRecent);
-  }, []);
-  useEffect(() => { if (!videoId) refreshRecent(); }, [videoId, refreshRecent]);
-
-  useEffect(() => { if (view) touchRecentProject(view.id, view.filename); }, [view?.id, view?.filename]);
-
   const open = useCallback((id: string | null, replace = false) => {
     writeId(id, replace);
     setVideoId(id);
@@ -117,7 +101,6 @@ const App: React.FC = () => {
   // 的 job 还在跑、日志还在刷进度。
   useEffect(() => {
     if (notFound && videoId) {
-      forgetRecentProject(videoId);
       fileRef.current = undefined;
       open(null, true);
     }
@@ -125,6 +108,10 @@ const App: React.FC = () => {
 
   // —— 开始：上传 → （浏览器分离）→ setup ——
   const start = useCallback(async () => {
+    if (!auth.user) {
+      auth.login();
+      return;
+    }
     const file = fileRef.current;
     if (!file) return;
     setStarting(true);
@@ -134,7 +121,6 @@ const App: React.FC = () => {
     try {
       const uploaded = await api.upload(file);
       uploadedId = uploaded.id;
-      touchRecentProject(uploaded.id, uploaded.filename);
       // 马上切到初始化页：浏览器端人声分离可能要几分钟，这段时间用户要看到步骤清单、
       // 进度和取消，而不是停在落地页。别因此闪出旧编辑器 —— pageFor 在 starting /
       // preparing 期间强制停在初始化页（上传按 MD5 复用时工程可能是已完成的）。
@@ -178,18 +164,7 @@ const App: React.FC = () => {
       if (uploadedId) await reloadRef.current();
       setStarting(false);
     }
-  }, [targetLanguage, targetAccent, enableDubbing, enableVoiceClone, cloneSmartPick, mmEnhance, customPrompt, separationMode, open]);
-
-  const deleteProject = useCallback(async (id: string, filename: string) => {
-    if (!window.confirm(t("删除「{0}」？服务器上的所有数据都会被清除，无法恢复。", [filename || id.slice(0, 8)]))) return;
-    try {
-      await api.deleteProject(id);
-      forgetRecentProject(id);
-      refreshRecent();
-    } catch (e) {
-      window.alert(t("删除失败：{0}", [e instanceof Error ? e.message : String(e)]));
-    }
-  }, [refreshRecent]);
+  }, [auth.user, auth.login, targetLanguage, targetAccent, enableDubbing, enableVoiceClone, cloneSmartPick, mmEnhance, customPrompt, separationMode, open]);
 
   // 初始化页的日志 = 浏览器分离阶段的日志 + 服务端事件流推来的日志
   const initState = useMemo<InitState>(() => {
@@ -208,6 +183,15 @@ const App: React.FC = () => {
   }, [job?.id, preparing]);
 
   // —— 页面 ——
+  if (auth.loading) {
+    return (
+      <div className="min-h-screen bg-claude-bg flex items-center justify-center text-sm text-gray-400">
+        {t('加载中…')}
+      </div>
+    );
+  }
+  if (!auth.user && videoId) return <AuthGate />;
+
   const page = pageFor({ videoId, stage: view?.stage ?? null, starting, preparing });
   if (page === 'landing') {
     return (
@@ -235,9 +219,6 @@ const App: React.FC = () => {
         onSeparationModeChange={setSeparationMode}
         separationBackends={backends}
         bgmSeparationLocked={enableVoiceClone}
-        recentProjects={recent}
-        onOpenProject={(id) => open(id)}
-        onDeleteProject={(id, name) => void deleteProject(id, name)}
       />
       {/* 只覆盖"还没拿到工程 id"的那一段：上传中，或上传本身失败。
           拿到 id 之后就切到初始化页了，分离和启动的进度、失败都在那里显示。 */}

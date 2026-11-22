@@ -3,7 +3,7 @@
  *
  * 所有"改东西"的动作都走 `command()`：UI 的每个按钮和 AI 的每个 tool 在服务端是同一套命令。
  */
-import type { ChatMessage, CommandResult, ProjectView, SubtitleCapabilities, SubtitleStyle, SubtitleCue, SubtitleTrack, VoiceOption } from './types';
+import type { AuthUser, ChatMessage, CommandResult, ProjectView, SubtitleCapabilities, SubtitleStyle, SubtitleCue, SubtitleTrack, VoiceOption } from './types';
 
 export const API_BASE = '/api';
 
@@ -30,6 +30,10 @@ const json = (body: unknown): RequestInit => ({
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(body),
 });
+
+// ---- 认证 -------------------------------------------------------------------
+export const me = () => request<{ user: AuthUser | null }>('/auth/me');
+export const logout = () => request<{ ok: boolean }>('/auth/logout', { method: 'POST' });
 
 // ---- 项目 -------------------------------------------------------------------
 

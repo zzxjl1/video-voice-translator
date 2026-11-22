@@ -894,4 +894,33 @@ CORS_ORIGINS = [o.strip() for o in _env("CORS_ORIGINS", "*").split(",") if o.str
 # download the audio it transcribes / the voice sample it enrolls.
 SERVER_URL_BASE = _env("SERVER_URL_BASE", "https://video-voice-translator.idealbroker.cn").rstrip("/")
 
+# =====================================================================
+# Authentication (Google OAuth only)
+# =====================================================================
+# Public URL of the web app (not the DashScope callback). Google redirects the
+# browser here, so this must match the origin the user is actually visiting.
+APP_BASE_URL = _env("APP_BASE_URL", "https://video-voice-translator.idealbroker.cn").rstrip("/")
+# Google credentials are optional at boot: without them the app still starts,
+# but /api/auth/google/start returns 503 and the UI asks for a login that cannot
+# complete yet. This keeps local non-auth work possible without fake secrets.
+GOOGLE_CLIENT_ID = _env("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = _env("GOOGLE_CLIENT_SECRET", "")
+GOOGLE_REDIRECT_URI = _env(
+    "GOOGLE_REDIRECT_URI",
+    f"{APP_BASE_URL}/api/auth/google/callback",
+)
+AUTH_ENABLED = bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)
+
+AUTH_DB_PATH = _env("AUTH_DB_PATH", os.path.join(DATA_DIR, "auth.sqlite3"))
+SESSION_DAYS = _env_int("SESSION_DAYS", 30)
+# Do not write last_seen_at/expires_at on every request; once an hour is enough
+# to make 30 days genuinely sliding without turning the DB into a write hotspot.
+SESSION_TOUCH_SECONDS = _env_int("SESSION_TOUCH_SECONDS", 3600)
+SESSION_COOKIE_NAME = _env("SESSION_COOKIE_NAME", "vvt_session")
+SESSION_COOKIE_SECURE = _env_bool("SESSION_COOKIE_SECURE", APP_BASE_URL.startswith("https://"))
+OAUTH_STATE_TTL_SECONDS = _env_int("OAUTH_STATE_TTL_SECONDS", 600)
+OAUTH_BROWSER_COOKIE = _env("OAUTH_BROWSER_COOKIE", "vvt_oauth")
+
+
+
 API_GENERAL_TIMEOUT = _env_int("API_GENERAL_TIMEOUT", 120)

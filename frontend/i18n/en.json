@@ -450,5 +450,12 @@
   "克隆 {0} 的音色？\n约 {1} 元，要几十秒。": "Clone {0}'s voice?\nAbout ¥{1}; takes a few tens of seconds.",
   "{0} 的克隆音色做好了。\n{1} 句配音要用新音色重新合成，会产生 TTS 费用。\n\n现在重新配音吗？\n（选“取消”则先保持现有配音，这些句子会标为「需更新」，之后点顶栏的「补」。）": "{0}'s cloned voice is ready.\n{1} dubbed lines can be regenerated with it; TTS costs apply.\n\nRe-dub now?\n(Cancel keeps the current audio and marks those lines as needing an update; use Fill later.)",
   "已换成「{0}」。\n{1} 的 {2} 句配音要用新音色重新合成，会产生 TTS 费用。\n\n现在重新配音吗？\n（选“取消”则先保持现有配音，这些句子会标为「需更新」，之后点顶栏的「补」。）": "Switched to \"{0}\".\n{2} of {1}'s dubbed lines can be regenerated with it; TTS costs apply.\n\nRe-dub now?\n(Cancel keeps the current audio and marks those lines as needing an update; use Fill later.)",
-  "删掉 {0} 没在用的 {1} 个音色？\n服务端的也会一起删除，无法找回。": "Delete {1} unused voice(s) for {0}?\nThey will also be removed from the server and cannot be recovered."
+  "删掉 {0} 没在用的 {1} 个音色？\n服务端的也会一起删除，无法找回。": "Delete {1} unused voice(s) for {0}?\nThey will also be removed from the server and cannot be recovered.",
+  "登录": "Sign in",
+  "账号": "Account",
+  "退出登录": "Sign out",
+  "登录以继续": "Sign in to continue",
+  "登录后才能上传和导出视频": "Sign in to upload and export videos",
+  "使用 Google 登录": "Continue with Google",
+  "登录失败": "Sign-in failed"
 }
