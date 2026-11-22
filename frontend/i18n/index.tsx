@@ -174,11 +174,15 @@ export const LanguageSwitch: React.FC<{ className?: string }> = ({ className = '
           aria-expanded={open}
           aria-label="Language"
           title={`Language: ${current.native}`}
-          className={`flex h-8 w-8 items-center justify-center rounded-full border border-[#e5e5e0] bg-white/90 text-gray-500 shadow-sm transition-colors hover:border-claude-accent/40 hover:text-claude-accent ${open ? 'border-claude-accent/50 text-claude-accent' : ''}`}
+          className={`flex h-8 items-center gap-1.5 rounded-full border border-[#e5e5e0] bg-white/90 px-2.5 text-[11px] font-bold text-gray-600 shadow-sm transition-colors hover:border-claude-accent/40 hover:text-claude-accent ${open ? 'border-claude-accent/50 text-claude-accent' : ''}`}
         >
-          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+          <svg className="h-3.5 w-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
             <circle cx="12" cy="12" r="9" />
             <path d="M3 12h18M12 3c2.5 2.6 3.8 5.7 3.8 9S14.5 18.4 12 21c-2.5-2.6-3.8-5.7-3.8-9S9.5 5.6 12 3Z" />
+          </svg>
+          <span className="whitespace-nowrap">{current.native}</span>
+          <svg className={`h-3 w-3 shrink-0 text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="m6 9 6 6 6-6" />
           </svg>
         </button>
 
