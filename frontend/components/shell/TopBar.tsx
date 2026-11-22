@@ -12,7 +12,6 @@
  */
 import React, { useState } from 'react';
 import { ALL_LANGUAGES } from '../../utils/languages';
-import { LanguageSwitch } from '@/i18n';
 import type { JobInfo, Needs } from '../../net/types';
 
 interface Props {
@@ -202,13 +201,39 @@ const TopBar: React.FC<Props> = ({
           </button>
         </div>
 
-        {/* 右：语言 / 撤销 / 设置；收起态还带「Show Tools」药丸 */}
+        {/* 右：折叠时只留「Show Tools」提示；展开后才出现撤销 / 设置。
+            界面语言入口不放在编辑页，避免和这里的 Target Language 混淆。 */}
         <div className={`flex items-center transition-all duration-500 ${expanded ? 'gap-3' : 'gap-4'}`}>
-          <LanguageSwitch className="shrink-0" />
-          {!expanded && (
+          {expanded && (
+            <>
+              <button
+                onClick={onUndo}
+                disabled={!undoSummary}
+                title={undoSummary ? `撤销：${undoSummary}` : '没有可撤销的改动'}
+                className="flex items-center justify-center transition-all duration-300 hover:bg-gray-100 rounded-full text-gray-400 disabled:opacity-25 disabled:hover:bg-transparent w-12 h-12 bg-gray-50 text-gray-500"
+              >
+                <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a6 6 0 010 12H9M3 10l5-5m-5 5l5 5" />
+                </svg>
+              </button>
+
+              <button
+                onClick={onOpenSettings}
+                title="项目设置"
+                className="flex items-center justify-center transition-all duration-300 hover:bg-gray-100 rounded-full w-12 h-12 bg-gray-50 text-gray-500 ml-1"
+              >
+                <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" d={GEAR} />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                </svg>
+              </button>
+            </>
+          )}
+
+          {!pinned && (
             <button
               onClick={() => setPinned(true)}
-              title="展开工具栏"
+              title="固定工具栏"
               className="text-[10px] font-bold uppercase tracking-[0.2em] text-gray-400 flex items-center gap-1.5 cursor-pointer hover:text-claude-accent transition-colors border px-2 py-0.5 rounded-full border-gray-200 whitespace-nowrap"
             >
               Show Tools
@@ -223,35 +248,6 @@ const TopBar: React.FC<Props> = ({
               收起
             </button>
           )}
-
-          <button
-            onClick={onUndo}
-            disabled={!undoSummary}
-            title={undoSummary ? `撤销：${undoSummary}` : '没有可撤销的改动'}
-            className={`
-              flex items-center justify-center transition-all duration-300 hover:bg-gray-100 rounded-full text-gray-400
-              disabled:opacity-25 disabled:hover:bg-transparent
-              ${expanded ? 'w-12 h-12 bg-gray-50 text-gray-500' : 'w-6 h-6'}
-            `}
-          >
-            <svg className={expanded ? 'w-6 h-6' : 'w-4 h-4'} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a6 6 0 010 12H9M3 10l5-5m-5 5l5 5" />
-            </svg>
-          </button>
-
-          <button
-            onClick={onOpenSettings}
-            title="项目设置"
-            className={`
-              flex items-center justify-center transition-all duration-300 hover:bg-gray-100 rounded-full
-              ${expanded ? 'w-12 h-12 bg-gray-50 text-gray-500 ml-1' : 'w-6 h-6 text-gray-400'}
-            `}
-          >
-            <svg className={expanded ? 'w-6 h-6' : 'w-4 h-4'} fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" d={GEAR} />
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-          </button>
         </div>
       </header>
     </div>

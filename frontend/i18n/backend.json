@@ -1,0 +1,112 @@
+{
+  "en": {
+    "这个说话人没有可用的干净语音": "This speaker has no usable clean speech",
+    "中等长度句凑不出两句以上的样本": "Not enough medium-length sentences to build more than two samples",
+    "没有足够的 {0}~{1} 秒中等长度句（只有 {2} 句）": "Not enough medium-length sentences of {0}~{1} seconds (only {2} available)",
+    "说话人 {0} 没有可用于克隆的素材": "Speaker {0} has no material available for cloning",
+    "预设 {0} 不是规则型预设": "Preset {0} is not a rule-based preset",
+    "原片里连续说的一段，保留自然停顿，没有拼接痕迹": "A continuous passage from the original footage, with natural pauses preserved and no splice marks",
+    "挑最完整的一句，口音和语调最统一": "Pick the most complete sentence, with the most consistent accent and intonation",
+    "几句中等长度的平稳陈述句，句间 0.5 秒底噪": "A few steady, medium-length declarative sentences, with 0.5 seconds of room tone between them",
+    "让 AI 听着挑：避开疑问句、强调、口头禅，并考虑目标语言": "Let AI choose by listening: avoid questions, emphasis, and filler words, and factor in the target language"
+  },
+  "zh": {
+    "这个说话人没有可用的干净语音": "这个说话人没有可用的干净语音",
+    "中等长度句凑不出两句以上的样本": "中等长度句凑不出两句以上的样本",
+    "没有足够的 {0}~{1} 秒中等长度句（只有 {2} 句）": "没有足够的 {0}~{1} 秒中等长度句（只有 {2} 句）",
+    "说话人 {0} 没有可用于克隆的素材": "说话人 {0} 没有可用于克隆的素材",
+    "预设 {0} 不是规则型预设": "预设 {0} 不是规则型预设",
+    "原片里连续说的一段，保留自然停顿，没有拼接痕迹": "原片里连续说的一段，保留自然停顿，没有拼接痕迹",
+    "挑最完整的一句，口音和语调最统一": "挑最完整的一句，口音和语调最统一",
+    "几句中等长度的平稳陈述句，句间 0.5 秒底噪": "几句中等长度的平稳陈述句，句间 0.5 秒底噪",
+    "让 AI 听着挑：避开疑问句、强调、口头禅，并考虑目标语言": "让 AI 听着挑：避开疑问句、强调、口头禅，并考虑目标语言"
+  },
+  "ja": {
+    "这个说话人没有可用的干净语音": "この話者には使用可能なクリーン音声がありません",
+    "中等长度句凑不出两句以上的样本": "中程度の長さの文が足りず、2 つ以上のサンプルを作成できません",
+    "没有足够的 {0}~{1} 秒中等长度句（只有 {2} 句）": "{0}~{1} 秒の中程度の長さの文が足りません（{2} 文のみ）",
+    "说话人 {0} 没有可用于克隆的素材": "話者 {0} にはクローンに使用できる素材がありません",
+    "预设 {0} 不是规则型预设": "プリセット {0} はルール型プリセットではありません",
+    "原片里连续说的一段，保留自然停顿，没有拼接痕迹": "元映像で連続して話している区間。自然な間を保ち、継ぎ接ぎの跡がありません",
+    "挑最完整的一句，口音和语调最统一": "最も完全な一文を選び、アクセントとイントネーションが最も揃ったもの",
+    "几句中等长度的平稳陈述句，句间 0.5 秒底噪": "中程度の長さの安定した平叙文を数文、文間に 0.5 秒の暗騒音",
+    "让 AI 听着挑：避开疑问句、强调、口头禅，并考虑目标语言": "AI に聴かせて選ばせる：疑問文、強調、口ぐせを避け、ターゲット言語も考慮"
+  },
+  "ko": {
+    "这个说话人没有可用的干净语音": "이 화자에게는 사용할 수 있는 깨끗한 음성이 없습니다",
+    "中等长度句凑不出两句以上的样本": "중간 길이 문장이 부족해 두 개 이상의 샘플을 만들 수 없습니다",
+    "没有足够的 {0}~{1} 秒中等长度句（只有 {2} 句）": "{0}~{1}초 중간 길이 문장이 부족합니다({2}문장만 있음)",
+    "说话人 {0} 没有可用于克隆的素材": "화자 {0}에게는 복제에 사용할 수 있는 소재가 없습니다",
+    "预设 {0} 不是规则型预设": "프리셋 {0}은(는) 규칙 기반 프리셋이 아닙니다",
+    "原片里连续说的一段，保留自然停顿，没有拼接痕迹": "원본에서 연속으로 말한 구간으로, 자연스러운 멈춤을 유지하며 이어 붙인 흔적이 없습니다",
+    "挑最完整的一句，口音和语调最统一": "가장 완전한 문장을 고르고, 억양과 말투가 가장 일관된 것",
+    "几句中等长度的平稳陈述句，句间 0.5 秒底噪": "중간 길이의 안정적인 평서문 몇 문장, 문장 사이 0.5초 바닥 소음",
+    "让 AI 听着挑：避开疑问句、强调、口头禅，并考虑目标语言": "AI가 듣고 고르게 하기: 의문문, 강조, 습관적인 말버릇을 피하고 대상 언어를 고려"
+  },
+  "fr": {
+    "这个说话人没有可用的干净语音": "Ce locuteur n'a pas de parole propre utilisable",
+    "中等长度句凑不出两句以上的样本": "Pas assez de phrases de longueur moyenne pour créer plus de deux échantillons",
+    "没有足够的 {0}~{1} 秒中等长度句（只有 {2} 句）": "Pas assez de phrases de longueur moyenne de {0}~{1} secondes (seulement {2})",
+    "说话人 {0} 没有可用于克隆的素材": "Le locuteur {0} n'a aucun matériel utilisable pour le clonage",
+    "预设 {0} 不是规则型预设": "Le préréglage {0} n'est pas un préréglage basé sur des règles",
+    "原片里连续说的一段，保留自然停顿，没有拼接痕迹": "Un passage parlé continu de la vidéo d'origine, avec les pauses naturelles préservées et sans traces de montage",
+    "挑最完整的一句，口音和语调最统一": "Choisir la phrase la plus complète, avec l'accent et l'intonation les plus homogènes",
+    "几句中等长度的平稳陈述句，句间 0.5 秒底噪": "Quelques phrases déclaratives stables de longueur moyenne, avec 0,5 s de bruit de fond entre elles",
+    "让 AI 听着挑：避开疑问句、强调、口头禅，并考虑目标语言": "Laisser l'AI choisir à l'écoute : éviter les questions, les emphases et les tics de langage, et tenir compte de la langue cible"
+  },
+  "de": {
+    "这个说话人没有可用的干净语音": "Für diesen Sprecher ist keine verwertbare saubere Sprache verfügbar",
+    "中等长度句凑不出两句以上的样本": "Zu wenige mittellange Sätze, um mehr als zwei Proben zu bilden",
+    "没有足够的 {0}~{1} 秒中等长度句（只有 {2} 句）": "Zu wenige mittellange Sätze von {0}~{1} Sekunden (nur {2})",
+    "说话人 {0} 没有可用于克隆的素材": "Für Sprecher {0} ist kein Material zum Klonen verfügbar",
+    "预设 {0} 不是规则型预设": "Voreinstellung {0} ist keine regelbasierte Voreinstellung",
+    "原片里连续说的一段，保留自然停顿，没有拼接痕迹": "Ein zusammenhängender gesprochener Abschnitt aus dem Original, natürliche Pausen bleiben erhalten, keine Schnittspuren",
+    "挑最完整的一句，口音和语调最统一": "Den vollständigsten Satz auswählen, mit dem einheitlichsten Akzent und der einheitlichsten Intonation",
+    "几句中等长度的平稳陈述句，句间 0.5 秒底噪": "Einige mittellange, gleichmäßige Aussagesätze, dazwischen 0,5 Sekunden Grundrauschen",
+    "让 AI 听着挑：避开疑问句、强调、口头禅，并考虑目标语言": "Die AI nach Gehör auswählen lassen: Fragen, Betonungen und Füllwörter vermeiden und die Zielsprache berücksichtigen"
+  },
+  "pt": {
+    "这个说话人没有可用的干净语音": "Este falante não tem fala limpa utilizável",
+    "中等长度句凑不出两句以上的样本": "Frases de comprimento médio insuficientes para criar mais de duas amostras",
+    "没有足够的 {0}~{1} 秒中等长度句（只有 {2} 句）": "Frases de comprimento médio de {0}~{1} s insuficientes (apenas {2})",
+    "说话人 {0} 没有可用于克隆的素材": "O falante {0} não tem material disponível para clonagem",
+    "预设 {0} 不是规则型预设": "A predefinição {0} não é uma predefinição baseada em regras",
+    "原片里连续说的一段，保留自然停顿，没有拼接痕迹": "Um trecho falado contínuo do vídeo original, preservando as pausas naturais e sem marcas de emenda",
+    "挑最完整的一句，口音和语调最统一": "Escolher a frase mais completa, com o sotaque e a entonação mais uniformes",
+    "几句中等长度的平稳陈述句，句间 0.5 秒底噪": "Algumas frases declarativas estáveis de comprimento médio, com 0,5 s de ruído de fundo entre elas",
+    "让 AI 听着挑：避开疑问句、强调、口头禅，并考虑目标语言": "Deixar a AI escolher ao ouvir: evitar perguntas, ênfases e muletas, e considerar o idioma de destino"
+  },
+  "it": {
+    "这个说话人没有可用的干净语音": "Questo parlante non ha parlato pulito utilizzabile",
+    "中等长度句凑不出两句以上的样本": "Frasi di lunghezza media insufficienti per creare più di due campioni",
+    "没有足够的 {0}~{1} 秒中等长度句（只有 {2} 句）": "Frasi di lunghezza media da {0}~{1} secondi insufficienti (solo {2})",
+    "说话人 {0} 没有可用于克隆的素材": "Il parlante {0} non ha materiale utilizzabile per la clonazione",
+    "预设 {0} 不是规则型预设": "Il preset {0} non è un preset basato su regole",
+    "原片里连续说的一段，保留自然停顿，没有拼接痕迹": "Un passaggio parlato continuo dal video originale, con le pause naturali preservate e senza segni di giunzione",
+    "挑最完整的一句，口音和语调最统一": "Scegliere la frase più completa, con l'accento e l'intonazione più uniformi",
+    "几句中等长度的平稳陈述句，句间 0.5 秒底噪": "Alcune frasi dichiarative stabili di lunghezza media, con 0,5 secondi di rumore di fondo tra l'una e l'altra",
+    "让 AI 听着挑：避开疑问句、强调、口头禅，并考虑目标语言": "Lasciare che l'AI scelga ascoltando: evitare domande, enfasi e intercalari, e considerare la lingua di destinazione"
+  },
+  "vi": {
+    "这个说话人没有可用的干净语音": "Người nói này không có giọng nói sạch nào dùng được",
+    "中等长度句凑不出两句以上的样本": "Không đủ câu có độ dài trung bình để tạo hơn hai mẫu",
+    "没有足够的 {0}~{1} 秒中等长度句（只有 {2} 句）": "Không đủ câu có độ dài trung bình {0}~{1} giây (chỉ có {2} câu)",
+    "说话人 {0} 没有可用于克隆的素材": "Người nói {0} không có tư liệu nào dùng được để nhân bản",
+    "预设 {0} 不是规则型预设": "Preset {0} không phải là preset dạng quy tắc",
+    "原片里连续说的一段，保留自然停顿，没有拼接痕迹": "Một đoạn nói liên tục trong video gốc, giữ khoảng ngừng tự nhiên, không có dấu vết ghép nối",
+    "挑最完整的一句，口音和语调最统一": "Chọn câu hoàn chỉnh nhất, có giọng và ngữ điệu đồng nhất nhất",
+    "几句中等长度的平稳陈述句，句间 0.5 秒底噪": "Vài câu trần thuật ổn định có độ dài trung bình, giữa các câu có 0,5 giây tạp âm nền",
+    "让 AI 听着挑：避开疑问句、强调、口头禅，并考虑目标语言": "Để AI nghe và chọn: tránh câu hỏi, nhấn mạnh, từ đệm, và cân nhắc ngôn ngữ đích"
+  },
+  "id": {
+    "这个说话人没有可用的干净语音": "Pembicara ini tidak memiliki suara bersih yang dapat digunakan",
+    "中等长度句凑不出两句以上的样本": "Kalimat berdurasi sedang tidak cukup untuk membuat lebih dari dua sampel",
+    "没有足够的 {0}~{1} 秒中等长度句（只有 {2} 句）": "Kalimat berdurasi sedang {0}~{1} detik tidak cukup (hanya {2} kalimat)",
+    "说话人 {0} 没有可用于克隆的素材": "Pembicara {0} tidak memiliki materi yang dapat digunakan untuk kloning",
+    "预设 {0} 不是规则型预设": "Preset {0} bukan preset berbasis aturan",
+    "原片里连续说的一段，保留自然停顿，没有拼接痕迹": "Satu bagian ucapan bersambung dari video asli, mempertahankan jeda alami, tanpa jejak sambungan",
+    "挑最完整的一句，口音和语调最统一": "Pilih kalimat paling lengkap, dengan aksen dan intonasi paling konsisten",
+    "几句中等长度的平稳陈述句，句间 0.5 秒底噪": "Beberapa kalimat deklaratif stabil berdurasi sedang, dengan 0,5 detik derau latar di antaranya",
+    "让 AI 听着挑：避开疑问句、强调、口头禅，并考虑目标语言": "Biarkan AI memilih dengan mendengarkan: hindari kalimat tanya, penekanan, dan kata pengisi, serta pertimbangkan bahasa target"
+  }
+}

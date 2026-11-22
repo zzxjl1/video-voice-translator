@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { t } from '@/i18n';
+import { t, tBackend } from '@/i18n';
 import type { CloneVoiceView, CommandResult, Line, SpeakerView, VoicePresetOption } from '../../net/types';
 import type { HeaderProps } from '../../hooks/useWindows';
 
@@ -183,7 +183,7 @@ const SpeakerVoices: React.FC<VoicesProps> = ({ speaker, lines, player, run, onN
     setBusy(key);
     try {
       const r = await fn();
-      if (!r.ok) onNotice(r.error ?? fail);
+      if (!r.ok) onNotice(r.error ? tBackend(r.error) : t(fail));
       return r;
     } finally {
       setBusy(null);
@@ -252,7 +252,7 @@ const SpeakerVoices: React.FC<VoicesProps> = ({ speaker, lines, player, run, onN
       {/* 1. 固定试听句：所有音色都念它 */}
       <section className="space-y-2">
         <h4 className="text-[11px] font-bold tracking-wider text-gray-400">试听句</h4>
-        <p className="bg-white border border-[#e5e5e0] rounded-2xl px-4 py-3 text-[14px] leading-relaxed text-gray-800">{previewText}</p>
+        <p data-i18n-skip className="bg-white border border-[#e5e5e0] rounded-2xl px-4 py-3 text-[14px] leading-relaxed text-gray-800">{previewText}</p>
       </section>
 
       {/* 2. 取材方式：每种一行，做过的可试听 / 使用，没做的点「克隆」 */}
@@ -288,8 +288,8 @@ const SpeakerVoices: React.FC<VoicesProps> = ({ speaker, lines, player, run, onN
             const sub = made
               ? rangeText(v.lines, v.seconds)
               : off
-                ? (row.option?.reason ?? '做不了')
-                : (rangeText(row.option?.lines ?? [], row.option?.seconds ?? null) || row.option?.hint || '');
+                ? tBackend(row.option?.reason ?? '') || t('做不了')
+                : (rangeText(row.option?.lines ?? [], row.option?.seconds ?? null) || tBackend(row.option?.hint ?? ''));
             return (
               <li
                 key={row.key}
@@ -352,7 +352,7 @@ const SpeakerVoices: React.FC<VoicesProps> = ({ speaker, lines, player, run, onN
         <section className="space-y-2 text-center">
           {thin && (
             <p className="text-[11px] text-amber-600 leading-relaxed">
-              这个人的素材不多（共 {material.total} 秒），克隆可能不太稳，多试几种再挑。
+              {t('这个人的素材不多（共')} <span>{material.total}</span> {t('秒），克隆可能不太稳，多试几种再挑。')}
             </p>
           )}
           {candidates.length > 0 && (

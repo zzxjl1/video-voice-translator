@@ -7,7 +7,7 @@
  *   · 行是否"过期""没翻译"来自服务端算好的 `trStatus` / `ttsStatus` / `trSuspect`。
  * 所以用户在这里的操作和 AI 的操作走同一条路径，界面自然同步；AI 刚改过的行会高亮几秒。
  */
-import React, { memo, useEffect, useMemo, useRef, useState } from 'react';
+import React, { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Line, MixPlanSegment, SpeakerView } from '../../net/types';
 import type { Flash } from '../../hooks/useProject';
 import { formatTime } from '../../utils/helpers';
@@ -322,6 +322,24 @@ const Editable: React.FC<EditableProps> = ({ label, value, placeholder, secondar
       el.style.height = `${el.scrollHeight}px`;
     }
   }, [shown, editing]);
+
+  // The panel can change width when another window is docked/floated/closed.
+  // Re-fit the textarea height then too, otherwise wrapped text is clipped by
+  // the old one-line height.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const fit = () => {
+      if (!el.clientWidth) return;
+      el.style.height = 'auto';
+      const needed = `${el.scrollHeight}px`;
+      if (el.style.height !== needed) el.style.height = needed;
+    };
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   /** Esc 放弃：blur 也会触发 commit，所以要先立个旗子，否则"放弃"变成了"保存"。 */
   const cancelling = useRef(false);

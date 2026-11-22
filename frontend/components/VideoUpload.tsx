@@ -8,6 +8,7 @@ import {
   CHINESE_ACCENTS,
   accentLabel,
   hasAccents,
+  sortAsrLanguages,
 } from '../utils/languages';
 import { formatRelativeTime, type RecentProject } from '../utils/recentProjects';
 import { LanguageSwitch } from '@/i18n';
@@ -167,7 +168,7 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
     getAsrLanguages()
       .then(result => {
         if (cancelled) return;
-        setAsrLanguages(result.languages);
+        setAsrLanguages(sortAsrLanguages(result.languages));
       })
       .catch(() => {
         // A preview; losing it must not block uploading.

@@ -97,6 +97,28 @@ export const MORE_LANGUAGES: TargetLanguage[] = [
 
 export const ALL_LANGUAGES: TargetLanguage[] = [...COMMON_LANGUAGES, ...MORE_LANGUAGES];
 
+/**
+ * Display order for the 30 ASR languages. The API returns the model's own
+ * order (Chinese first); humans expect the product's main languages first,
+ * with English at the head, then the other common world languages.
+ */
+const ASR_DISPLAY_ORDER = [
+  '英语', '中文', '日语', '韩语', '法语', '德语', '葡萄牙语', '意大利语',
+  '越南语', '印尼语', '西班牙语', '俄语', '阿拉伯语', '印地语', '泰语',
+  '马来语', '菲律宾语', '荷兰语', '瑞典语', '丹麦语', '芬兰语', '挪威语',
+  '希腊语', '波兰语', '捷克语', '匈牙利语', '罗马尼亚语', '保加利亚语',
+  '克罗地亚语', '斯洛伐克语',
+];
+
+export function sortAsrLanguages(languages: string[]): string[] {
+  const rank = new Map(ASR_DISPLAY_ORDER.map((name, i) => [name, i]));
+  return [...languages].sort((a, b) => {
+    const ia = rank.get(a);
+    const ib = rank.get(b);
+    return (ia ?? Number.MAX_SAFE_INTEGER) - (ib ?? Number.MAX_SAFE_INTEGER);
+  });
+}
+
 /** Where the selector lands when nothing about the browser is recognised. */
 const DEFAULT_TARGET_LANGUAGE = 'English';
 
