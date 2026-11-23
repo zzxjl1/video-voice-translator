@@ -28,7 +28,8 @@ import Timeline from '../Timeline';
 import SubtitleStylePanel from '../SubtitleStylePanel';
 import VoicePanel from './VoicePanel';
 import ExportModal, { type SubtitleDelivery } from '../ExportModal';
-import { browserVoiceLabel, defaultVoiceForLanguage, synthesizeBrowserSpeech, voicesForLanguage } from '../../features/browserTts';
+import { browserVoiceLabel, voicesForLanguage } from '../../features/browserTts';
+import { fillBrowserDubbing } from '../../features/browserDubbing';
 import type { Voice } from '@diffusionstudio/vits-web';
 
 interface Props {
@@ -57,8 +58,6 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
   const [notice, setNotice] = useState<string | null>(null);
   // 从脚本点某个说话人的"音色"进来时，音色面板滚到这个说话人
   const [voiceFocus, setVoiceFocus] = useState<string | null>(null);
-  const autoBrowserKey = useRef<string | null>(null);
-  const [browserAutoRunning, setBrowserAutoRunning] = useState(false);
   const [browserVoices, setBrowserVoices] = useState<Voice[]>([]);
   useEffect(() => {
     if (project!.settings.dubbingMode !== 'browser') { setBrowserVoices([]); return; }
@@ -220,49 +219,21 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
 
   // 脚本里的操作：全都是命令
   const fillBrowser = useCallback(async (only?: Line[]) => {
-    let fresh = await api.getProject(id);
+    const fresh = await api.getProject(id);
     if (fresh.settings.dubbingMode !== 'browser') return;
-    const voices = await voicesForLanguage(fresh.settings.targetLanguage);
-    if (!voices.length) {
-      setNotice(`${fresh.settings.targetLanguage} 暂无本地音色，请改用 Remote 或 Off`);
-      return;
+    try {
+      const onlyIds = only ? new Set(only.map((l) => l.id)) : undefined;
+      const done = await fillBrowserDubbing(fresh, {
+        only: onlyIds,
+        onProgress: (p) => setNotice(`本地配音 ${p.index}/${p.total}：第 ${p.line.line} 句`),
+      });
+      await reload();
+      if (done) setNotice(`本地配音完成：${done} 句`);
+    } catch (e) {
+      setNotice(`本地配音失败：${e instanceof Error ? e.message : String(e)}`);
+      await reload();
     }
-    // 多说话人：第一次生成前给每个说话人分一个不同 voice；已有选择不覆盖。
-    const fallback = defaultVoiceForLanguage(fresh.settings.targetLanguage);
-    const orderedKeys = [
-      ...(fallback ? [fallback] : []),
-      ...voices.map((v) => v.key).filter((key) => key !== fallback),
-    ];
-    await run('assign_browser_voices', { voices: orderedKeys });
-    fresh = await api.getProject(id);
-    const wanted = only ? new Set(only.map((l) => l.id)) : null;
-    const todo = fresh.segments.filter((l) =>
-      l.kind === 'speech' && !l.muted && l.translation.trim()
-      && l.ttsStatus !== 'fresh' && (!wanted || wanted.has(l.id)));
-    if (!todo.length) return;
-    const voice = fresh.settings.browserVoice ?? defaultVoiceForLanguage(fresh.settings.targetLanguage);
-    if (!voice) {
-      setNotice(`${fresh.settings.targetLanguage} 暂无本地音色，请改用 Remote 或 Off`);
-      return;
-    }
-    const speakerVoice = new Map(fresh.speakers.map((sp) => [sp.id, sp.browserVoice]));
-    for (let i = 0; i < todo.length; i += 1) {
-      const line = todo[i];
-      const lineVoice = line.browserVoice ?? speakerVoice.get(line.speakerId) ?? voice;
-      setNotice(`本地配音 ${i + 1}/${todo.length}：第 ${line.line} 句`);
-      try {
-        const blob = await synthesizeBrowserSpeech(line.translation, lineVoice);
-        await api.uploadBrowserTts(id, line.id, blob);
-      } catch (e) {
-        setNotice(`本地配音失败（第 ${line.line} 句）：${e instanceof Error ? e.message : String(e)}`);
-        await reload();
-        return;
-      }
-    }
-    await reload();
-    setNotice(`本地配音完成：${todo.length} 句`);
-  }, [id, reload, run]);
-
+  }, [id, reload]);
 
   const actions = useMemo<ScriptActions>(() => ({
     edit: async (_lineId, field, value, line) => {
@@ -322,18 +293,6 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
     }
   }, [project, dubbing, run, fillBrowser]);
 
-  // Browser dubbing is generated automatically once init is ready; this is
-  // the TTS stage (model download happens on the first synthesis).
-  useEffect(() => {
-    if (project!.stage !== 'ready' || project!.settings.dubbingMode !== 'browser' || project!.needs.dub <= 0) {
-      return;
-    }
-    const key = `${project!.id}:${project!.settings.dubbingMode}`;
-    if (autoBrowserKey.current === key) return;
-    autoBrowserKey.current = key;
-    setBrowserAutoRunning(true);
-    void fillBrowser().finally(() => setBrowserAutoRunning(false));
-  }, [project!.id, project!.stage, project!.settings.dubbingMode, project!.needs.dub, fillBrowser]);
 
   // 顶栏的语言切换：会让译文/配音大面积过期，所以先问一下
   const changeLanguage = useCallback(async (language: string) => {
@@ -392,15 +351,7 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
 
   return (
     <div className="h-screen flex flex-col bg-claude-bg overflow-hidden">
-      {browserAutoRunning && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-white/80 backdrop-blur-sm">
-          <div className="rounded-2xl border border-claude-border bg-white px-6 py-5 text-center shadow-xl">
-            <div className="mx-auto mb-3 h-6 w-6 animate-spin rounded-full border-2 border-claude-accent border-t-transparent" />
-            <p className="text-sm font-bold text-claude-text">正在生成本地配音</p>
-            <p className="mt-1 text-[11px] text-gray-400">首次会下载本地音色模型，之后会缓存。</p>
-          </div>
-        </div>
-      )}
+
       <TopBar
         filename={project!.filename}
         targetLanguage={project!.settings.targetLanguage}

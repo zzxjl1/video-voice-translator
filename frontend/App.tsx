@@ -22,6 +22,7 @@ import { detectBrowserLanguage } from './utils/languages';
 import { t } from '@/i18n';
 import { emptyInit, reduceInit, type InitState } from './store/init';
 import { pageFor } from './store/page';
+import { fillBrowserDubbing } from './features/browserDubbing';
 import type { BackendAvailability, DubbingMode, ProjectSummary, SeparationBackends, SeparationMode } from './net/types';
 
 const PARAM = 'v';
@@ -74,6 +75,8 @@ const App: React.FC = () => {
   // 浏览器端分离的进度（在服务端初始化之前发生，所以不走事件流）
   const [prep, setPrep] = useState<InitState>(emptyInit);
   const [preparing, setPreparing] = useState(false);
+  const [browserPreparing, setBrowserPreparing] = useState(false);
+  const browserInitKey = useRef<string | null>(null);
 
   // —— 前进/后退 ——
   useEffect(() => {
@@ -209,14 +212,40 @@ const App: React.FC = () => {
     return { ...server, steps, log: [...prep.log, ...server.log] };
   }, [project.init, prep]);
 
+  // Browser TTS is part of init: after ASR/translation finish, keep the init
+  // screen and generate the dubbing locally before opening the editor.
+  useEffect(() => {
+    if (!view || starting || view.stage !== 'ready'
+        || view.settings.dubbingMode !== 'browser' || view.needs.dub <= 0) return;
+    const key = `${view.id}:${view.settings.dubbingMode}`;
+    if (browserInitKey.current === key) return;
+    browserInitKey.current = key;
+    setBrowserPreparing(true);
+    const put = (text: string, level: 'info' | 'error' = 'info') => setPrep((s) => {
+      const i = s.log.findIndex((l) => l.key === 'browser-tts');
+      const line = { key: 'browser-tts', text, level };
+      return { ...s, log: i >= 0 ? s.log.map((l, j) => (j === i ? line : l)) : [...s.log, line] };
+    });
+    put(`本地配音：${view.needs.dub} 句待生成`);
+    void fillBrowserDubbing(view, {
+      onProgress: (p) => put(`本地配音 ${p.index}/${p.total}：第 ${p.line.line} 句`),
+    })
+      .then((done) => put(done ? `本地配音完成：${done} 句` : '本地配音无需生成'))
+      .catch((e) => put(`本地配音失败：${e instanceof Error ? e.message : String(e)}`, 'error'))
+      .finally(async () => {
+        await project.reload();
+        setBrowserPreparing(false);
+      });
+  }, [view?.id, view?.stage, view?.settings.dubbingMode, view?.needs.dub, starting, project.reload]);
+
   const job = view?.jobs.find((j) => j.kind === 'init');
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
-    if (!job && !preparing) return;
+    if (!job && !preparing && !browserPreparing) return;
     const t0 = Date.now();
     const timer = setInterval(() => setElapsed((Date.now() - t0) / 1000 + (job?.elapsedS ?? 0)), 1000);
     return () => clearInterval(timer);
-  }, [job?.id, preparing]);
+  }, [job?.id, preparing, browserPreparing]);
 
   // —— 页面 ——
   if (auth.loading) {
@@ -228,7 +257,14 @@ const App: React.FC = () => {
   }
   if (!auth.user && videoId) return <AuthGate />;
 
-  const page = pageFor({ videoId, stage: view?.stage ?? null, starting, preparing });
+  const browserAutoPending = Boolean(
+    view && view.stage === 'ready' && view.settings.dubbingMode === 'browser'
+    && view.needs.dub > 0 && browserInitKey.current !== `${view.id}:${view.settings.dubbingMode}`,
+  );
+  const page = pageFor({
+    videoId, stage: view?.stage ?? null, starting,
+    preparing: preparing || browserPreparing || browserAutoPending,
+  });
   if (page === 'landing') {
     return (
       <>
@@ -290,14 +326,14 @@ const App: React.FC = () => {
   }
 
   if (page === 'init') {
-    const running = view.stage === 'initializing' || preparing || starting;
+    const running = view.stage === 'initializing' || preparing || browserPreparing || browserAutoPending || starting;
     return (
       <>
         <InitView
           filename={view.filename}
           init={initState}
           error={view.stage === 'failed' ? view.initError : startError}
-          currentStep={job?.step ?? (preparing ? '人声分离' : null)}
+          currentStep={job?.step ?? (browserPreparing ? '浏览器配音' : preparing ? '人声分离' : null)}
           elapsedS={elapsed}
           cancelling={job?.cancelling}
           onCancel={() => void project.run('cancel_job')}
