@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import * as api from '../net/client';
 import type { AuthUser } from '../net/types';
+import { log } from '../utils/log';
 
 interface AuthContextValue {
   user: AuthUser | null;
@@ -27,8 +28,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const refresh = useCallback(async () => {
     try {
       const result = await api.me();
+      log.info('auth', result.user ? `signed in ${result.user.email ?? result.user.id}` : 'anonymous');
       setUser(result.user);
-    } catch {
+    } catch (e) {
+      log.warn('auth', 'me failed', e);
       setUser(null);
     } finally {
       setLoading(false);
@@ -57,6 +60,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, [refresh]);
 
   const login = useCallback((returnTo?: string) => {
+    log.info('auth', 'login requested');
     const target = safeReturnTo(returnTo ?? `${window.location.pathname}${window.location.search}`);
     // Google's web redirect URI is localhost, not 127.0.0.1. If the dev runner
     // printed 127.0.0.1, hop to localhost first so the OAuth browser-binding
@@ -73,6 +77,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   }, []);
 
   const logout = useCallback(async () => {
+    log.info('auth', 'logout');
     try {
       await api.logout();
     } catch {

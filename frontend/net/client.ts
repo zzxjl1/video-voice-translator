@@ -4,6 +4,7 @@
  * 所有"改东西"的动作都走 `command()`：UI 的每个按钮和 AI 的每个 tool 在服务端是同一套命令。
  */
 import type { AuthUser, ChatMessage, CommandResult, ProjectSummary, ProjectView, SubtitleCapabilities, SubtitleStyle, SubtitleCue, SubtitleTrack, VoiceOption } from './types';
+import { log, safeUrl } from '../utils/log';
 
 export const API_BASE = '/api';
 
@@ -14,15 +15,26 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, init);
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({ detail: response.statusText }));
-    throw new ApiError(
-      typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail),
-      response.status,
-    );
+  const method = (init?.method ?? 'GET').toUpperCase();
+  const started = performance.now();
+  log.debug('api', `→ ${method} ${safeUrl(path)}`);
+  try {
+    const response = await fetch(`${API_BASE}${path}`, init);
+    const ms = Math.round(performance.now() - started);
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({ detail: response.statusText }));
+      const detail = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail);
+      log.warn('api', `← ${response.status} ${method} ${safeUrl(path)} (${ms}ms)`, detail);
+      throw new ApiError(detail, response.status);
+    }
+    log.debug('api', `← ${response.status} ${method} ${safeUrl(path)} (${ms}ms)`);
+    return response.json() as Promise<T>;
+  } catch (e) {
+    if (!(e instanceof ApiError)) {
+      log.error('api', `× ${method} ${safeUrl(path)}`, e instanceof Error ? e.message : e);
+    }
+    throw e;
   }
-  return response.json() as Promise<T>;
 }
 
 const json = (body: unknown): RequestInit => ({

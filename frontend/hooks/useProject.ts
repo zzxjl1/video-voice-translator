@@ -14,6 +14,7 @@ import type { ChatSummary } from '../net/client';
 import { EventClient } from '../net/events';
 import type { ChatEvent, ChangeEvent, CommandResult, ConversationEvent, JobEvent, ProjectView, ServerEvent, UiEvent } from '../net/types';
 import { applyChange } from '../store/project';
+import { log, shortId } from '../utils/log';
 import { chatEventMatches, emptyChat, loadChat, reduceChat, type ChatState } from '../store/chat';
 import { acceptEvent, emptyInit, failInit, reduceInit, replayCeiling, type InitState } from '../store/init';
 
@@ -117,6 +118,7 @@ export function useProject(id: string | null): ProjectApi {
    */
   const reload = useCallback(async (): Promise<ProjectView | null> => {
     if (!id) return null;
+    log.debug('project', `reload ${shortId(id)}`);
     const my = ++reloadSeq.current;
     const fresh = () => my === reloadSeq.current;
     let view: ProjectView;
@@ -130,6 +132,7 @@ export function useProject(id: string | null): ProjectApi {
       return null;                       // 不清空已加载的视图，避免闪回"加载中"
     }
     if (!fresh()) return view;
+    log.info('project', `loaded ${shortId(id)} stage=${view.stage} rev=${view.rev} needs=${view.needs.translate}/${view.needs.dub}`);
     setProject(view);
     setLoadError(null);
     setNotFound(false);
@@ -230,9 +233,16 @@ export function useProject(id: string | null): ProjectApi {
           if (e.kind === 'init' && e.phase !== 'started') void reload();
           return;
         }
-        case 'progress':
+        case 'progress': {
+          const pe = event as { phase?: string; status?: string; speaker_id?: string; error?: string; total?: number; seconds?: number };
+          if (pe.phase === 'voice_clone') {
+            const line = `${pe.status ?? 'event'} speaker=${pe.speaker_id ?? '?'}`;
+            if (pe.status === 'failed' || pe.status === 'pick_failed') log.warn('clone', line, pe);
+            else log.info('clone', line, pe);
+          }
           setInit((s) => reduceInit(s, event as never));
           return;
+        }
         case 'chat': {
           const e = event as ChatEvent;
           // 切会话后旧一轮的 delta/message/idle 不能污染新会话（服务端已给事件打上
@@ -300,10 +310,18 @@ export function useProject(id: string | null): ProjectApi {
   const run = useCallback(
     async <T = Record<string, unknown>>(name: string, args: Record<string, unknown> = {}): Promise<CommandResult<T>> => {
       if (!id) return { ok: false, error: '没有打开的工程' };
+      const started = performance.now();
+      log.info('command', `→ ${name}`, { id: shortId(id), args });
       try {
-        return await api.command<T>(id, name, args);
+        const result = await api.command<T>(id, name, args);
+        log.info('command', result.ok ? '← ok' : '← rejected', {
+          name, ms: Math.round(performance.now() - started), error: result.ok ? undefined : result.error,
+        });
+        return result;
       } catch (e) {
-        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+        const error = e instanceof Error ? e.message : String(e);
+        log.error('command', `× ${name}`, { id: shortId(id), error, ms: Math.round(performance.now() - started) });
+        return { ok: false, error };
       }
     },
     [id],

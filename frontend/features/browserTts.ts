@@ -3,6 +3,7 @@
  * uploaded to the normal tts/<segment>.mp3 path so mixing/export stay shared.
  */
 import type { Voice } from '@diffusionstudio/vits-web';
+import { log } from '../utils/log';
 
 const PREFIX: Record<string, string> = {
   Chinese: 'zh_CN',
@@ -35,8 +36,13 @@ const UNUSABLE_VOICES = new Set(['zh_CN-huayan-x_low']);
 
 export async function allVoices(): Promise<Voice[]> {
   if (!catalog) {
-    catalog = import('@diffusionstudio/vits-web').then((m) => m.voices()).catch((e) => {
+    log.info('tts', 'loading voice catalog');
+    catalog = import('@diffusionstudio/vits-web').then((m) => m.voices()).then((v) => {
+      log.info('tts', `voice catalog loaded: ${v.length}`);
+      return v;
+    }).catch((e) => {
       catalog = null;
+      log.error('tts', 'voice catalog failed', e);
       throw e;
     });
   }
@@ -47,7 +53,9 @@ export async function voicesForLanguage(language: string): Promise<Voice[]> {
   const prefix = PREFIX[language];
   if (!prefix) return [];
   const voices = await allVoices();
-  return voices.filter((v) => v.key.startsWith(prefix) && !UNUSABLE_VOICES.has(v.key));
+  const available = voices.filter((v) => v.key.startsWith(prefix) && !UNUSABLE_VOICES.has(v.key));
+  log.info('tts', `voices for ${language}: ${available.length}`, available.map((v) => v.key));
+  return available;
 }
 
 export function browserVoiceLabel(voice: Pick<Voice, 'key' | 'name' | 'quality'>): string {
@@ -71,17 +79,28 @@ export async function synthesizeBrowserSpeech(
   voiceId: string,
   onProgress?: (loaded: number, total: number) => void,
 ): Promise<Blob> {
-  const m = await import('@diffusionstudio/vits-web');
-  return m.predict(
-    { text: cleanTtsText(text), voiceId: voiceId as never },
-    onProgress ? (p) => onProgress(p.loaded, p.total) : undefined,
-  );
+  const started = performance.now();
+  log.info('tts', `synthesize ${voiceId} (${text.length} chars)`);
+  try {
+    const m = await import('@diffusionstudio/vits-web');
+    const blob = await m.predict(
+      { text: cleanTtsText(text), voiceId: voiceId as never },
+      onProgress ? (p) => onProgress(p.loaded, p.total) : undefined,
+    );
+    log.info('tts', `done ${voiceId} (${Math.round(performance.now() - started)}ms, ${blob.size}b)`);
+    return blob;
+  } catch (e) {
+    log.error('tts', `synthesize failed ${voiceId}`, e);
+    throw e;
+  }
 }
 
 export async function downloadBrowserVoice(
   voiceId: string,
   onProgress?: (loaded: number, total: number) => void,
 ): Promise<void> {
+  log.info('tts', `download voice ${voiceId}`);
   const m = await import('@diffusionstudio/vits-web');
   await m.download(voiceId as never, onProgress ? (p) => onProgress(p.loaded, p.total) : undefined);
+  log.info('tts', `voice ready ${voiceId}`);
 }

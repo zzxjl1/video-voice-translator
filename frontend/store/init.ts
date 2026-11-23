@@ -78,6 +78,7 @@ export function reduceInit(state: InitState, event: ProgressEvent): InitState {
 
   switch (phase) {
     case 'separation': {
+      if (status === 'started') return setStep(state, 'separation', { status: 'running', detail: '正在浏览器分离…' });
       if (status === 'skipped') return setStep(state, 'separation', { status: 'skipped', detail: '未使用' });
       if (status === 'done') return setStep(state, 'separation', { status: 'done', detail: '已完成' });
       return state;
@@ -152,7 +153,9 @@ export function reduceInit(state: InitState, event: ProgressEvent): InitState {
         status === 'enrolling' ? `${who}：注册音色…` :
         status === 'cloning' ? `${who}：开始克隆` :
         status === 'done' ? `${who}：${event.reused ? '复用已有音色' : '克隆完成'}` :
-        status === 'failed' ? `${who}：克隆失败（${event.error}），改用系统音色` : '';
+        status === 'failed' ? `${who}：克隆失败（${event.error}）` :
+        status === 'retrying' ? `${who}：克隆失败，正在重试 ${event.attempt}/3…` :
+        status === 'skipped' ? `${who}：没有可用素材，使用系统音色` : '';
       if (!text) return state;
       const progress = event.total ? { done: Number(event.progress ?? 0), total: Number(event.total) } : undefined;
       return pushLog(setStep(state, 'voice_clone', { status: 'running', ...(progress ? { progress } : {}) }),

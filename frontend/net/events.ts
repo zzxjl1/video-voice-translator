@@ -13,6 +13,7 @@
  * 纯 TS、不碰 DOM/React：`fetch` 通过参数注入，测试里直接喂一个假的流。
  */
 import type { ServerEvent } from './types';
+import { log } from '../utils/log';
 
 export interface EventClientOptions {
   url: (since: number) => string;
@@ -51,8 +52,10 @@ export class EventClient {
   /** 开始。返回一个在连接**彻底结束**（close() 或 404）时 resolve 的 Promise。 */
   async run(): Promise<void> {
     while (!this.closed) {
+      log.debug('sse', this.attempts === 0 ? 'connecting' : 'reconnecting');
       this.opts.onState?.(this.attempts === 0 ? 'connecting' : 'reconnecting');
       try {
+        log.info('sse', 'connected');
         const gone = await this.connectOnce();
         if (gone) {
           this.opts.onGone?.();
@@ -71,6 +74,7 @@ export class EventClient {
   }
 
   close(): void {
+    log.debug('sse', 'closing');
     this.closed = true;
     this.abort?.abort();
     // 不只依赖 fetch 对 abort 的响应：直接取消 reader，挂在 read() 上的循环立刻醒来。
@@ -88,9 +92,13 @@ export class EventClient {
       signal: this.abort.signal,
       headers: { Accept: 'text/event-stream' },
     });
-    if (response.status === 404) return true;
+    if (response.status === 404) {
+      log.warn('sse', 'project gone (404)');
+      return true;
+    }
     if (!response.ok || !response.body) throw new Error(`events: HTTP ${response.status}`);
 
+    log.info('sse', 'stream open');
     this.opts.onState?.('open');
     const reader = (this.reader = response.body.getReader());
     const decoder = new TextDecoder();
@@ -128,6 +136,7 @@ export class EventClient {
       if (event.seq <= this.seq) return;
       this.seq = event.seq;
     }
+    log.debug('sse', `event ${event.type}#${event.seq ?? '?'}`, event);
     this.opts.onEvent(event);
   }
 }

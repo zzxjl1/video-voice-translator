@@ -15,6 +15,7 @@ import { useProject } from './hooks/useProject';
 import { separateInBrowser } from './features/separation';
 import VideoUpload from './components/VideoUpload';
 import InitView from './components/init/InitView';
+import Toast from './components/ui/Toast';
 import EditorPage from './components/editor/EditorPage';
 import { AuthGate } from './auth/AuthGate';
 import { useAuth } from './auth/AuthProvider';
@@ -23,6 +24,7 @@ import { t } from '@/i18n';
 import { emptyInit, reduceInit, type InitState } from './store/init';
 import { pageFor } from './store/page';
 import { fillBrowserDubbing } from './features/browserDubbing';
+import { log, shortId } from './utils/log';
 import type { BackendAvailability, DubbingMode, ProjectSummary, SeparationBackends, SeparationMode } from './net/types';
 
 const PARAM = 'v';
@@ -63,6 +65,7 @@ const App: React.FC = () => {
   const [backends, setBackends] = useState<SeparationBackends>({});
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
+  const [initDoneNotice, setInitDoneNotice] = useState<string | null>(null);
   const [recent, setRecent] = useState<ProjectSummary[]>([]);
 
   const project = useProject(auth.loading || !auth.user ? null : videoId);
@@ -78,9 +81,15 @@ const App: React.FC = () => {
   const [browserPreparing, setBrowserPreparing] = useState(false);
   const [browserError, setBrowserError] = useState<string | null>(null);
   const browserInitKey = useRef<string | null>(null);
+  const initWasRunning = useRef(false);
+  const [browserArmed, setBrowserArmed] = useState(false);
+  const startInFlight = useRef(false);
+  const initReportLanguage = view?.initReport?.settings?.targetLanguage as string | undefined;
+  const reportMatchesLanguage = !initReportLanguage || initReportLanguage === view?.settings.targetLanguage;
   const browserAutoPending = Boolean(
-    view && view.stage === 'ready' && view.settings.dubbingMode === 'browser'
-    && view.needs.dub > 0 && browserInitKey.current !== `${view.id}:${view.settings.dubbingMode}`,
+    !startInFlight.current && browserArmed && view && view.stage === 'ready' && view.settings.dubbingMode === 'browser'
+    && reportMatchesLanguage && view.needs.dub > 0
+    && browserInitKey.current !== `${view.id}:${view.settings.dubbingMode}:${view.settings.targetLanguage}:${view.settings.accent ?? ''}`,
   );
 
   // —— 前进/后退 ——
@@ -145,14 +154,23 @@ const App: React.FC = () => {
       return;
     }
     const file = fileRef.current;
-    if (!file) return;
+    if (!file) {
+      log.warn('app', 'start ignored: no file');
+      return;
+    }
+    log.info('app', 'start upload', { name: file.name, size: file.size, type: file.type });
     setStarting(true);
     setStartError(null);
+    startInFlight.current = true;
+    setBrowserArmed(false);
+    browserInitKey.current = null;
     setPrep(emptyInit());
     let uploadedId: string | null = null;
     try {
+      const t0 = performance.now();
       const uploaded = await api.upload(file);
       uploadedId = uploaded.id;
+      log.info('app', 'upload done', { id: shortId(uploaded.id), exists: uploaded.exists, stage: uploaded.stage, ms: Math.round(performance.now() - t0) });
       // 马上切到初始化页：浏览器端人声分离可能要几分钟，这段时间用户要看到步骤清单、
       // 进度和取消，而不是停在落地页。别因此闪出旧编辑器 —— pageFor 在 starting /
       // preparing 期间强制停在初始化页（上传按 MD5 复用时工程可能是已完成的）。
@@ -161,6 +179,7 @@ const App: React.FC = () => {
       let mode: SeparationMode = dubbingMode !== 'off' ? separationMode : 'off';
       if (dubbingMode === 'remote') mode = 'client';
       if (mode === 'client') {
+        log.info('app', 'browser separation start', { id: shortId(uploaded.id) });
         setPreparing(true);
         setPrep((s) => reduceInit(s, { type: 'progress', seq: 0, ts: 0, phase: 'separation', status: 'started' }));
         const outcome = await separateInBrowser(uploaded.id, file, {
@@ -172,11 +191,13 @@ const App: React.FC = () => {
           }),
         });
         setPreparing(false);
+        log.info('app', outcome.ok ? 'browser separation done' : 'browser separation skipped', outcome);
         // 没分离成功就以“不分离”继续（导出时用原声垫底），而不是让整个初始化失败
         if (!outcome.ok) mode = 'off';
         setPrep((s) => reduceInit(s, { type: 'progress', seq: 0, ts: 0, phase: 'separation', status: outcome.ok ? 'done' : 'skipped' }));
       }
 
+      log.info('app', 'setup start', { id: shortId(uploaded.id), lang: targetLanguage, accent: targetAccent || null, dubbingMode, separation: mode });
       await api.setup(uploaded.id, {
         target_language: targetLanguage,
         accent: targetLanguage === 'Chinese' ? targetAccent || null : null,
@@ -189,6 +210,7 @@ const App: React.FC = () => {
         custom_prompt: customPrompt,
       });
     } catch (e) {
+      startInFlight.current = false;
       setPreparing(false);
       setStartError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -219,7 +241,9 @@ const App: React.FC = () => {
         ? { ...s, status: 'running' as const, detail: '浏览器本地配音' }
         : s);
     }
-    const log = [...prep.log, ...server.log];
+    const browserLogs = prep.log.filter((l) => l.key.startsWith('browser-tts'));
+    const earlyLogs = prep.log.filter((l) => !l.key.startsWith('browser-tts'));
+    const log = [...earlyLogs, ...server.log, ...browserLogs];
     if (browserPreparing && !log.some((l) => l.key === 'browser-tts')) {
       log.push({ key: 'browser-tts', text: '浏览器本地配音进行中…', level: 'info' });
     }
@@ -230,16 +254,36 @@ const App: React.FC = () => {
     };
   }, [project.init, prep, browserPreparing, browserAutoPending, browserError]);
 
+  // A target-language change invalidates the previous browser-TTS run. Do not
+  // start local dubbing from the old ready snapshot; wait for the new init.
+  useEffect(() => {
+    browserInitKey.current = null;
+    setBrowserArmed(false);
+  }, [view?.settings.targetLanguage]);
+
+  useEffect(() => {
+    if (view?.stage === 'initializing') {
+      initWasRunning.current = true;
+      setBrowserArmed(true);
+      startInFlight.current = false;
+    } else if (!startInFlight.current && view?.stage === 'ready' && !browserInitKey.current) {
+      setBrowserArmed(true);
+    }
+  }, [view?.stage, browserArmed]);
+
   // Browser TTS is part of init: after ASR/translation finish, keep the init
   // screen and generate the dubbing locally before opening the editor.
   useEffect(() => {
-    if (!view || starting || view.stage !== 'ready'
-        || view.settings.dubbingMode !== 'browser' || view.needs.dub <= 0) return;
-    const key = `${view.id}:${view.settings.dubbingMode}`;
+    if (!view || starting || startInFlight.current || !browserArmed || view.stage !== 'ready'
+        || view.settings.dubbingMode !== 'browser' || !reportMatchesLanguage || view.needs.dub <= 0) return;
+    const key = `${view.id}:${view.settings.dubbingMode}:${view.settings.targetLanguage}:${view.settings.accent ?? ''}`;
     if (browserInitKey.current === key) return;
     browserInitKey.current = key;
     setBrowserError(null);
     setBrowserPreparing(true);
+    const startedAt = Date.now();
+    console.info('[browser-tts] start', view.needs.dub, 'lines');
+    log.info('browser-tts', 'init auto start', { id: shortId(view.id), lines: view.needs.dub, lang: view.settings.targetLanguage, accent: view.settings.accent });
     const put = (text: string, level: 'info' | 'error' = 'info') => setPrep((s) => {
       const i = s.log.findIndex((l) => l.key === 'browser-tts');
       const line = { key: 'browser-tts', text, level };
@@ -247,19 +291,46 @@ const App: React.FC = () => {
     });
     put(`本地配音：${view.needs.dub} 句待生成`);
     void fillBrowserDubbing(view, {
-      onProgress: (p) => put(`本地配音 ${p.index}/${p.total}：第 ${p.line.line} 句`),
+      onProgress: (p) => {
+        put(`本地配音 ${p.index}/${p.total}：第 ${p.line.line} 句`);
+        console.info('[browser-tts]', p.index + '/' + p.total, 'line', p.line.line, p.voice);
+        log.info('browser-tts', 'progress', { index: p.index, total: p.total, line: p.line.line, voice: p.voice });
+      },
     })
-      .then((done) => put(done ? `本地配音完成：${done} 句` : '本地配音无需生成'))
+      .then((done) => {
+        const text = done ? `本地配音完成：${done} 句` : '本地配音无需生成';
+        put(text);
+        console.info('[browser-tts] done', done, 'lines');
+        log.info('browser-tts', 'init auto done', { lines: done });
+      })
       .catch((e) => {
         const message = e instanceof Error ? e.message : String(e);
         setBrowserError(`本地配音失败：${message}`);
+        console.error('[browser-tts] failed', message);
+        log.error('browser-tts', 'init auto failed', message);
         put(`本地配音失败：${message}`, 'error');
       })
       .finally(async () => {
+        // Keep the init log visible even when the model is warm and synthesis
+        // finishes in under a second.
+        const remaining = 1200 - (Date.now() - startedAt);
+        if (remaining > 0) await new Promise((r) => setTimeout(r, remaining));
         await project.reload();
         setBrowserPreparing(false);
       });
-  }, [view?.id, view?.stage, view?.settings.dubbingMode, view?.needs.dub, starting, project.reload]);
+  }, [view?.id, view?.stage, view?.settings.dubbingMode, view?.settings.targetLanguage, view?.settings.accent, reportMatchesLanguage, view?.needs.dub, starting, browserArmed, project.reload]);
+
+  // One toast when the complete init (including browser TTS) is done.
+  useEffect(() => {
+    if (!view || !initWasRunning.current) return;
+    if (view.stage === 'failed') {
+      initWasRunning.current = false;
+      return;
+    }
+    if (view.stage !== 'ready' || browserPreparing || browserAutoPending || browserError) return;
+    initWasRunning.current = false;
+    setInitDoneNotice('初始化完成');
+  }, [view?.stage, view?.id, browserPreparing, browserAutoPending, browserError]);
 
   const job = view?.jobs.find((j) => j.kind === 'init');
   const [elapsed, setElapsed] = useState(0);
@@ -373,14 +444,10 @@ const App: React.FC = () => {
   return (
     <>
       <EditorPage project={project} onHome={() => open(null)} />
+      <Toast message={initDoneNotice} onClose={() => setInitDoneNotice(null)} />
       {/* 对已完成的工程重新点「开始处理」时，setup 可能在 stage=ready 上就失败；
           初始化页不会出现，这条错误也得有地方显示。 */}
-      {startError && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 w-[min(520px,90vw)] bg-white border border-red-200 rounded-2xl shadow-xl px-5 py-3 flex items-center gap-4 text-xs">
-          <span className="text-red-500 flex-grow">{startError}</span>
-          <button onClick={() => setStartError(null)} className="px-3 py-1.5 rounded-lg border border-claude-border text-gray-500 font-bold hover:bg-white">关闭</button>
-        </div>
-      )}
+      <Toast message={startError} onClose={() => setStartError(null)} tone="error" />
     </>
   );
 };

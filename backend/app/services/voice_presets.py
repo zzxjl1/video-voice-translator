@@ -67,6 +67,39 @@ class Plan:
 # 候选池
 # ----------------------------------------------------------------------------
 
+def pad_plan(plan: Plan, minimum: float, maximum: float = SAMPLE_MAX_DURATION) -> Plan:
+    """Repeat the selected clean clips until the sample reaches the hard minimum.
+
+    The cloud enrollment has an ``AudioShortError`` below ~5s. For very short
+    speakers we deliberately repeat the same clean material (with the normal
+    inter-clip gap) instead of giving up or using unrelated speakers.
+    """
+    if not plan.clips:
+        return plan
+    if plan.seconds >= minimum:
+        return plan
+    clips = list(plan.clips)
+    line_ids = list(plan.line_ids)
+    base_clips = list(plan.clips)
+    base_ids = list(plan.line_ids)
+
+    def total(items: list[tuple[float, float]]) -> float:
+        return sum(b - a for a, b in items) + max(0, len(items) - 1) * plan.gap
+
+    while total(clips) < minimum:
+        before = total(clips)
+        for i, clip in enumerate(base_clips):
+            duration = clip[1] - clip[0]
+            would_be = total(clips) + duration + (plan.gap if clips else 0.0)
+            if would_be > maximum:
+                continue
+            clips.append(clip)
+            line_ids.append(base_ids[i] if i < len(base_ids) else (plan.line_ids[0] if plan.line_ids else ""))
+        if total(clips) <= before:
+            break
+    return Plan(plan.preset, clips, line_ids, plan.gap)
+
+
 def _dur(s: Segment) -> float:
     return s.end_time - s.start_time
 

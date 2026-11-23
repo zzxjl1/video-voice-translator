@@ -49,7 +49,8 @@ def clone_target_model() -> str:
 #     显式传 SAMPLE_MAX_DURATION，否则 13~20 秒的样本后半段白做。实测同一份样本放宽
 #     到 20 秒后音色明显更好。
 SAMPLE_MAX_DURATION = presets.SAMPLE_MAX_DURATION
-SAMPLE_MIN_DURATION = 10.0   # 只用于提示"偏短"，**不再循环重复凑时长**
+SAMPLE_MIN_DURATION = 10.0   # 推荐时长，只用于提示
+SAMPLE_MIN_REQUIRED = 5.0    # DashScope 的硬下限；更短会直接 AudioShortError
 
 
 def _ffmpeg_build_sample(vocals_path: str, plan: presets.Plan, output_path: str) -> float:
@@ -237,8 +238,18 @@ async def enroll_voice(
             await emit({"phase": "voice_clone", "status": status, "speaker_id": speaker_id, **kw})
 
     loop = asyncio.get_running_loop()
-    if plan.seconds < 1.0:
-        raise RuntimeError(f"说话人 {speaker_id} 的素材只有 {plan.seconds:.1f}s（至少 1s）")
+    if plan.seconds < SAMPLE_MIN_REQUIRED:
+        before = plan.seconds
+        plan = presets.pad_plan(plan, SAMPLE_MIN_REQUIRED)
+        logger.info(
+            f"[Clone] {speaker_id}: padded reference {before:.1f}s -> {plan.seconds:.1f}s "
+            f"by repeating clean clips"
+        )
+    if plan.seconds < SAMPLE_MIN_REQUIRED:
+        raise RuntimeError(
+            f"说话人 {speaker_id} 的素材只有 {plan.seconds:.1f}s，"
+            f"拼接后仍低于声音复刻要求的 {SAMPLE_MIN_REQUIRED:.0f}s；请补充素材或关闭声音克隆"
+        )
 
     # —— 拼样本 ——
     speaker_dir = os.path.join(get_video_dir(video_id), "voice_clone", speaker_id)

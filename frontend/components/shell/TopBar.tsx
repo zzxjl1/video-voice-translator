@@ -47,6 +47,7 @@ const TopBar: React.FC<Props> = ({
   const running = jobs.length > 0;
   const job = jobs[0];
   const pending = needs.translate + (dubbing ? needs.dub : 0);
+  const issueText = pending === 1 ? '一个问题' : pending === 2 ? '两个问题' : `${pending} 个问题`;
   const pendingText = [
     needs.translate ? `${needs.translate} 句译文` : '',
     dubbing && needs.dub ? `${needs.dub} 句配音` : '',
@@ -155,25 +156,39 @@ const TopBar: React.FC<Props> = ({
                 <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="5" width="14" height="14" rx="2" /></svg>
               </button>
             </div>
-          ) : pending > 0 ? (
-            <button
-              onClick={onFill}
-              title="只补缺的和已过期的，已经好的不会重做"
-              className="flex items-stretch w-60 rounded-2xl overflow-hidden shadow-xl shadow-claude-accent/20 hover:shadow-2xl hover:shadow-claude-accent/30 hover:-translate-y-0.5 transition-all duration-300 text-left bg-claude-accent hover:bg-claude-accentHover text-white active:scale-[0.99]"
-            >
-              <div className="flex flex-col items-start gap-1 p-4">
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-lg bg-white/20 flex items-center justify-center">
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          ) : (
+            <div className="w-60 rounded-2xl border border-gray-200 bg-white p-4 shadow-xl shadow-black/5 flex flex-col gap-1.5">
+              <div className="flex items-center gap-2">
+                <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${pending === 0 ? 'bg-emerald-50 text-emerald-600' : 'bg-amber-50 text-amber-600'}`}>
+                  {pending === 0 ? (
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
                     </svg>
-                  </div>
-                  <span className="text-[10px] font-black uppercase tracking-[0.15em] text-white/70">Fill gaps</span>
+                  ) : (
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v3.75m0 3.75h.008M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" />
+                    </svg>
+                  )}
                 </div>
-                <span className="text-sm font-bold mt-1 ml-1 whitespace-nowrap">补齐 {pendingText}</span>
+                <span className="text-[10px] font-black uppercase tracking-[0.15em] text-gray-400">Issues</span>
               </div>
-            </button>
-          ) : null}
+              <span className={`text-sm font-bold ${pending === 0 ? 'text-gray-700' : 'text-gray-800'}`}>
+                {pending === 0 ? '没问题' : issueText}
+              </span>
+              <span className="text-[10px] leading-snug text-gray-400 truncate">
+                {pending === 0 ? '译文和配音都已就绪' : pendingText}
+              </span>
+              {pending > 0 && (
+                <button
+                  onClick={onFill}
+                  title="点一下补齐缺失或过期的内容"
+                  className="mt-0.5 self-start text-[10px] font-bold text-claude-accent hover:text-claude-accentHover"
+                >
+                  点击补齐
+                </button>
+              )}
+            </div>
+          )}
 
           {/* 导出（旧版那张白卡片） */}
           <button

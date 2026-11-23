@@ -364,7 +364,11 @@ async def translate_lines(
 
 
 async def clone_speakers(video_id: str, job: Job, server_url: str, only: Optional[list[str]] = None) -> None:
-    """给说话人克隆音色。已有且服务端还活着的复用（免费）；只对还没有的发起注册。"""
+    """Clone each speaker. Enrollment is retried; failure aborts init.
+
+    We intentionally do NOT silently fall back to a system voice: that makes the
+    output look successful while the user's chosen cloned voice is missing.
+    """
     from app.services import voice_clone_service as vc
     state = store.require_state(video_id)
     if state.dubbing_mode != "remote":
@@ -384,31 +388,56 @@ async def clone_speakers(video_id: str, job: Job, server_url: str, only: Optiona
             if speaker and status.clone_voice_id(current, speaker) and await vc.verify_voice(speaker.clone["voice_id"]):
                 _emit(video_id, job, {**base, "status": "done", "reused": True})
                 continue
+
             plan = await vc.pick_plan(
                 video_id, current.segments, sp.id,
                 audio_url=_public_audio_url(server_url, video_id),
                 target_language=current.target_language, smart=current.clone_smart_pick,
                 emit=lambda e: _async_emit(video_id, job, e),
             )
-            voice_id = await vc.enroll_voice(video_id, sp.id, plan,
-                                             emit=lambda e: _async_emit(video_id, job, e))
-
-            def apply(s, voice_id=voice_id, sid=sp.id, plan=plan):
-                target = s.speaker(sid)
-                if target is not None:
-                    target.clone = {"voice_id": voice_id, "target_model": vc.clone_target_model(),
-                                    "created_at": int(time.time()), "preset": plan.preset,
-                                    "lines": plan.line_ids}
-
-            store.mutate(video_id, apply, actor="system", cmd="clone", summary=f"{sp.name} 的克隆音色就绪")
-            _emit(video_id, job, {**base, "status": "done", "voice_id": voice_id, "reused": False})
         except JobCancelled:
             raise
         except Exception as e:
-            logger.error(f"[{video_id}] clone failed for {sp.id}: {e}")
-            _emit(video_id, job, {**base, "status": "failed", "error": str(e)})
-    _emit(video_id, job, {"phase": "voice_clone", "status": "complete"})
+            # Only *no usable material* falls back to the system voice. Other
+            # picker failures are real errors and must be visible.
+            if "没有可用于克隆的素材" not in str(e) and "没有可用" not in str(e):
+                _emit(video_id, job, {**base, "status": "failed", "error": str(e), "fatal": True})
+                raise RuntimeError(f"{sp.name} 参考素材选择失败：{e}") from e
+            logger.warning(f"[{video_id}] clone skipped for {sp.id} (no material): {e}")
+            _emit(video_id, job, {**base, "status": "skipped", "reason": str(e)})
+            continue
 
+        last_error: Exception | None = None
+        voice_id = ""
+        for attempt in range(1, 4):
+            job.check()
+            try:
+                voice_id = await vc.enroll_voice(video_id, sp.id, plan,
+                                                  emit=lambda e: _async_emit(video_id, job, e))
+                last_error = None
+                break
+            except JobCancelled:
+                raise
+            except Exception as e:
+                last_error = e
+                logger.warning(f"[{video_id}] clone {sp.id} attempt {attempt}/3 failed: {e}")
+                if attempt < 3:
+                    _emit(video_id, job, {**base, "status": "retrying", "attempt": attempt, "error": str(e)})
+                    await asyncio.sleep(attempt)
+        if last_error is not None:
+            _emit(video_id, job, {**base, "status": "failed", "error": str(last_error), "fatal": True})
+            raise RuntimeError(f"{sp.name} 克隆失败（已重试 3 次）：{last_error}") from last_error
+
+        def apply(s, voice_id=voice_id, sid=sp.id, plan=plan):
+            target = s.speaker(sid)
+            if target is not None:
+                target.clone = {"voice_id": voice_id, "target_model": vc.clone_target_model(),
+                                "created_at": int(time.time()), "preset": plan.preset,
+                                "lines": plan.line_ids}
+
+        store.mutate(video_id, apply, actor="system", cmd="clone", summary=f"{sp.name} 的克隆音色就绪")
+        _emit(video_id, job, {**base, "status": "done", "voice_id": voice_id, "reused": False})
+    _emit(video_id, job, {"phase": "voice_clone", "status": "complete"})
 
 async def _async_emit(video_id: str, job: Job, event: dict) -> None:
     _emit(video_id, job, event)

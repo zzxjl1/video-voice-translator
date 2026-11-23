@@ -28,8 +28,10 @@ import Timeline from '../Timeline';
 import SubtitleStylePanel from '../SubtitleStylePanel';
 import VoicePanel from './VoicePanel';
 import ExportModal, { type SubtitleDelivery } from '../ExportModal';
+import Toast from '../ui/Toast';
 import { browserVoiceLabel, voicesForLanguage } from '../../features/browserTts';
 import { fillBrowserDubbing } from '../../features/browserDubbing';
+import { log, shortId } from '../../utils/log';
 import type { Voice } from '@diffusionstudio/vits-web';
 
 interface Props {
@@ -189,6 +191,7 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
   }, []);
 
   const doExport = useCallback(async () => {
+    log.info('export', 'start', { id: shortId(id), delivery, keepStyle });
     setExporting(true);
     setExportError('');
     try {
@@ -210,6 +213,7 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
         setShowExport(false);
       }
     } catch (e) {
+      log.error('export', 'failed', e instanceof Error ? e.message : e);
       setExportError(e instanceof Error ? e.message : String(e));
     } finally {
       setExporting(false);
@@ -299,8 +303,14 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
     if (language === project!.settings.targetLanguage) return;
     const has = project!.segments.some((l) => l.translation);
     if (has && !window.confirm(t("把目标语言改成 {0}？\n所有译文和配音都会过期，需要重新翻译和配音。", [language]))) return;
+    log.info('language', `switch target language ${project!.settings.targetLanguage} -> ${language}`);
     const r = await run('set_settings', { target_language: language });
-    if (!r.ok) setNotice(r.error ?? '修改失败');
+    if (!r.ok) { setNotice(r.error ?? '修改失败'); return; }
+    // Language changes invalidate the whole translation/dubbing chain. Always
+    // go back through init instead of leaving stale content in the editor.
+    log.info('language', 'reinitialize after language switch');
+    const init = await run('run_initialize', {});
+    if (!init.ok) setNotice(init.error ?? '重新初始化失败');
   }, [project, run]);
 
   // 三个窗口的内容。窗口系统只管放在哪、多大；内容是什么在这里定。
@@ -351,6 +361,7 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
 
   return (
     <div className="h-screen flex flex-col bg-claude-bg overflow-hidden">
+      <Toast message={notice} onClose={() => setNotice(null)} />
 
       <TopBar
         filename={project!.filename}
@@ -368,13 +379,6 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
         onHome={onHome}
         exporting={exporting}
       />
-
-      {notice && (
-        <div className="shrink-0 mt-8 bg-amber-50 border-b border-amber-200 px-6 py-2 flex items-center justify-between text-[12px] text-amber-800">
-          <span>{notice}</span>
-          <button onClick={() => setNotice(null)} className="font-bold hover:text-amber-950">知道了</button>
-        </div>
-      )}
 
       {/* 顶栏是 fixed 的（悬停展开时浮在画面上方），内容要给它让出顶部空间。
           右栏是「停靠位」：切换条只在 hover 顶部横杠时浮在上方居中、不占高度；译文 / 助手常驻，
