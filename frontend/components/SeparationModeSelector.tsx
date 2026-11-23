@@ -33,7 +33,7 @@ interface SeparationModeSelectorProps {
   value: SeparationMode;
   onChange: (mode: SeparationMode) => void;
   backends: SeparationBackends;
-  /** Voice cloning needs separated vocals, so "Off" is not selectable then. */
+  /** Remote dubbing needs separated vocals, so "Off" is not selectable then. */
   locked?: boolean;
 }
 
@@ -52,7 +52,7 @@ const SeparationModeSelector: React.FC<SeparationModeSelectorProps> = ({
    * （克隆需要人声轨，所以不能关）。改成直接说原因，放哪个位置读起来都对。
    */
   const reasonFor = (mode: SeparationMode): string | null => {
-    if (locked && mode === 'off') return 'Voice Cloning needs isolated vocals';
+    if (locked && mode === 'off') return 'Remote dubbing requires vocals and background separation';
     const info = backends[mode];
     if (mode !== 'off' && info && !info.available) {
       return info.reason ?? 'Not available on this server';
@@ -106,8 +106,8 @@ const SeparationModeSelector: React.FC<SeparationModeSelectorProps> = ({
           "没有可用后端、只能这样"。落到 `{label}: {reason}` 那种形式会被读反。 */}
       {locked && value === 'off' ? (
         <p className="text-[10px] leading-snug mt-1.5 px-0.5 text-amber-600">
-          Off is selected because no separation backend can run right now — Voice
-          Cloning will use the original mixed audio.
+          Off is selected because no separation backend can run right now — Remote
+          dubbing will use the original mixed audio.
         </p>
       ) : selectedReason ? (
         <p className="text-[10px] leading-snug mt-1.5 px-0.5 text-amber-600">

@@ -56,6 +56,10 @@ const App: React.FC = () => {
   const [mmEnhance, setMmEnhance] = useState(true);
   const [customPrompt, setCustomPrompt] = useState('');
   const [separationMode, setSeparationMode] = useState<SeparationMode>('client');
+  const changeDubbingMode = useCallback((mode: DubbingMode) => {
+    setDubbingMode(mode);
+    if (mode === 'remote' && separationMode === 'off') setSeparationMode('client');
+  }, [separationMode]);
   const [backends, setBackends] = useState<SeparationBackends>({});
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
@@ -148,6 +152,7 @@ const App: React.FC = () => {
       open(uploaded.id);
 
       let mode: SeparationMode = dubbingMode !== 'off' ? separationMode : 'off';
+      if (dubbingMode === 'remote') mode = 'client';
       if (mode === 'client') {
         setPreparing(true);
         setPrep((s) => reduceInit(s, { type: 'progress', seq: 0, ts: 0, phase: 'separation', status: 'started' }));
@@ -269,7 +274,7 @@ const App: React.FC = () => {
         cloneSmartPick={cloneSmartPick}
         onCloneSmartPickChange={setCloneSmartPick}
         dubbingMode={dubbingMode}
-        onDubbingModeChange={setDubbingMode}
+        onDubbingModeChange={changeDubbingMode}
         browserVoice={browserVoice}
         onBrowserVoiceChange={setBrowserVoice}
         customPrompt={customPrompt}
@@ -277,7 +282,7 @@ const App: React.FC = () => {
         separationMode={separationMode}
         onSeparationModeChange={setSeparationMode}
         separationBackends={backends}
-        bgmSeparationLocked={dubbingMode === 'remote' && enableVoiceClone}
+        bgmSeparationLocked={dubbingMode === 'remote'}
         recentProjects={recent}
         onOpenProject={(id) => open(id)}
         onDeleteProject={(id, name) => void deleteProject(id, name)}
