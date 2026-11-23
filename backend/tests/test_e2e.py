@@ -80,7 +80,7 @@ check("① 畸形 id 400", c.get("/api/projects/..%2Fetc").status_code in (400, 
 
 # ------------------------------------------------------------------ ② 设置并初始化
 sub = None
-r = c.post(f"/api/projects/{vid}/setup", json={"target_language": "English", "enable_dubbing": True})
+r = c.post(f"/api/projects/{vid}/setup", json={"target_language": "English", "dubbing_mode": "remote"})
 check("② setup 接受并启动初始化", r.status_code == 200 and "job" in r.json(), r.text)
 check("② 重复启动被拒", c.post(f"/api/projects/{vid}/setup", json={"target_language": "English"}).status_code == 409)
 check("② 等初始化结束", wait_job(vid, "init"))

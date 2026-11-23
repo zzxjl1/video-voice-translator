@@ -270,7 +270,7 @@ def build_mix_plan(state: VideoState) -> dict:
     # 仅字幕模式：用户明确不要配音。这不是"没有配音的缺口"，而是选择 ——
     # 导出时原声比特级直通（export_service 的 dubbed=False 分支）。
     # 之前这里会对"没有配音"一律报错，仅字幕工程永远导不出来。
-    if not getattr(state, "enable_dubbing", True):
+    if getattr(state, "dubbing_mode", "remote") == "off":
         # master 留空：直通分支不做任何响度处理，没有要下发的目标。
         plan = {
             "policyVersion": POLICY_VERSION,

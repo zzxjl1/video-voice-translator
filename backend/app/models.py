@@ -135,7 +135,8 @@ class VideoState:
     # —— 工程设置 ——
     separation_mode: str = ""            # "client"（浏览器分离）| "off"；初始化时定下
     enable_voice_clone: bool = False
-    enable_dubbing: bool = True          # False = 仅字幕：不分离/不克隆/不合成，导出原声直通
+    dubbing_mode: str = "remote"
+    browser_voice: Optional[str] = None
     target_language: str = ""
     accent: Optional[str] = None         # 中文方言（"广东话"…）；None = 普通话
     custom_prompt: str = ""              # 注入翻译的自定义要求

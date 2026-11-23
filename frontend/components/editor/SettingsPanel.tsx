@@ -8,8 +8,10 @@
  * 唯一需要确认的是“推翻已有内容”的那两项（改翻译要求）。
  */
 import React, { useEffect, useState } from 'react';
-import type { Settings } from '../../net/types';
+import type { DubbingMode, Settings } from '../../net/types';
 import { CHINESE_ACCENTS, accentLabel } from '../../utils/languages';
+import type { Voice } from '@diffusionstudio/vits-web';
+import { browserVoiceLabel, voicesForLanguage } from '../../features/browserTts';
 
 interface Props {
   open: boolean;
@@ -37,7 +39,19 @@ const Row: React.FC<{ title: string; hint: string; checked: boolean; disabled?: 
 const SettingsPanel: React.FC<Props> = ({ open, onClose, settings, onChange, onCustomPrompt, hasContent }) => {
   const [prompt, setPrompt] = useState(settings.customPrompt);
   const [busy, setBusy] = useState(false);
+  const [browserVoices, setBrowserVoices] = useState<Voice[]>([]);
+  const [voicesLoading, setVoicesLoading] = useState(false);
   useEffect(() => { if (open) setPrompt(settings.customPrompt); }, [open, settings.customPrompt]);
+  useEffect(() => {
+    if (!open || settings.dubbingMode !== 'browser') return;
+    let alive = true;
+    setVoicesLoading(true);
+    voicesForLanguage(settings.targetLanguage)
+      .then((vs) => alive && setBrowserVoices(vs))
+      .catch(() => alive && setBrowserVoices([]))
+      .finally(() => alive && setVoicesLoading(false));
+    return () => { alive = false; };
+  }, [open, settings.dubbingMode, settings.targetLanguage]);
   if (!open) return null;
 
   const apply = async (patch: Record<string, unknown>) => {
@@ -65,9 +79,55 @@ const SettingsPanel: React.FC<Props> = ({ open, onClose, settings, onChange, onC
         </div>
 
         <div className={`px-7 py-3 divide-y divide-claude-border/60 ${busy ? 'pointer-events-none opacity-70' : ''}`}>
-          <Row title="生成配音" hint="关闭后只出译文字幕，不合成配音，导出时原声原样保留。" checked={settings.enableDubbing} onChange={(v) => void apply({ enable_dubbing: v })} />
-          <Row title="声音克隆" hint="用原说话人的声音配音。克隆需要几十秒到几分钟，会产生少量费用。" checked={settings.enableVoiceClone} disabled={!settings.enableDubbing} onChange={(v) => void apply({ enable_voice_clone: v })} />
-          <Row title="智能选材" hint="克隆时让 AI 听着挑参考片段，比按时长挑更干净。" checked={settings.cloneSmartPick} disabled={!settings.enableDubbing || !settings.enableVoiceClone} onChange={(v) => void apply({ clone_smart_pick: v })} />
+          <div className="py-3.5">
+            <div className="text-[13px] font-bold text-claude-text">配音方式</div>
+            <div className="text-[11px] text-gray-400 mt-0.5 mb-2.5">Remote 用远端 TTS；In-browser 用本地 Piper，免费但不克隆；Off 只出字幕，原声保持不变。</div>
+            <div className="grid grid-cols-3 gap-1.5">
+              {(['remote', 'browser', 'off'] as DubbingMode[]).map((mode) => {
+                const label = mode === 'remote' ? 'Remote' : mode === 'browser' ? 'In-browser' : 'Off';
+                const disabled = mode === 'browser' && !voicesLoading && browserVoices.length === 0 && settings.targetLanguage !== '';
+                return (
+                  <button
+                    key={mode}
+                    type="button"
+                    disabled={disabled}
+                    onClick={() => void apply({ dubbing_mode: mode })}
+                    className={`relative py-2 rounded-xl text-xs font-bold border transition-colors ${
+                      settings.dubbingMode === mode
+                        ? 'bg-claude-accent text-white border-claude-accent'
+                        : 'bg-white text-gray-600 border-claude-border hover:bg-claude-paper'
+                    } disabled:opacity-40 disabled:cursor-not-allowed`}
+                  >
+                    {label}
+                    {mode === 'browser' && (
+                      <span className="absolute -top-1.5 right-1 rounded-full bg-emerald-500 px-1.5 py-px text-[9px] font-bold leading-tight text-white shadow-sm">FREE</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+            {settings.dubbingMode === 'browser' && (
+              <div className="mt-2.5">
+                <select
+                  value={settings.browserVoice ?? ''}
+                  disabled={voicesLoading || browserVoices.length === 0}
+                  onChange={(e) => void apply({ browser_voice: e.target.value })}
+                  className="w-full text-[13px] bg-white border border-claude-border rounded-xl px-3 py-2.5 outline-none focus:border-claude-accent/50 disabled:opacity-50"
+                >
+                  {browserVoices.length === 0 && <option value="">{voicesLoading ? '读取本地音色…' : '该语言暂无本地音色'}</option>}
+                  {browserVoices.map((v) => <option key={v.key} value={v.key}>{browserVoiceLabel(v)}</option>)}
+                </select>
+                <p className="text-[11px] text-gray-400 mt-1.5">首次使用会下载 voice 模型；不克隆原说话人。</p>
+              </div>
+            )}
+          </div>
+
+          {settings.dubbingMode === 'remote' && (
+            <>
+              <Row title="声音克隆" hint="用原说话人的声音配音。克隆需要几十秒到几分钟，会产生少量费用。" checked={settings.enableVoiceClone} onChange={(v) => void apply({ enable_voice_clone: v })} />
+              <Row title="智能选材" hint="克隆时让 AI 听着挑参考片段，比按时长挑更干净。" checked={settings.cloneSmartPick} disabled={!settings.enableVoiceClone} onChange={(v) => void apply({ clone_smart_pick: v })} />
+            </>
+          )}
           <Row title="审听纠错" hint="下次初始化时让 AI 听原声核对转写、标注语气。已有的转写不会重做。" checked={settings.mmEnhance} onChange={(v) => void apply({ mm_enhance: v })} />
 
           {settings.targetLanguage === 'Chinese' && (

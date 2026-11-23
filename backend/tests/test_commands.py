@@ -363,7 +363,7 @@ import types
 
 fresh()
 def ready(s):
-    s.enable_dubbing = False                 # 不要求配音齐全
+    s.dubbing_mode = "off"                 # 不要求配音齐全
     for seg in s.segments:
         seg.translated_text = "Happy " + seg.text[:6]
         seg.tr_fp = status.expected_tr_fp(s, seg)

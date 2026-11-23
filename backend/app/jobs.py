@@ -360,7 +360,9 @@ async def clone_speakers(video_id: str, job: Job, server_url: str, only: Optiona
     """给说话人克隆音色。已有且服务端还活着的复用（免费）；只对还没有的发起注册。"""
     from app.services import voice_clone_service as vc
     state = store.require_state(video_id)
-    if not (state.enable_dubbing and state.enable_voice_clone):
+    if state.dubbing_mode != "remote":
+        return []
+    if not state.enable_voice_clone:
         return
     speakers = [sp for sp in state.speakers if only is None or sp.id in only]
     _emit(video_id, job, {"phase": "voice_clone", "status": "started", "total": len(speakers)})
@@ -426,7 +428,7 @@ async def dub_lines(video_id: str, job: Job, ids: Optional[list[str]] = None, fo
     合成好的行不会丢，下次只补剩下的。
     """
     state = store.require_state(video_id)
-    if not state.enable_dubbing:
+    if state.dubbing_mode != "remote":
         return []
     ensure_speaker_voices(video_id)
     state = store.require_state(video_id)

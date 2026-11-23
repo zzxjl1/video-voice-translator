@@ -39,7 +39,7 @@ subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "color=c=bla
 with TestClient(app) as c:
     vid = c.post("/api/projects", files={"file": ("in.mp4", open(SRC, "rb"), "video/mp4")}).json()["id"]
     r = c.post(f"/api/projects/{vid}/setup", json={
-        "target_language": "Chinese", "enable_dubbing": False,
+        "target_language": "Chinese", "dubbing_mode": "off",
         "enable_voice_clone": True, "separation_mode": "client",       # 这两个在仅字幕模式下必须被忽略
     })
     check("① setup 接受", r.status_code == 200, r.text)
@@ -50,9 +50,9 @@ with TestClient(app) as c:
     st = store.get_state(vid)
 
     check("① 初始化完成，阶段 ready", st.stage == "ready", (st.stage, st.init_error))
-    check("① enable_dubbing=False，且克隆 / 分离被强制关掉",
-          st.enable_dubbing is False and st.enable_voice_clone is False and st.separation_mode == "off",
-          (st.enable_dubbing, st.enable_voice_clone, st.separation_mode))
+    check("① dubbing_mode=off，且克隆 / 分离被强制关掉",
+          st.dubbing_mode == "off" and st.enable_voice_clone is False and st.separation_mode == "off",
+          (st.dubbing_mode, st.enable_voice_clone, st.separation_mode))
     check("① 译文照做（字幕需要文本）", st.segments[0].translated_text == "你好呀")
     check("① 没有配音产物", not os.path.exists(os.path.join(TMP, vid, "tts")))
     check("① 配音状态是 none（选择，不是缺口）", status.tts_status(st, st.segments[0]) == status.NONE)
@@ -65,7 +65,7 @@ with TestClient(app) as c:
 
     # ③ redub 被明确拒绝，并指路
     r = c.post(f"/api/projects/{vid}/commands/redub", json={"args": {}}).json()
-    check("③ 仅字幕模式下 redub 被拒，并指路", (not r["ok"]) and "enable_dubbing" in r["error"], r)
+    check("③ 仅字幕模式下 redub 被拒，并指路", (not r["ok"]) and "dubbing_mode" in r["error"], r)
 
     # ④ 导出：原声直通（-c:a copy）→ 音频流参数与源一致
     r = c.post(f"/api/projects/{vid}/commands/export_video", json={"args": {}})
@@ -84,8 +84,8 @@ with TestClient(app) as c:
         subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "sine=f=440:d=2", "-ar", "24000", p], check=True)
         return p, 2.0
     tts_service.synthesize_speech = ok_synth
-    r = c.post(f"/api/projects/{vid}/commands/set_settings", json={"args": {"enable_dubbing": True}}).json()
-    check("⑤ 打开配音开关", r["ok"] and store.get_state(vid).enable_dubbing)
+    r = c.post(f"/api/projects/{vid}/commands/set_settings", json={"args": {"dubbing_mode": "remote"}}).json()
+    check("⑤ 打开配音开关", r["ok"] and store.get_state(vid).dubbing_mode == "remote")
     check("⑤ 待办里出现 1 句要配音", status.needs(store.get_state(vid))["dub"] == 1)
     r = c.post(f"/api/projects/{vid}/commands/redub", json={"args": {}}).json()
     st2 = store.get_state(vid)

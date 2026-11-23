@@ -20,7 +20,8 @@ _SETTINGS = {
     "mm_enhance": ("boolean", False),
     "enable_voice_clone": ("boolean", False),
     "clone_smart_pick": ("boolean", False),
-    "enable_dubbing": ("boolean", False),
+    "dubbing_mode": ("string", False),
+    "browser_voice": ("string", False),
 }
 
 
@@ -33,7 +34,8 @@ _SETTINGS = {
         "mm_enhance": {"type": "boolean", "description": "omni 审听增强（纠错 + 语气标签）；只影响之后的审听"},
         "enable_voice_clone": {"type": "boolean"},
         "clone_smart_pick": {"type": "boolean"},
-        "enable_dubbing": {"type": "boolean", "description": "false = 仅字幕模式，不出配音"},
+        "dubbing_mode": {"type": "string", "enum": ["remote", "browser", "off"], "description": "remote=远端配音；browser=浏览器 Piper；off=仅字幕"},
+        "browser_voice": {"type": "string", "description": "浏览器 Piper voice id（仅 browser 模式）"},
     }},
     confirm=CONFIRM_DESTROY,
 )
@@ -49,6 +51,11 @@ def set_settings(ctx: Ctx, **patch):
         return {"unchanged": True}
     if "accent" in changed and changed["accent"] and changed["accent"] not in config.CHINESE_ACCENTS:
         raise CommandError(f"不支持的方言 {changed['accent']!r}，可选：{'、'.join(config.CHINESE_ACCENTS)}")
+    if "dubbing_mode" in changed and changed["dubbing_mode"] not in ("remote", "browser", "off"):
+        raise CommandError("dubbing_mode 只能是 remote / browser / off")
+    target = changed.get("target_language", state.target_language)
+    if changed.get("dubbing_mode") == "browser" and not config.browser_voice_for_language(target):
+        raise CommandError(f"{target} 暂无本地 Piper 音色，请改用 Remote 或 Off")
     before = status.needs(state)
 
     def apply(s):
@@ -60,8 +67,16 @@ def set_settings(ctx: Ctx, **patch):
                 sp.voice = None
             for seg in s.segments:
                 seg.tts_voice = None
-        if changed.get("enable_dubbing") is False:
+            s.browser_voice = config.browser_voice_for_language(s.target_language)
+        if s.dubbing_mode == "off":
+            s.separation_mode = "off"
             s.enable_voice_clone = False
+            s.clone_smart_pick = False
+        elif s.dubbing_mode == "browser":
+            s.enable_voice_clone = False
+            s.clone_smart_pick = False
+            if not s.browser_voice:
+                s.browser_voice = config.browser_voice_for_language(s.target_language)
     ctx.change(apply, "改设置：" + "、".join(changed))
     after = ctx.state
     todo = status.needs(after)
@@ -156,7 +171,7 @@ async def export_video(ctx: Ctx, format: Optional[str] = None):
     if not export_service.is_available():
         raise CommandError("服务器上没有 ffmpeg，无法导出")
     needs = status.needs(state)
-    if state.enable_dubbing and needs["dub"]:
+    if state.dubbing_mode != "off" and needs["dub"]:
         raise CommandError(f"还有 {needs['dub']} 句配音没做好/已过期，先 redub")
     if needs["translate"]:
         raise CommandError(f"还有 {needs['translate']} 句译文没做好/已过期，先 retranslate")

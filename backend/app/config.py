@@ -354,6 +354,25 @@ ASR_MAX_WAIT = _env_int("ASR_MAX_WAIT", 600)
 # the model alongside each voice id so a model switch invalidates the cache
 # instead of silently shipping broken audio.
 TTS_MODEL = _env("TTS_MODEL", "qwen-audio-3.1-tts-flash")
+
+# Browser Piper defaults. The frontend discovers the full per-language list
+# from the browser TTS package; these are only the fallback voice IDs.
+BROWSER_TTS_DEFAULT_VOICES = {
+    "English": "en_US-hfc_female-medium",
+    "Chinese": "zh_CN-huayan-medium",
+    "French": "fr_FR-siwis-medium",
+    "German": "de_DE-thorsten-medium",
+    "Portuguese": "pt_BR-faber-medium",
+    "Italian": "it_IT-riccardo-x_low",
+    "Vietnamese": "vi_VN-vais1000-medium",
+}
+# Japanese/Korean/Indonesian have no standard Piper voice in the current
+# browser catalog; the UI disables In-browser for them.
+
+
+def browser_voice_for_language(language: str) -> Optional[str]:
+    return BROWSER_TTS_DEFAULT_VOICES.get(language)
+
 TTS_TIMEOUT = _env_int("TTS_TIMEOUT", 60)
 
 # ---- 多模态增强识别：omni 听原声，审核纠错 ASR 结果并标注语气 ----

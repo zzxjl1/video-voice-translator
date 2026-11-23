@@ -22,7 +22,7 @@ import { detectBrowserLanguage } from './utils/languages';
 import { t } from '@/i18n';
 import { emptyInit, reduceInit, type InitState } from './store/init';
 import { pageFor } from './store/page';
-import type { BackendAvailability, ProjectSummary, SeparationBackends, SeparationMode } from './net/types';
+import type { BackendAvailability, DubbingMode, ProjectSummary, SeparationBackends, SeparationMode } from './net/types';
 
 const PARAM = 'v';
 
@@ -46,7 +46,8 @@ const App: React.FC = () => {
   const [pickedName, setPickedName] = useState<string | undefined>();
   const [targetLanguage, setTargetLanguage] = useState(detectBrowserLanguage);
   const [targetAccent, setTargetAccent] = useState('');
-  const [enableDubbing, setEnableDubbing] = useState(true);
+  const [dubbingMode, setDubbingMode] = useState<DubbingMode>('remote');
+  const [browserVoice, setBrowserVoice] = useState<string | null>(null);
   // 落地页默认开启声音克隆；浏览器分离也默认选中 In-browser（克隆需要分离后的人声轨）。
   const [enableVoiceClone, setEnableVoiceClone] = useState(true);
   const [cloneSmartPick, setCloneSmartPick] = useState(false);
@@ -145,7 +146,7 @@ const App: React.FC = () => {
       // preparing 期间强制停在初始化页（上传按 MD5 复用时工程可能是已完成的）。
       open(uploaded.id);
 
-      let mode: SeparationMode = enableDubbing ? separationMode : 'off';
+      let mode: SeparationMode = dubbingMode !== 'off' ? separationMode : 'off';
       if (mode === 'client') {
         setPreparing(true);
         setPrep((s) => reduceInit(s, { type: 'progress', seq: 0, ts: 0, phase: 'separation', status: 'started' }));
@@ -167,9 +168,10 @@ const App: React.FC = () => {
         target_language: targetLanguage,
         accent: targetLanguage === 'Chinese' ? targetAccent || null : null,
         separation_mode: mode,
-        enable_dubbing: enableDubbing,
-        enable_voice_clone: enableDubbing && enableVoiceClone,
-        clone_smart_pick: enableDubbing && enableVoiceClone && cloneSmartPick,
+        dubbing_mode: dubbingMode,
+        browser_voice: dubbingMode === 'browser' ? browserVoice : null,
+        enable_voice_clone: dubbingMode === 'remote' && enableVoiceClone,
+        clone_smart_pick: dubbingMode === 'remote' && enableVoiceClone && cloneSmartPick,
         mm_enhance: mmEnhance,
         custom_prompt: customPrompt,
       });
@@ -183,7 +185,7 @@ const App: React.FC = () => {
       if (uploadedId) await reloadRef.current();
       setStarting(false);
     }
-  }, [auth.user, auth.login, targetLanguage, targetAccent, enableDubbing, enableVoiceClone, cloneSmartPick, mmEnhance, customPrompt, separationMode, open]);
+  }, [auth.user, auth.login, targetLanguage, targetAccent, dubbingMode, browserVoice, enableVoiceClone, cloneSmartPick, mmEnhance, customPrompt, separationMode, open]);
 
   const deleteProject = useCallback(async (id: string, filename: string) => {
     if (!window.confirm(t("删除「{0}」？服务器上的所有数据都会被清除，无法恢复。", [filename || id.slice(0, 8)]))) return;
@@ -240,14 +242,16 @@ const App: React.FC = () => {
         onMmEnhanceChange={setMmEnhance}
         cloneSmartPick={cloneSmartPick}
         onCloneSmartPickChange={setCloneSmartPick}
-        enableDubbing={enableDubbing}
-        onDubbingChange={setEnableDubbing}
+        dubbingMode={dubbingMode}
+        onDubbingModeChange={setDubbingMode}
+        browserVoice={browserVoice}
+        onBrowserVoiceChange={setBrowserVoice}
         customPrompt={customPrompt}
         onCustomPromptChange={setCustomPrompt}
         separationMode={separationMode}
         onSeparationModeChange={setSeparationMode}
         separationBackends={backends}
-        bgmSeparationLocked={enableVoiceClone}
+        bgmSeparationLocked={dubbingMode === 'remote' && enableVoiceClone}
         recentProjects={recent}
         onOpenProject={(id) => open(id)}
         onDeleteProject={(id, name) => void deleteProject(id, name)}

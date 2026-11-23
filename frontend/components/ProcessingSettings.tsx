@@ -1,6 +1,12 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import SeparationModeSelector from './SeparationModeSelector';
-import type { SeparationMode, SeparationBackends } from '../net/types';
+import type { DubbingMode, SeparationMode, SeparationBackends } from '../net/types';
+import type { Voice } from '@diffusionstudio/vits-web';
+import {
+  browserVoiceLabel,
+  defaultVoiceForLanguage,
+  voicesForLanguage,
+} from '../features/browserTts';
 
 /*
  * 「处理设置」这块开关的**唯一**定义。
@@ -61,6 +67,12 @@ const Switch: React.FC<{ on: boolean; onClick: () => void }> = ({ on, onClick })
 );
 
 export interface ProcessingSettingsProps {
+    targetLanguage: string;
+    dubbingMode: DubbingMode;
+    onDubbingModeChange: (mode: DubbingMode) => void;
+    browserVoice: string | null;
+    onBrowserVoiceChange: (voice: string) => void;
+
     separationMode: SeparationMode;
     onSeparationModeChange: (mode: SeparationMode) => void;
     separationBackends: SeparationBackends;
@@ -90,13 +102,15 @@ export interface ProcessingSettingsProps {
      * 工程内的弹窗随后接）。关 = 仅字幕模式：跳过分离/克隆/合成（省大头
      * API 费），导出时原声比特级直通，只加翻译字幕。
      */
-    enableDubbing?: boolean;
-    onDubbingChange?: (v: boolean) => void;
-
     cloneOffExtra?: React.ReactNode;
 }
 
 const ProcessingSettings: React.FC<ProcessingSettingsProps> = ({
+    targetLanguage,
+    dubbingMode,
+    onDubbingModeChange,
+    browserVoice,
+    onBrowserVoiceChange,
     separationMode,
     onSeparationModeChange,
     separationBackends,
@@ -110,63 +124,128 @@ const ProcessingSettings: React.FC<ProcessingSettingsProps> = ({
     customPrompt,
     onCustomPromptChange,
     cloneOffExtra,
-    enableDubbing,
-    onDubbingChange,
 }) => {
     /*
      * 高级项（自定义翻译要求）默认折叠：低频项不能常驻占高度。折叠状态属于
      * 这一份实例 —— 落地页与弹窗各自记忆，互不影响。
      */
     const [showAdvanced, setShowAdvanced] = useState(false);
+    const [browserVoices, setBrowserVoices] = useState<Voice[]>([]);
+    const [voicesLoading, setVoicesLoading] = useState(false);
+    const [voicesError, setVoicesError] = useState<string | null>(null);
 
-    const dubbingOn = enableDubbing ?? true;
+    const dubbingOn = dubbingMode !== 'off';
+
+    useEffect(() => {
+        if (!targetLanguage) return;
+        let alive = true;
+        setVoicesLoading(true);
+        setVoicesError(null);
+        voicesForLanguage(targetLanguage)
+            .then((vs) => alive && setBrowserVoices(vs))
+            .catch((e) => {
+                if (!alive) return;
+                setBrowserVoices([]);
+                setVoicesError(e instanceof Error ? e.message : String(e));
+            })
+            .finally(() => alive && setVoicesLoading(false));
+        return () => { alive = false; };
+    }, [targetLanguage]);
+
+    useEffect(() => {
+        if (dubbingMode !== 'browser' || !browserVoices.length) return;
+        if (browserVoice && browserVoices.some((v) => v.key === browserVoice)) return;
+        onBrowserVoiceChange(defaultVoiceForLanguage(targetLanguage) ?? browserVoices[0].key);
+    }, [dubbingMode, browserVoices, browserVoice, targetLanguage, onBrowserVoiceChange]);
+
+    const browserAvailable = browserVoices.length > 0;
+    const browserReason = voicesLoading
+        ? '正在读取本地音色…'
+        : voicesError
+            ? `无法读取本地音色：${voicesError}`
+            : browserAvailable
+                ? null
+                : `${targetLanguage} 暂无本地 Piper 音色`;
 
     return (
         <div className="w-full space-y-4 text-left">
             {/* ───────────────────────── 配音 ─────────────────────────
-                总开关在 section 标题右侧。BGM 分离与声音克隆是它的子选项 ——
-                只在产出配音音轨时才有意义，关掉时连同各自子选项一并收起。
-                不传该 prop 的宿主不渲染这个 section（弹窗随后接）。 */}
-            {enableDubbing !== undefined && (
-                <section>
-                    <header className="flex items-center justify-between px-3 pb-2">
-                        <div className="flex items-center">
-                            <span className="text-[11px] font-bold uppercase tracking-wider text-gray-400">配音</span>
-                            <InfoTooltip text="打开：翻译后合成配音音轨（产生 TTS 费用），导出时替换原声。关闭：只翻译字幕，视频原声比特级保留，不产生任何合成费用。" />
-                        </div>
-                        <Switch on={dubbingOn} onClick={() => onDubbingChange?.(!dubbingOn)} />
-                    </header>
+                配音方式三选一：远端 / 浏览器 Piper / 关闭。
+                Off = 仅字幕：原声原样保留，不分离、不克隆、不合成。 */}
+            <section>
+                <header className="flex items-center justify-between px-3 pb-2">
+                    <div className="flex items-center">
+                        <span className="text-[11px] font-bold uppercase tracking-wider text-gray-400">配音</span>
+                        <InfoTooltip text="Remote：远端 Qwen TTS，支持克隆和预制音色，按量计费；In-browser：本地 Piper，免费但不克隆；Off：只做转写/翻译/字幕，原声保持不变。" />
+                    </div>
+                </header>
 
-                    <div className={`px-3 py-2 rounded-xl border transition-colors ${dubbingOn ? 'bg-gray-50 border-transparent' : 'bg-amber-50/60 border-amber-200/70'}`}>
-                        <p className="text-[10px] leading-relaxed text-gray-400">
-                            {dubbingOn
-                                ? '翻译后合成配音音轨，导出时替换原声。'
-                                : '仅翻译字幕：原声原样保留，不合成配音、不产生 TTS 费用。'}
-                        </p>
+                <div className={`px-3 py-2 rounded-xl border transition-colors ${dubbingOn ? 'bg-gray-50 border-transparent' : 'bg-amber-50/60 border-amber-200/70'}`}>
+                    <div className="grid grid-cols-3 gap-1.5">
+                        {([
+                            { mode: 'remote' as const, label: 'Remote', hint: '远端 Qwen TTS，支持克隆和预制音色，按量计费' },
+                            { mode: 'browser' as const, label: 'In-browser', hint: browserReason ?? '本地 Piper，免费，不克隆' },
+                            { mode: 'off' as const, label: 'Off', hint: '只做转写/翻译/字幕，原声保持不变' },
+                        ]).map(({ mode, label, hint }) => {
+                            const disabled = mode === 'browser' && !browserAvailable;
+                            const selected = dubbingMode === mode;
+                            return (
+                                <button
+                                    key={mode}
+                                    type="button"
+                                    disabled={disabled}
+                                    title={hint}
+                                    onClick={() => !disabled && onDubbingModeChange(mode)}
+                                    className={[
+                                        'relative py-2 px-2 rounded-lg text-xs font-semibold transition-all duration-200 border',
+                                        selected
+                                            ? 'bg-claude-accent text-white border-claude-accent shadow-sm shadow-claude-accent/25'
+                                            : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50 hover:text-gray-800',
+                                        disabled ? 'opacity-40 cursor-not-allowed hover:bg-white' : 'cursor-pointer',
+                                    ].join(' ')}
+                                >
+                                    {label}
+                                    {mode === 'browser' && (
+                                        <span className="absolute -top-1.5 right-1 rounded-full bg-emerald-500 px-1.5 py-px text-[9px] font-bold leading-tight text-white shadow-sm">
+                                            FREE
+                                        </span>
+                                    )}
+                                </button>
+                            );
+                        })}
+                    </div>
 
-                        {dubbingOn && (
-                            <>
-                                {/* BGM 分离：配音的子选项。白底小卡表明从属。 */}
-                                <div className="mt-2 rounded-lg border border-gray-200/70 bg-white/80 px-2.5 py-2">
-                                    <div className="flex items-center mb-1.5">
-                                        <span className="text-xs font-medium text-gray-700">BGM 分离</span>
-                                        <InfoTooltip text="On by default (In-browser): splits vocals from background music for cleaner transcription and voice cloning. Switch to Off to skip the first-run 64 MB model download." />
-                                    </div>
-                                    <SeparationModeSelector
-                                        value={separationMode}
-                                        onChange={onSeparationModeChange}
-                                        backends={separationBackends}
-                                        locked={bgmSeparationLocked}
-                                    />
+                    <p className="mt-2 text-[10px] leading-relaxed text-gray-400">
+                        {dubbingMode === 'remote'
+                            ? '远端合成配音，导出时替换原声；可开启声音克隆，按量计费。'
+                            : dubbingMode === 'browser'
+                                ? (browserReason ?? '本地 Piper 合成配音，免费；不支持声音克隆。')
+                                : '仅翻译字幕：原声原样保留，不分离、不克隆、不合成。'}
+                    </p>
+
+                    {dubbingOn && (
+                        <>
+                            {/* BGM 分离：配音的子选项。白底小卡表明从属。 */}
+                            <div className="mt-2 rounded-lg border border-gray-200/70 bg-white/80 px-2.5 py-2">
+                                <div className="flex items-center mb-1.5">
+                                    <span className="text-xs font-medium text-gray-700">BGM 分离</span>
+                                    <InfoTooltip text="In-browser: splits vocals from background music locally; the first run downloads a 64 MB model. Off skips the download." />
                                 </div>
+                                <SeparationModeSelector
+                                    value={separationMode}
+                                    onChange={onSeparationModeChange}
+                                    backends={separationBackends}
+                                    locked={bgmSeparationLocked}
+                                />
+                            </div>
 
-                                {/* 声音克隆：子选项块（智能选材 / 音色池住在里面），
-                                    沿用"同一决策的开关与结果住一起"的既有结构。 */}
+                            {dubbingMode === 'remote' ? (
+                                /* 远端：声音克隆 / 智能选材 / 预制音色。 */
                                 <div className="mt-2 rounded-lg border border-gray-200/70 bg-white/80">
                                     <div className="flex items-center justify-between gap-3 py-1.5 px-2.5">
                                         <div className="flex items-center">
                                             <span className="text-xs font-medium text-gray-700">声音克隆</span>
-                                            <InfoTooltip text="On by default: clones the original speaker's voice for synthesis. Requires BGM separation and more processing time; turn it off to use built-in voices." />
+                                            <InfoTooltip text="Clones the original speaker's voice using the remote TTS. Requires BGM separation; turn it off to use built-in voices." />
                                         </div>
                                         <Switch on={enableVoiceClone} onClick={() => onVoiceCloneChange(!enableVoiceClone)} />
                                     </div>
@@ -188,11 +267,39 @@ const ProcessingSettings: React.FC<ProcessingSettingsProps> = ({
 
                                     {!enableVoiceClone && cloneOffExtra}
                                 </div>
-                            </>
-                        )}
-                    </div>
-                </section>
-            )}
+                            ) : dubbingMode === 'browser' ? (
+                                /* 浏览器：只列 Piper 预制音色；没有克隆/智能选材。 */
+                                <div className="mt-2 rounded-lg border border-gray-200/70 bg-white/80 px-2.5 py-2">
+                                    <div className="mb-1.5 flex items-center">
+                                        <span className="text-xs font-medium text-gray-700">
+                                            预制音色 · {targetLanguage}
+                                        </span>
+                                        <span className="ml-auto rounded-full bg-emerald-50 px-1.5 py-px text-[9px] font-bold text-emerald-600">
+                                            FREE
+                                        </span>
+                                    </div>
+                                    <select
+                                        value={browserVoice ?? ''}
+                                        disabled={!browserAvailable}
+                                        onChange={(e) => onBrowserVoiceChange(e.target.value)}
+                                        className="w-full rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs text-gray-700 disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-400 focus:outline-none focus:border-claude-accent/50"
+                                    >
+                                        {!browserAvailable && <option value="">{browserReason ?? '暂无本地音色'}</option>}
+                                        {browserVoices.map((v) => (
+                                            <option key={v.key} value={v.key}>
+                                                {browserVoiceLabel(v)}
+                                            </option>
+                                        ))}
+                                    </select>
+                                    <p className="mt-1 text-[10px] leading-relaxed text-gray-400">
+                                        首次使用会下载该 voice 模型并缓存在浏览器；不克隆原说话人。
+                                    </p>
+                                </div>
+                            ) : null}
+                        </>
+                    )}
+                </div>
+            </section>
 
             {/* ───────────────────────── 翻译 ─────────────────────────
                 多模态增强与自定义要求都作用于转写与翻译 —— 与"要不要配音"

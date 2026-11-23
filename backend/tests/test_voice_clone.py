@@ -188,7 +188,7 @@ def fresh():
     if store.exists(VID): store.delete(VID)
     store.create(VID, "v.mp4", src); make_vocals()
     def seed(s):
-        s.target_language = "Chinese"; s.enable_dubbing = True; s.enable_voice_clone = True
+        s.target_language = "Chinese"; s.dubbing_mode = "remote"; s.enable_voice_clone = True
         s.speakers = [Speaker("0", "Speaker 0", voice="Emily_v3.1"), Speaker("1", "Speaker 1", voice="Brian_v3.1")]
         s.segments = [Segment(x.id, x.speaker_id, x.start_time, x.end_time, x.text, translated_text=x.translated_text, kind=x.kind) for x in S]
         for g in s.segments: g.tr_fp = status.expected_tr_fp(s, g)

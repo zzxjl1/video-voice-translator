@@ -100,12 +100,15 @@ export interface SpeakerView {
   previewText: string;
 }
 
+export type DubbingMode = 'remote' | 'browser' | 'off';
+
 export interface Settings {
   targetLanguage: string;
   accent: string | null;
   separationMode: string;
   enableVoiceClone: boolean;
-  enableDubbing: boolean;
+  dubbingMode: DubbingMode;
+  browserVoice: string | null;
   mmEnhance: boolean;
   cloneSmartPick: boolean;
   customPrompt: string;

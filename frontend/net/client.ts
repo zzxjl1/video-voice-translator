@@ -61,7 +61,8 @@ export interface SetupBody {
   target_language: string;
   accent?: string | null;
   separation_mode: 'client' | 'off';
-  enable_dubbing: boolean;
+  dubbing_mode: 'remote' | 'browser' | 'off';
+  browser_voice?: string | null;
   enable_voice_clone: boolean;
   clone_smart_pick: boolean;
   mm_enhance: boolean;
@@ -168,6 +169,15 @@ export const getSeparatorToken = (id: string) =>
   request<{ token: string; expires_in: number; model_download_url: string }>(`/projects/${id}/separator-token`, {
     method: 'POST',
   });
+
+export async function uploadBrowserTts(id: string, segmentId: string, audio: Blob) {
+  const form = new FormData();
+  form.append('audio', audio, `${segmentId}.wav`);
+  return request<{ ok: boolean; duration: number }>(`/projects/${id}/browser-tts/${segmentId}`, {
+    method: 'POST',
+    body: form,
+  });
+}
 
 export async function uploadStems(id: string, vocals: Blob, background: Blob, token: string) {
   const form = new FormData();

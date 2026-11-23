@@ -202,7 +202,7 @@ def mk_state(with_bg=True, with_vocals=True, segs=None, dubbing=True):
     if with_vocals: write_wav(os.path.join(d, "vocals.wav"), track(44100, 20.0, [(5.0, 6.5, 880)]), 44100)
     mp = os.path.join(TMP, "mixsrc.mp4"); open(mp, "ab").close()
     st = VideoState(video_id=vid, file_path=mp, filename="v.mp4", target_language="English")
-    st.enable_dubbing = dubbing
+    st.dubbing_mode = "remote" if dubbing else "off"
     st.segments = segs if segs is not None else []
     return st, d
 
@@ -495,7 +495,7 @@ if os.path.exists(os.path.join(SAMPLE, "speech_stem.flac")) and os.path.exists(o
     conv("background_stem.flac", "background.wav", 44100); conv("MP4", "extracted_audio.wav", 16000)
     asr = json.load(open(os.path.join(SAMPLE, "asr_baseline", "asr_vocals.json"), encoding="utf-8"))["parsed_lines"]
     def seed_e2e(st):
-        st.target_language = "English"; st.stage = "ready"; st.enable_dubbing = True
+        st.target_language = "English"; st.stage = "ready"; st.dubbing_mode = "remote"
         st.speakers = [Speaker("0", "Speaker 0", voice="Emily_v3.1")]
         st.segments = [Segment(l["id"], "0", l["start_time"], l["end_time"], l["text"], translated_text=f"English line {i}")
                        for i, l in enumerate(asr, 1)]
@@ -743,7 +743,7 @@ if os.path.exists(os.path.join(SAMPLE, "speech_stem.flac")) and os.path.exists(o
         return False
 
     with TestClient(app) as cc:
-        r = cc.post(f"/api/projects/{AID}/setup", json={"target_language": "English", "enable_dubbing": True})
+        r = cc.post(f"/api/projects/{AID}/setup", json={"target_language": "English", "dubbing_mode": "remote"})
         check("⑦ 端到端：setup 启动初始化", r.status_code == 200, r.text)
         check("⑦ 端到端：等初始化结束", wait_init()); time.sleep(0.3)
         v = cc.get(f"/api/projects/{AID}").json()
@@ -819,7 +819,7 @@ if os.path.exists(os.path.join(SAMPLE, "speech_stem.flac")) and os.path.exists(o
     from app.models import tts_audio_path as _tap
     VW = [(11.22, 12.46), (13.04, 14.14), (32.34, 33.30)]
     def lseed(st_):
-        st_.target_language = "English"; st_.stage = "ready"; st_.enable_dubbing = True
+        st_.target_language = "English"; st_.stage = "ready"; st_.dubbing_mode = "remote"
         st_.speakers = [Speaker("0", "S0", voice="Emily_v3.1")]
         st_.segments = [Segment(f"s{i}", "0", x["start_time"], x["end_time"], x["text"], translated_text=f"t{i}") for i, x in enumerate(lasr)]
         for g in st_.segments: g.tr_fp = status.expected_tr_fp(st_, g)
@@ -969,7 +969,7 @@ if os.path.exists(os.path.join(SAMPLE, "speech_stem.flac")):
     write_wav(os.path.join(ddir, "vocals.wav"), tone(44100, 44100 * 12, 440, -12.0), 44100)
     write_wav(os.path.join(ddir, "background.wav"), track(44100, 12.0, []), 44100)
     def dseed(st_):
-        st_.target_language = "English"; st_.stage = "ready"; st_.enable_dubbing = True
+        st_.target_language = "English"; st_.stage = "ready"; st_.dubbing_mode = "remote"
         st_.speakers = [Speaker("0", "S0", voice="Emily_v3.1")]
         st_.segments = [Segment("d1", "0", 1.0, 3.0, "你好", translated_text="Hello", tr_fp=""), Segment("d2", "0", 5.0, 7.0, "再见", translated_text="Bye")]
         for g_ in st_.segments: g_.tr_fp = status.expected_tr_fp(st_, g_)
@@ -1209,7 +1209,7 @@ if os.path.exists(os.path.join(SAMPLE, "speech_stem.flac")) and os.path.exists(o
         return False
     try:
         with TestClient(app) as cs:
-            r = cs.post(f"/api/projects/{SID}/setup", json={"target_language": "English", "enable_dubbing": True, "mm_enhance": True})
+            r = cs.post(f"/api/projects/{SID}/setup", json={"target_language": "English", "dubbing_mode": "remote", "mm_enhance": True})
             check("⑩ 端到端：setup（审听增强打开）启动初始化", r.status_code == 200, r.text)
             check("⑩ 端到端：等初始化结束", wait_song_init()); _t3.sleep(0.3)
             v = cs.get(f"/api/projects/{SID}").json(); segs = v["segments"]

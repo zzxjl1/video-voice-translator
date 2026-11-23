@@ -27,7 +27,8 @@ def settings_view(state: VideoState) -> dict:
         "accent": state.accent,
         "separationMode": state.separation_mode,
         "enableVoiceClone": state.enable_voice_clone,
-        "enableDubbing": state.enable_dubbing,
+        "dubbingMode": state.dubbing_mode,
+        "browserVoice": state.browser_voice,
         "mmEnhance": state.mm_enhance,
         "cloneSmartPick": state.clone_smart_pick,
         "customPrompt": state.custom_prompt,
@@ -67,7 +68,7 @@ def speaker_view(state: VideoState, speaker: Speaker) -> dict:
         "lines": sum(1 for s in state.segments if s.speaker_id == speaker.id),
         # 素材量、能做哪些预设：每次现算，不落盘（改了时间轴 / 静音 / 重新分离都会跟着变）
         "material": vp.material(state.segments, speaker.id),
-        "presetOptions": vp.preset_options(state.segments, speaker.id) if state.enable_dubbing else [],
+        "presetOptions": vp.preset_options(state.segments, speaker.id) if state.dubbing_mode == "remote" else [],
         "currentClone": _voice_item(state, speaker, speaker.clone) if cloned else None,
         "candidates": [_voice_item(state, speaker, c) for c in speaker.clone_candidates],
         # 所有音色都念这一句固定的话（随目标语言）

@@ -28,6 +28,7 @@ import Timeline from '../Timeline';
 import SubtitleStylePanel from '../SubtitleStylePanel';
 import VoicePanel from './VoicePanel';
 import ExportModal, { type SubtitleDelivery } from '../ExportModal';
+import { defaultVoiceForLanguage, synthesizeBrowserSpeech } from '../../features/browserTts';
 
 interface Props {
   project: ReturnType<typeof useProject>;
@@ -37,10 +38,10 @@ interface Props {
 const SUGGESTIONS = ['这个项目现在什么情况？', '检查一下有没有被误识别成话的音乐', '哪些句子的配音比时间槽长？'];
 
 const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
-  const { project, chat, flash, ui, clearUi, run, say, stop, confirm } = api_;
+  const { project, chat, flash, ui, clearUi, run, say, stop, confirm, reload } = api_;
   const id = project!.id;
   const lines = project!.segments;
-  const dubbing = project!.settings.enableDubbing;
+  const dubbing = project!.settings.dubbingMode !== 'off';
 
   // 脚本 / 助手 / 字幕样式都是窗口：吸附在右栏，或者拖出来自由摆放
   const wm = useWindows();
@@ -216,7 +217,10 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
     toggleMute: (l: Line) => void run('set_muted', { lines: [l.line], muted: !l.muted }),
     toggleHide: (l: Line) => void run('set_hidden', { lines: [l.line], hidden: !l.hidden }),
     seek,
-    redub: async (l: Line) => { const r = await run('redub', { lines: [l.line], force: l.ttsStatus === 'fresh' }); if (!r.ok) setNotice(r.error ?? '配音失败'); },
+    redub: async (l: Line) => {
+      if (project!.settings.dubbingMode === 'browser') { await fillBrowser([l]); return; }
+      const r = await run('redub', { lines: [l.line], force: l.ttsStatus === 'fresh' }); if (!r.ok) setNotice(r.error ?? '配音失败');
+    },
     retranslate: async (l: Line, hint) => { const r = await run('retranslate', { lines: [l.line], ...(hint ? { length: hint } : {}) }); if (!r.ok) setNotice(r.error ?? '翻译失败'); },
     mark: async (l: Line, kind) => { const r = await run('mark_non_speech', { lines: [l.line], kind }); if (!r.ok) setNotice(r.error ?? '标记失败'); },
     askAbout: (l: Line) => { openWindow('chat'); setQuote({ line: l.line, label: `第 ${l.line} 句` }); },
@@ -241,16 +245,49 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
     text: l.text, translation: l.translation, kept: (l.kind === 'vocal' || l.kind === 'song') && !l.muted && !!l.audioUrl,
   })), [lines]);
 
+  const fillBrowser = useCallback(async (only?: Line[]) => {
+    const fresh = await api.getProject(id);
+    if (fresh.settings.dubbingMode !== 'browser') return;
+    const wanted = only ? new Set(only.map((l) => l.id)) : null;
+    const todo = fresh.segments.filter((l) =>
+      l.kind === 'speech' && !l.muted && l.translation.trim()
+      && l.ttsStatus !== 'fresh' && (!wanted || wanted.has(l.id)));
+    if (!todo.length) return;
+    const voice = fresh.settings.browserVoice ?? defaultVoiceForLanguage(fresh.settings.targetLanguage);
+    if (!voice) {
+      setNotice(`${fresh.settings.targetLanguage} 暂无本地 Piper 音色，请改用 Remote 或 Off`);
+      return;
+    }
+    for (let i = 0; i < todo.length; i += 1) {
+      const line = todo[i];
+      setNotice(`本地配音 ${i + 1}/${todo.length}：第 ${line.line} 句`);
+      try {
+        const blob = await synthesizeBrowserSpeech(line.translation, voice);
+        await api.uploadBrowserTts(id, line.id, blob);
+      } catch (e) {
+        setNotice(`本地配音失败（第 ${line.line} 句）：${e instanceof Error ? e.message : String(e)}`);
+        await reload();
+        return;
+      }
+    }
+    await reload();
+    setNotice(`本地配音完成：${todo.length} 句`);
+  }, [id, reload]);
+
   const fill = useCallback(async () => {
     const translated = project!.needs.translate > 0;
     if (translated) { const r = await run('retranslate', {}); if (!r.ok) { setNotice(r.error ?? '翻译失败'); return; } }
+    if (project!.settings.dubbingMode === 'browser') {
+      await fillBrowser();
+      return;
+    }
     // needs.dub 是点击时的快照，翻译刚跑完时还是旧值，所以按"这次是否译过 +
     // 是否本来就有缺口"判断；两者都否就别起一个 0 工作量的空任务。
     if (dubbing && (translated || project!.needs.dub > 0)) {
       const r = await run('redub', {});
       if (!r.ok) setNotice(r.error ?? '配音失败');
     }
-  }, [project, dubbing, run]);
+  }, [project, dubbing, run, fillBrowser]);
 
   // 顶栏的语言切换：会让译文/配音大面积过期，所以先问一下
   const changeLanguage = useCallback(async (language: string) => {
@@ -379,7 +416,7 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
               字幕样式
             </button>
 
-            {dubbing && (
+            {dubbing && project!.settings.dubbingMode === 'remote' && (
               <button
                 type="button"
                 onClick={() => { setVoiceFocus(null); wm.toggle('voice'); }}

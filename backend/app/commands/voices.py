@@ -86,8 +86,8 @@ async def clone_voice(ctx: Ctx, speaker: str, reference_lines: Optional[list] = 
     from app.services import voice_clone_service as vc
     state = ctx.state
     sp = resolve_speaker(state, speaker)
-    if not state.enable_dubbing:
-        raise CommandError("仅字幕模式不需要音色")
+    if state.dubbing_mode != "remote":
+        raise CommandError("只有远端配音模式支持声音克隆")
 
     async def body(job):
         job.step = f"克隆 {sp.name}"
@@ -175,8 +175,8 @@ async def generate_voice_candidates(ctx: Ctx, speaker: str, presets: Optional[li
     from app.services import voice_clone_service as vc
     state = ctx.state
     sp = resolve_speaker(state, speaker)
-    if not state.enable_dubbing:
-        raise CommandError("仅字幕模式不需要音色")
+    if state.dubbing_mode != "remote":
+        raise CommandError("只有远端配音模式支持声音克隆")
     options = {o["id"]: o for o in vp.preset_options(state.segments, sp.id)}
     if presets:
         bad = [p for p in presets if p not in options]

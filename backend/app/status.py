@@ -123,8 +123,8 @@ def untranslated_suspect(state: VideoState, seg: Segment) -> bool:
 # ----------------------------------------------------------------------------
 
 def clone_voice_id(state: VideoState, speaker: Optional[Speaker]) -> Optional[str]:
-    """说话人的克隆音色 —— 仅当克隆开着、且是按**当前** TTS 模型登记的（克隆音色不能跨模型）。"""
-    if not state.enable_voice_clone or speaker is None or not speaker.clone:
+    """说话人的克隆音色 —— 仅当远端克隆开着、且是按**当前** TTS 模型登记的。"""
+    if state.dubbing_mode != "remote" or not state.enable_voice_clone or speaker is None or not speaker.clone:
         return None
     if speaker.clone.get("target_model") != config.TTS_MODEL:
         return None
@@ -133,6 +133,8 @@ def clone_voice_id(state: VideoState, speaker: Optional[Speaker]) -> Optional[st
 
 def resolve_voice(state: VideoState, seg: Segment) -> Optional[str]:
     """优先级：本行指定 > 克隆音色 > 说话人的系统音色。都没有返回 None（合成时再分配）。"""
+    if state.dubbing_mode == "browser":
+        return state.browser_voice or config.browser_voice_for_language(state.target_language)
     if seg.tts_voice:
         return seg.tts_voice
     speaker = state.speaker(seg.speaker_id)
@@ -152,7 +154,7 @@ def dub_instruction(state: VideoState, seg: Segment) -> Optional[str]:
 def dubbable(state: VideoState, seg: Segment) -> bool:
     """这一行该不该有配音。"""
     return (
-        state.enable_dubbing
+        state.dubbing_mode != "off"
         and seg.kind == "speech"
         and not seg.muted
         and bool((seg.translated_text or "").strip())
@@ -163,6 +165,11 @@ def expected_tts_fp(state: VideoState, seg: Segment) -> Optional[str]:
     voice = resolve_voice(state, seg)
     if not voice:
         return None
+    if state.dubbing_mode == "browser":
+        return _h(
+            "tts-browser", (seg.translated_text or "").strip(), voice,
+            state.target_language,
+        )
     return _h(
         "tts", (seg.translated_text or "").strip(), voice,
         seg.tts_rate if seg.tts_rate is not None else "",

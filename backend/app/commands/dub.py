@@ -91,8 +91,10 @@ def set_dub_style(ctx: Ctx, lines: list, instruction: Optional[str] = None, rate
 )
 async def redub(ctx: Ctx, lines: Optional[list] = None, force: bool = False):
     state = ctx.state
-    if not state.enable_dubbing:
-        raise CommandError("这个项目是「仅字幕」模式，没有配音；先 set_settings enable_dubbing=true")
+    if state.dubbing_mode == "off":
+        raise CommandError("当前是仅字幕模式，没有配音；先把 dubbing_mode 改成 remote")
+    if state.dubbing_mode == "browser":
+        raise CommandError("当前是浏览器配音模式，请在页面里生成本地配音")
     ids = [s.id for s in resolve_lines(state, lines)] if lines else None
     if ids:
         _guard(ctx, [state.segment(i) for i in ids])

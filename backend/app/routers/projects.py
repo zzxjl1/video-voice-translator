@@ -190,7 +190,8 @@ class SetupBody(BaseModel):
     target_language: str
     accent: Optional[str] = None
     separation_mode: str = "off"
-    enable_dubbing: bool = True
+    dubbing_mode: str = "remote"
+    browser_voice: Optional[str] = None
     enable_voice_clone: bool = False
     clone_smart_pick: bool = False
     mm_enhance: bool = False
@@ -208,6 +209,10 @@ async def setup_and_start(video_id: str, body: SetupBody):
         raise HTTPException(status_code=409, detail="初始化已经在进行")
     if body.separation_mode not in config.VALID_SEPARATION_MODES:
         raise HTTPException(status_code=400, detail=f"separation_mode 必须是 {sorted(config.VALID_SEPARATION_MODES)}")
+    if body.dubbing_mode not in ("remote", "browser", "off"):
+        raise HTTPException(status_code=400, detail="dubbing_mode 必须是 remote / browser / off")
+    if body.dubbing_mode == "browser" and not config.browser_voice_for_language(body.target_language):
+        raise HTTPException(status_code=400, detail=f"{body.target_language} 暂无本地 Piper 音色")
     if body.accent and body.accent not in config.CHINESE_ACCENTS:
         raise HTTPException(status_code=400, detail="不支持的方言")
     if body.target_language not in config.TARGET_LANGUAGES:
@@ -217,9 +222,11 @@ async def setup_and_start(video_id: str, body: SetupBody):
     def apply(s):
         s.target_language = body.target_language
         s.accent = (body.accent or None) if body.target_language == "Chinese" else None
-        s.enable_dubbing = body.enable_dubbing
-        s.separation_mode = body.separation_mode if body.enable_dubbing else "off"
-        s.enable_voice_clone = body.enable_voice_clone and body.enable_dubbing
+        s.dubbing_mode = body.dubbing_mode
+        s.browser_voice = (body.browser_voice or config.browser_voice_for_language(body.target_language)
+                           if body.dubbing_mode == "browser" else None)
+        s.separation_mode = body.separation_mode if body.dubbing_mode != "off" else "off"
+        s.enable_voice_clone = body.enable_voice_clone and body.dubbing_mode == "remote"
         s.clone_smart_pick = body.clone_smart_pick and s.enable_voice_clone
         s.mm_enhance = body.mm_enhance
         s.custom_prompt = (body.custom_prompt or "").strip()[:500]
@@ -615,6 +622,63 @@ def preview_cues(video_id: str, body: dict):
 # ----------------------------------------------------------------------------
 # 浏览器端人声分离：令牌 + 接收分离结果
 # ----------------------------------------------------------------------------
+
+@router.post("/{video_id}/browser-tts/{segment_id}")
+async def upload_browser_tts(video_id: str, segment_id: str, audio: UploadFile = File(...)):
+    """Receive one browser-Piper WAV and write it to the normal tts/<seg>.mp3 path."""
+    if not tts_service.is_safe_segment_id(segment_id):
+        raise HTTPException(status_code=400, detail="invalid segment id")
+    state = store.require_state(video_id)
+    if state.dubbing_mode != "browser":
+        raise HTTPException(status_code=409, detail="project is not in browser dubbing mode")
+    seg = state.segment(segment_id)
+    if seg is None or not status.dubbable(state, seg):
+        raise HTTPException(status_code=400, detail="segment is not dubbable")
+    if not status.resolve_voice(state, seg):
+        raise HTTPException(status_code=409, detail="this language has no local Piper voice")
+
+    raw = await audio.read()
+    if not raw or len(raw) > 30 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="audio must be between 1 byte and 30 MB")
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        raise HTTPException(status_code=503, detail="ffmpeg is not available")
+
+    project_dir = get_video_dir(video_id)
+    tmp_path = os.path.join(project_dir, f".browser-tts-{segment_id}.wav")
+    out_path = tts_audio_path(video_id, segment_id)
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    try:
+        with open(tmp_path, "wb") as fh:
+            fh.write(raw)
+        proc = await asyncio.create_subprocess_exec(
+            ffmpeg, "-y", "-i", tmp_path, "-vn", "-codec:a", "libmp3lame", "-q:a", "2", out_path,
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+        )
+        _, err = await proc.communicate()
+        if proc.returncode != 0:
+            raise HTTPException(status_code=422, detail=f"ffmpeg failed: {err[-300:].decode(errors='replace')}")
+        duration = subtitle_service.probe_duration(out_path)
+        if not duration:
+            raise HTTPException(status_code=422, detail="audio duration could not be read")
+
+        def apply(s):
+            line = s.segment(segment_id)
+            if line is None:
+                return
+            line.actual_duration = duration
+            line.tts_gain_db = None
+            line.tts_fp = status.expected_tts_fp(s, line)
+
+        store.mutate(video_id, apply, actor="user", cmd="browser_tts",
+                     summary=f"浏览器配音：{segment_id}", undoable=False)
+        return {"ok": True, "duration": duration}
+    finally:
+        try:
+            os.remove(tmp_path)
+        except OSError:
+            pass
+
 
 @router.post("/{video_id}/separator-token")
 def separator_token(video_id: str, request: Request):

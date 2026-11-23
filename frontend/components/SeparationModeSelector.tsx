@@ -84,7 +84,7 @@ const SeparationModeSelector: React.FC<SeparationModeSelectorProps> = ({
               disabled={disabled}
               title={blocked ?? OPTIONS.find(o => o.mode === mode)?.hint}
               className={[
-                'py-2 px-2 rounded-lg text-xs font-semibold transition-all duration-200 border',
+                'relative py-2 px-2 rounded-lg text-xs font-semibold transition-all duration-200 border',
                 selected
                   ? 'bg-claude-accent text-white border-claude-accent shadow-sm shadow-claude-accent/25'
                   : 'bg-white text-gray-600 border-gray-200 hover:bg-gray-50 hover:text-gray-800',
@@ -92,6 +92,11 @@ const SeparationModeSelector: React.FC<SeparationModeSelectorProps> = ({
               ].join(' ')}
             >
               {label}
+              {mode === 'client' && (
+                <span className="absolute -top-1.5 right-1 rounded-full bg-emerald-500 px-1.5 py-px text-[9px] font-bold leading-tight text-white shadow-sm">
+                  FREE
+                </span>
+              )}
             </button>
           );
         })}

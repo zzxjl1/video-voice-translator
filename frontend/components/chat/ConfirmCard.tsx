@@ -18,7 +18,7 @@ function summarizeArgs(args: Record<string, unknown> | undefined): string[] {
   return Object.entries(args).map(([k, v]) => {
     const value = Array.isArray(v) ? `第 ${v.join('、')} 句` : typeof v === 'string' ? `「${v}」` : String(v);
     const name = ({ lines: '范围', line: '范围', target_language: '目标语言', length: '长度', instruction: '要求', speaker: '说话人',
-      accent: '方言', enable_dubbing: '配音', force: '强制重做' } as Record<string, string>)[k] ?? k;
+      accent: '方言', dubbing_mode: '配音方式', force: '强制重做' } as Record<string, string>)[k] ?? k;
     return `${name}：${value}`;
   });
 }

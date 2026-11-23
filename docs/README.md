@@ -5,6 +5,7 @@
 - [账号、Google 登录与工程归属](auth.md)
 - [Whisper 本地 ASR 试验](asr-whisper-spike.md)
 - [Piper 本地 TTS 试听页](tts-piper-spike.md)
+- [配音方式：Remote / In-browser / Off](dubbing-modes.md)
 - 本地部署：见根目录 [LOCAL_DEPLOY.md](../LOCAL_DEPLOY.md)
 
 约定：

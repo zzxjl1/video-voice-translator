@@ -29,7 +29,7 @@ def fresh():
     store.create(VID, "v.mp4", src)
     def seed(s):
         s.target_language = "English"
-        s.enable_dubbing = True
+        s.dubbing_mode = "remote"
         s.speakers = [Speaker("0", "Speaker 0")]
         s.segments = [Segment("a", "0", 0.0, 4.0, "你好世界")]
         s.stage = "ready"

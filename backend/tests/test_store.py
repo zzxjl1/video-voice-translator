@@ -24,7 +24,7 @@ src = os.path.join(TMP, "v.mp4"); open(src, "wb").write(b"\0")
 store.create(VID, "v.mp4", src)
 
 def seed(s):
-    s.target_language = "English"; s.enable_dubbing = True
+    s.target_language = "English"; s.dubbing_mode = "remote"
     s.speakers = [Speaker("0", "Speaker 0", voice="Emily_v3.1"), Speaker("1", "Speaker 1", voice="Brian_v3.1")]
     s.segments = [
         Segment("a", "0", 0.0, 2.0, "你好"), Segment("b", "1", 2.0, 4.0, "再见"),

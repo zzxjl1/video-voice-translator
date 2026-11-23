@@ -2,7 +2,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import ProcessingSettings from './ProcessingSettings';
 import { getAsrLanguages, getLanguageVoices } from '../net/client';
-import type { ProjectSummary, SeparationMode, SeparationBackends, VoiceOption } from '../net/types';
+import type { DubbingMode, ProjectSummary, SeparationMode, SeparationBackends, VoiceOption } from '../net/types';
 import {
   ALL_LANGUAGES,
   CHINESE_ACCENTS,
@@ -49,9 +49,11 @@ interface VideoUploadProps {
   /** 智能选材：omni 通过 tool call 挑克隆参考段（依赖克隆开关）。 */
   cloneSmartPick: boolean;
   onCloneSmartPickChange: (v: boolean) => void;
-  /** 生成配音总开关（仅字幕模式：跳过分离/克隆/合成，原声直通）。 */
-  enableDubbing: boolean;
-  onDubbingChange: (v: boolean) => void;
+  /** 生成配音方式：remote / browser / off。 */
+  dubbingMode: DubbingMode;
+  onDubbingModeChange: (mode: DubbingMode) => void;
+  browserVoice: string | null;
+  onBrowserVoiceChange: (voice: string) => void;
   /** 注入 DS 翻译的自定义要求。默认空 = 标准行为。 */
   customPrompt: string;
   onCustomPromptChange: (v: string) => void;
@@ -103,7 +105,7 @@ const FEATURES: { label: string; sub: string; icon: React.ReactNode }[] = [
   },
 ];
 
-const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName, onStart, isLoading, targetLanguage, onLanguageChange, targetAccent, onAccentChange, enableVoiceClone, onVoiceCloneChange, mmEnhance, onMmEnhanceChange, enableDubbing, onDubbingChange, cloneSmartPick, onCloneSmartPickChange, customPrompt, onCustomPromptChange, separationMode, onSeparationModeChange, separationBackends, bgmSeparationLocked, recentProjects, onOpenProject, onDeleteProject }) => {
+const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName, onStart, isLoading, targetLanguage, onLanguageChange, targetAccent, onAccentChange, enableVoiceClone, onVoiceCloneChange, mmEnhance, onMmEnhanceChange, dubbingMode, onDubbingModeChange, browserVoice, onBrowserVoiceChange, cloneSmartPick, onCloneSmartPickChange, customPrompt, onCustomPromptChange, separationMode, onSeparationModeChange, separationBackends, bgmSeparationLocked, recentProjects, onOpenProject, onDeleteProject }) => {
   const { user, login } = useAuth();
 
   /**
@@ -751,8 +753,11 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
               and padding now do that job, and keeping both would waste the
               height this merge exists to save. */}
           <ProcessingSettings
-            enableDubbing={enableDubbing}
-            onDubbingChange={onDubbingChange}
+            targetLanguage={targetLanguage}
+            dubbingMode={dubbingMode}
+            onDubbingModeChange={onDubbingModeChange}
+            browserVoice={browserVoice}
+            onBrowserVoiceChange={onBrowserVoiceChange}
             separationMode={separationMode}
             onSeparationModeChange={onSeparationModeChange}
             separationBackends={separationBackends}
