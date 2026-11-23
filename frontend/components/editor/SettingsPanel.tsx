@@ -81,7 +81,7 @@ const SettingsPanel: React.FC<Props> = ({ open, onClose, settings, onChange, onC
         <div className={`px-7 py-3 divide-y divide-claude-border/60 ${busy ? 'pointer-events-none opacity-70' : ''}`}>
           <div className="py-3.5">
             <div className="text-[13px] font-bold text-claude-text">配音方式</div>
-            <div className="text-[11px] text-gray-400 mt-0.5 mb-2.5">Remote 用远端 TTS；In-browser 用本地 Piper，免费但不克隆；Off 只出字幕，原声保持不变。</div>
+            <div className="text-[11px] text-gray-400 mt-0.5 mb-2.5">Remote 用旗舰模型，效果更好；In-browser 用本地模型，免费但不克隆；Off 只出字幕，原声保持不变。</div>
             <div className="grid grid-cols-3 gap-1.5">
               {(['remote', 'browser', 'off'] as DubbingMode[]).map((mode) => {
                 const label = mode === 'remote' ? 'Remote' : mode === 'browser' ? 'In-browser' : 'Off';
@@ -119,7 +119,7 @@ const SettingsPanel: React.FC<Props> = ({ open, onClose, settings, onChange, onC
                   {browserVoices.length > 12 && <span className="px-1 py-0.5 text-[10px] text-gray-400">+{browserVoices.length - 12}</span>}
                 </div>
                 <p className="text-[11px] text-gray-400 mt-1.5">
-                  {voicesLoading ? '读取本地音色…' : '多说话人视频会自动为每位说话人分配不同的音色。生成后可在每一行的菜单里改。'}
+                  {voicesLoading ? '读取本地音色…' : '多说话人视频会自动为每位说话人分配不同的音色；音色少于说话人时会循环复用。生成后可在每一行的菜单里改。'}
                 </p>
               </div>
             )}

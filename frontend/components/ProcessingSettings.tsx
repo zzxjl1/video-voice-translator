@@ -165,7 +165,7 @@ const ProcessingSettings: React.FC<ProcessingSettingsProps> = ({
             ? `无法读取本地音色：${voicesError}`
             : browserAvailable
                 ? null
-                : `${targetLanguage} 暂无本地 Piper 音色`;
+                : `${targetLanguage} 暂无本地音色`;
 
     return (
         <div className="w-full space-y-4 text-left">
@@ -176,15 +176,15 @@ const ProcessingSettings: React.FC<ProcessingSettingsProps> = ({
                 <header className="flex items-center justify-between px-3 pb-2">
                     <div className="flex items-center">
                         <span className="text-[11px] font-bold uppercase tracking-wider text-gray-400">配音</span>
-                        <InfoTooltip text="Remote：远端 Qwen TTS，支持克隆和预制音色，按量计费；In-browser：本地 Piper，免费但不克隆；Off：只做转写/翻译/字幕，原声保持不变。" />
+                        <InfoTooltip text="Remote：旗舰模型，效果更好，支持克隆和预制音色，按量计费；In-browser：本地模型，免费但不克隆；Off：只做转写/翻译/字幕，原声保持不变。" />
                     </div>
                 </header>
 
                 <div className={`px-3 py-2 rounded-xl border transition-colors ${dubbingOn ? 'bg-gray-50 border-transparent' : 'bg-amber-50/60 border-amber-200/70'}`}>
                     <div className="grid grid-cols-3 gap-1.5">
                         {([
-                            { mode: 'remote' as const, label: 'Remote', hint: '远端 Qwen TTS，支持克隆和预制音色，按量计费' },
-                            { mode: 'browser' as const, label: 'In-browser', hint: browserReason ?? '本地 Piper，免费，不克隆' },
+                            { mode: 'remote' as const, label: 'Remote', hint: '旗舰模型，效果更好，支持克隆和预制音色，按量计费' },
+                            { mode: 'browser' as const, label: 'In-browser', hint: browserReason ?? '本地模型，免费，不克隆' },
                             { mode: 'off' as const, label: 'Off', hint: '只做转写/翻译/字幕，原声保持不变' },
                         ]).map(({ mode, label, hint }) => {
                             const disabled = mode === 'browser' && !browserAvailable;
@@ -217,9 +217,9 @@ const ProcessingSettings: React.FC<ProcessingSettingsProps> = ({
 
                     <p className="mt-2 text-[10px] leading-relaxed text-gray-400">
                         {dubbingMode === 'remote'
-                            ? '远端合成配音，导出时替换原声；可开启声音克隆，按量计费。'
+                            ? '旗舰模型合成配音，效果更好，导出时替换原声；可开启声音克隆，按量计费。'
                             : dubbingMode === 'browser'
-                                ? (browserReason ?? '本地 Piper 合成配音，免费；不支持声音克隆。')
+                                ? (browserReason ?? '本地模型合成配音，免费；不支持声音克隆。')
                                 : '仅翻译字幕：原声原样保留，不分离、不克隆、不合成。'}
                     </p>
 
@@ -289,7 +289,7 @@ const ProcessingSettings: React.FC<ProcessingSettingsProps> = ({
                                         )}
                                     </div>
                                     <p className="mt-1.5 text-[10px] leading-snug text-gray-400">
-                                        多说话人视频会自动为每位说话人分配不同的音色。生成后可在每一行的菜单里改。
+                                        多说话人视频会自动为每位说话人分配不同的音色；音色少于说话人时会循环复用。生成后可在每一行的菜单里改。
                                     </p>
                                 </div>
                             ) : null}

@@ -222,7 +222,7 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
     if (fresh.settings.dubbingMode !== 'browser') return;
     const voices = await voicesForLanguage(fresh.settings.targetLanguage);
     if (!voices.length) {
-      setNotice(`${fresh.settings.targetLanguage} 暂无本地 Piper 音色，请改用 Remote 或 Off`);
+      setNotice(`${fresh.settings.targetLanguage} 暂无本地音色，请改用 Remote 或 Off`);
       return;
     }
     // 多说话人：第一次生成前给每个说话人分一个不同 voice；已有选择不覆盖。
@@ -240,7 +240,7 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
     if (!todo.length) return;
     const voice = fresh.settings.browserVoice ?? defaultVoiceForLanguage(fresh.settings.targetLanguage);
     if (!voice) {
-      setNotice(`${fresh.settings.targetLanguage} 暂无本地 Piper 音色，请改用 Remote 或 Off`);
+      setNotice(`${fresh.settings.targetLanguage} 暂无本地音色，请改用 Remote 或 Off`);
       return;
     }
     const speakerVoice = new Map(fresh.speakers.map((sp) => [sp.id, sp.browserVoice]));
