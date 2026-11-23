@@ -22,7 +22,7 @@ import { detectBrowserLanguage } from './utils/languages';
 import { t } from '@/i18n';
 import { emptyInit, reduceInit, type InitState } from './store/init';
 import { pageFor } from './store/page';
-import type { BackendAvailability, SeparationBackends, SeparationMode } from './net/types';
+import type { BackendAvailability, ProjectSummary, SeparationBackends, SeparationMode } from './net/types';
 
 const PARAM = 'v';
 
@@ -57,6 +57,7 @@ const App: React.FC = () => {
   const [backends, setBackends] = useState<SeparationBackends>({});
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
+  const [recent, setRecent] = useState<ProjectSummary[]>([]);
 
   const project = useProject(auth.loading || !auth.user ? null : videoId);
   const { project: view, loadError, notFound } = project;
@@ -90,6 +91,24 @@ const App: React.FC = () => {
       setEnableVoiceClone(false);
     });
   }, []);
+
+  const refreshProjects = useCallback(() => {
+    if (!auth.user) {
+      setRecent([]);
+      return;
+    }
+    api.listProjects()
+      .then((r) => setRecent(r.projects))
+      .catch(() => setRecent([]));
+  }, [auth.user]);
+
+  useEffect(() => {
+    if (!auth.user) {
+      setRecent([]);
+    } else if (!videoId) {
+      refreshProjects();
+    }
+  }, [auth.user, videoId, refreshProjects]);
 
   const open = useCallback((id: string | null, replace = false) => {
     writeId(id, replace);
@@ -166,6 +185,16 @@ const App: React.FC = () => {
     }
   }, [auth.user, auth.login, targetLanguage, targetAccent, enableDubbing, enableVoiceClone, cloneSmartPick, mmEnhance, customPrompt, separationMode, open]);
 
+  const deleteProject = useCallback(async (id: string, filename: string) => {
+    if (!window.confirm(t("删除「{0}」？服务器上的所有数据都会被清除，无法恢复。", [filename || id.slice(0, 8)]))) return;
+    try {
+      await api.deleteProject(id);
+      refreshProjects();
+    } catch (e) {
+      window.alert(t("删除失败：{0}", [e instanceof Error ? e.message : String(e)]));
+    }
+  }, [refreshProjects]);
+
   // 初始化页的日志 = 浏览器分离阶段的日志 + 服务端事件流推来的日志
   const initState = useMemo<InitState>(() => {
     const server = project.init;
@@ -219,6 +248,9 @@ const App: React.FC = () => {
         onSeparationModeChange={setSeparationMode}
         separationBackends={backends}
         bgmSeparationLocked={enableVoiceClone}
+        recentProjects={recent}
+        onOpenProject={(id) => open(id)}
+        onDeleteProject={(id, name) => void deleteProject(id, name)}
       />
       {/* 只覆盖"还没拿到工程 id"的那一段：上传中，或上传本身失败。
           拿到 id 之后就切到初始化页了，分离和启动的进度、失败都在那里显示。 */}

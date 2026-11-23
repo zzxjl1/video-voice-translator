@@ -75,6 +75,24 @@ def _md5(path: str) -> str:
 upload_router = APIRouter(prefix="/projects", tags=["projects"], dependencies=[Depends(require_user)])
 
 
+@upload_router.get("")
+def list_projects(user: dict = Depends(require_user)):
+    """Projects owned by the signed-in account; this replaces localStorage recents."""
+    out = []
+    for row in auth_users.list_projects(user["id"]):
+        state = store.get_state(row["project_id"])
+        if state is None:
+            continue
+        out.append({
+            "videoId": state.video_id,
+            "filename": state.filename,
+            "stage": state.stage,
+            "updatedAt": int(os.path.getmtime(store.project_path(state.video_id)) * 1000),
+        })
+    return {"projects": out}
+
+
+
 @upload_router.post("")
 def upload(file: UploadFile = File(...), user: dict = Depends(require_user)):
     """

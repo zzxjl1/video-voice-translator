@@ -16,6 +16,14 @@ export interface AuthUser {
   picture: string | null;
 }
 
+/** A project owned by the signed-in account. */
+export interface ProjectSummary {
+  videoId: string;
+  filename: string;
+  stage: Stage;
+  updatedAt: number;
+}
+
 /**
  * vocal = 人发出的非语言声（笑、叹、咳）：分离过人声的工程导出时保留这段原声，不用 TTS 重造。
  * song  = 在唱歌（歌词被 ASR 当台词转写了）：不翻译、不配音，字幕显示原歌词加 ♪，导出同样保留原声。

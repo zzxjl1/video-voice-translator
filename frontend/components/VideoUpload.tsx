@@ -2,7 +2,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import ProcessingSettings from './ProcessingSettings';
 import { getAsrLanguages, getLanguageVoices } from '../net/client';
-import type { SeparationMode, SeparationBackends, VoiceOption } from '../net/types';
+import type { ProjectSummary, SeparationMode, SeparationBackends, VoiceOption } from '../net/types';
 import {
   ALL_LANGUAGES,
   CHINESE_ACCENTS,
@@ -10,10 +10,23 @@ import {
   hasAccents,
   sortAsrLanguages,
 } from '../utils/languages';
+import { formatRelativeTime } from '../utils/relativeTime';
 import { LanguageSwitch } from '@/i18n';
 import { AccountMenu } from '../auth/AccountMenu';
 import { AuthErrorToast } from '../auth/AuthErrorToast';
 import { useAuth } from '../auth/AuthProvider';
+
+/**
+ * Dot colour for a project's server status. Absent (server unreachable at
+ * validation time) stays neutral rather than pretending to know.
+ */
+function statusDotClass(status?: string): string {
+  if (status === 'completed') return 'bg-emerald-500';
+  if (status === 'error') return 'bg-red-400';
+  if (!status) return 'bg-gray-300';
+  return 'bg-amber-400';
+}
+
 
 interface VideoUploadProps {
   /** The user picked a file. Nothing is uploaded until they press start. */
@@ -46,6 +59,10 @@ interface VideoUploadProps {
   onSeparationModeChange: (mode: SeparationMode) => void;
   separationBackends: SeparationBackends;
   bgmSeparationLocked?: boolean;
+  /** Projects owned by the signed-in account (server-backed, not localStorage). */
+  recentProjects: ProjectSummary[];
+  onOpenProject: (videoId: string) => void;
+  onDeleteProject?: (videoId: string, filename: string) => void;
 }
 
 
@@ -86,7 +103,7 @@ const FEATURES: { label: string; sub: string; icon: React.ReactNode }[] = [
   },
 ];
 
-const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName, onStart, isLoading, targetLanguage, onLanguageChange, targetAccent, onAccentChange, enableVoiceClone, onVoiceCloneChange, mmEnhance, onMmEnhanceChange, enableDubbing, onDubbingChange, cloneSmartPick, onCloneSmartPickChange, customPrompt, onCustomPromptChange, separationMode, onSeparationModeChange, separationBackends, bgmSeparationLocked }) => {
+const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName, onStart, isLoading, targetLanguage, onLanguageChange, targetAccent, onAccentChange, enableVoiceClone, onVoiceCloneChange, mmEnhance, onMmEnhanceChange, enableDubbing, onDubbingChange, cloneSmartPick, onCloneSmartPickChange, customPrompt, onCustomPromptChange, separationMode, onSeparationModeChange, separationBackends, bgmSeparationLocked, recentProjects, onOpenProject, onDeleteProject }) => {
   const { user, login } = useAuth();
 
   /**
@@ -603,6 +620,72 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
         <div className="flex min-w-0 flex-col gap-5">
         {/* 最近工程卡负责吃掉右列的剩余高度（`grow`）：糅合卡保持自然紧凑
             高度，多出来的空间给列表行，条目在卡内均匀分布。 */}
+        {/* 最近工程卡：数据来自当前登录账户的服务端归属，不再读浏览器 localStorage。 */}
+        {!hasFile && (
+          <div className="flex min-h-[260px] w-full grow flex-col rounded-2xl border border-gray-200/80 bg-white/80 p-6 shadow-[0_8px_30px_rgba(0,0,0,0.06)] backdrop-blur-xl">
+            <div className="mb-2 flex items-baseline justify-between">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-gray-500">
+                最近工程
+              </span>
+              <span className="text-[10px] text-gray-400">
+                {recentProjects.length} 个
+              </span>
+            </div>
+            {recentProjects.length > 0 ? (
+              <>
+                <div className="flex flex-1 flex-col justify-evenly gap-0.5">
+                  {recentProjects.map(project => {
+                    const status = project.stage === 'ready' ? 'completed' : project.stage === 'failed' ? 'error' : 'processing';
+                    return (
+                      <div
+                        key={project.videoId}
+                        className="group relative flex items-center rounded-lg hover:bg-gray-50 transition-colors"
+                      >
+                        <button
+                          onClick={() => onOpenProject(project.videoId)}
+                          className="flex flex-1 min-w-0 items-center gap-2.5 rounded-lg px-2.5 py-2 text-left cursor-pointer"
+                        >
+                          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusDotClass(status)}`} />
+                          <span data-i18n-skip className="flex-1 min-w-0 truncate text-xs text-gray-700">
+                            {project.filename || project.videoId.slice(0, 8)}
+                          </span>
+                          <span className="shrink-0 text-[10px] text-gray-400 transition-opacity group-hover:opacity-0">
+                            {formatRelativeTime(project.updatedAt)}
+                          </span>
+                        </button>
+                        {onDeleteProject && (
+                          <button
+                            onClick={() => onDeleteProject(project.videoId, project.filename || '')}
+                            title="删除工程（服务器上的文件一起删除，不可恢复）"
+                            aria-label="删除工程"
+                            className="absolute right-1 top-1/2 -translate-y-1/2 rounded p-1.5 text-gray-300 opacity-0 transition-all hover:bg-red-50 hover:text-red-500 focus:opacity-100 group-hover:opacity-100 cursor-pointer"
+                          >
+                            <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" />
+                            </svg>
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                <p className="mt-2 text-[10px] text-gray-400">
+                  点开即回到当时的进度。
+                </p>
+              </>
+            ) : (
+              <div className="flex flex-1 flex-col items-center justify-center gap-1 text-center">
+                <p className="text-xs font-medium text-gray-400">还没有工程</p>
+                <p className="text-[10px] leading-relaxed text-gray-300">
+                  上传视频后，会出现在这里，
+                  <br />
+                  点开即回到当时的进度。
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* A+C 糅合：怎么用 + 你会得到，一张卡上下两段。
             紧跟最近工程下方，填住右列的下半 —— 上段回答"接下来会发生什么"，
             下段回答"产出是什么"，两个都是落地页此前没答的小白疑问。

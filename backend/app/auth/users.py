@@ -92,3 +92,14 @@ def assign_project(project_id: str, owner_id: str) -> None:
 def remove_project(project_id: str) -> None:
     with db.db() as conn:
         conn.execute("DELETE FROM project_owners WHERE project_id = ?", (project_id,))
+
+
+def list_projects(owner_id: str) -> list[dict]:
+    """Project ids owned by a user, newest assignment first."""
+    with db.db() as conn:
+        rows = conn.execute(
+            "SELECT project_id, created_at FROM project_owners "
+            "WHERE owner_id = ? ORDER BY created_at DESC, project_id DESC",
+            (owner_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
