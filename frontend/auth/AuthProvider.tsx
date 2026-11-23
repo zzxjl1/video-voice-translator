@@ -1,7 +1,8 @@
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import * as api from '../net/client';
+import { onUnauthorized } from '../net/session';
 import type { AuthUser } from '../net/types';
-import { log } from '../utils/log';
+import { log, shortId } from '../utils/log';
 
 interface AuthContextValue {
   user: AuthUser | null;
@@ -28,7 +29,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const refresh = useCallback(async () => {
     try {
       const result = await api.me();
-      log.info('auth', result.user ? `signed in ${result.user.email ?? result.user.id}` : 'anonymous');
+      log.info('auth', result.user ? `signed in ${shortId(result.user.id)}` : 'anonymous');
       setUser(result.user);
     } catch (e) {
       log.warn('auth', 'me failed', e);
@@ -58,6 +59,12 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
     void refresh();
   }, [refresh]);
+
+  // 运行中会话过期（接口 401、事件流 401）：把 user 置空，界面回到登录页，而不是各处各报各的错。
+  useEffect(() => onUnauthorized(() => {
+    log.warn('auth', 'session expired');
+    setUser((u) => (u ? null : u));
+  }), []);
 
   const login = useCallback((returnTo?: string) => {
     log.info('auth', 'login requested');

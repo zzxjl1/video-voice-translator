@@ -20,6 +20,17 @@ def require_user(request: Request) -> dict:
     return user
 
 
+# 只有这两条路由接受令牌代替登录。用路由模板精确匹配：按 URL 后缀判断的话，
+# /tts/audio、/voice-sample/audio 这类"段 id 恰好叫 audio"的路径也会被放行。
+_TOKEN_ROUTES = ("/projects/{video_id}/audio", "/projects/{video_id}/audio/original")
+
+
+def _is_token_audio_route(request: Request) -> bool:
+    route = request.scope.get("route")
+    path = getattr(route, "path", "") or ""
+    return path.rstrip("/").endswith(_TOKEN_ROUTES)
+
+
 def require_project_access(
     request: Request,
     user: dict | None = Depends(current_user),
@@ -28,7 +39,7 @@ def require_project_access(
     video_id = resolve_video_id(request)
     # External ASR/TTS/omni fetchers cannot carry a login cookie. They use a
     # short-lived signed capability token on the read-only audio endpoints.
-    if request.method == "GET" and request.url.path.rstrip("/").endswith(("/audio", "/audio/original")):
+    if request.method == "GET" and _is_token_audio_route(request):
         token = resolve_token(request)
         if token and token_service.verify_token(token, video_id):
             return {"id": None}

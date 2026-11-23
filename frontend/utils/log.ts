@@ -28,16 +28,18 @@ export const log = {
   error: (scope: string, message: string, data?: unknown) => emit('error', scope, message, data),
 };
 
-/** Never put session/query tokens in a log line. */
+/** Never put session/query tokens or signatures in a log line. */
+const SECRET_PARAM = /token|sig|signature|secret|key|auth|credential|password|code|state|expires|^v$/i;
+
 export function safeUrl(input: string): string {
   try {
     const url = new URL(input, 'http://local');
-    for (const key of ['token', 'v', 'auth_continue']) {
-      if (url.searchParams.has(key)) url.searchParams.set(key, '…');
+    for (const key of [...url.searchParams.keys()]) {
+      if (SECRET_PARAM.test(key)) url.searchParams.set(key, '…');
     }
     return `${url.pathname}${url.search}`;
   } catch {
-    return input.replace(/([?&]token=)[^&]+/g, '$1…');
+    return input.replace(/([?&](?:token|sig|signature|key|auth_continue)=)[^&]+/gi, '$1…');
   }
 }
 

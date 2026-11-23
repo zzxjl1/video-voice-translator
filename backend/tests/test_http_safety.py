@@ -47,6 +47,8 @@ check("② 描边按画面高度换算（1080p ≈ 2.16px），不是写死 2", 
 
 # ------------------------------------------------------------------ ③ 路径与"不留痕迹"
 c = TestClient(app)
+from _auth import login, own
+login(c)
 vid = "safety00" + "0" * 24
 src = os.path.join(TMP, "v.mp4"); open(src, "wb").write(b"0123456789" * 6 + b"abcd")      # 64 字节
 os.makedirs(os.path.join(TMP, vid), exist_ok=True)
@@ -55,9 +57,12 @@ def seed(s):
     s.target_language = "English"; s.speakers = [Speaker("0", "S", voice="E_v3.1")]
     s.segments = [Segment("seg-1", "0", 0, 2, "x")]
 store.mutate(vid, seed, actor="system", cmd="seed", summary="seed")
+own(vid)
 
 check("③ 路径穿越（%2f）被拒", c.get(f"/api/projects/{vid}/tts/..%2Fsecret").status_code in (400, 404))
-check("③ 路径穿越（speaker）被拒", c.get(f"/api/projects/{vid}/voice-sample/..%2Fx").status_code in (400, 404))
+check("③ 路径穿越（speaker）被拒", c.get(f"/api/projects/{vid}/voice-preview/..%2Fx").status_code in (400, 404))
+check("③ 候选试听文件名只认 pv_<12 位十六进制>.mp3", c.get(f"/api/projects/{vid}/voice-preview/0/..%2Fproject.json").status_code in (400, 404)
+      and c.get(f"/api/projects/{vid}/voice-preview/0/evil.mp3").status_code == 400)
 check("③ 畸形工程 id → 400", c.get("/api/projects/bad%20id%21").status_code in (400, 404))
 ghost = "ghostxx0" + "0" * 24
 for path in (f"/api/projects/{ghost}", f"/api/projects/{ghost}/video", f"/api/projects/{ghost}/audio",
@@ -136,6 +141,7 @@ good = c.post(f"/api/projects/{vid}/stems", headers={"X-Separator-Token": tok},
 check("⑥ 有令牌且是 WAV → 收下，视图里 hasStems", good.status_code == 200 and c.get(f"/api/projects/{vid}").json()["hasStems"])
 other = "safety01" + "0" * 24
 store.create(other, "o.mp4", src)
+own(other)
 check("⑥ 拿工程 A 的令牌操作工程 B → 403（令牌绑定工程）",
       c.post(f"/api/projects/{other}/stems", headers={"X-Separator-Token": tok},
              files={"vocals": ("v.wav", b"RIFF" + b"0" * 60), "background": ("b.wav", b"RIFF" + b"0" * 60)}).status_code == 403)

@@ -10,7 +10,7 @@
  */
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import {
-  LEGACY_CHAT_KEY, MIN_SIZE, PANEL_IDS, STORAGE_KEY, TEAR_OFF_PX,
+  MIN_SIZE, PANEL_IDS, STORAGE_KEY, TEAR_OFF_PX,
   activeDock, clampRect, dockedOpen, fallbackDockZone, floatingOpen, pointInRect, reduce, resizeRect, restore, serialize,
   type Action, type Dir, type Layout, type PanelId, type Rect, type Viewport,
 } from '../store/windows';
@@ -94,7 +94,7 @@ export function useWindows() {
   const [layout, dispatch] = useReducer(
     (l: Layout, a: Action) => reduce(l, a, viewport()),
     undefined,
-    () => restore(readStorage(STORAGE_KEY), readStorage(LEGACY_CHAT_KEY), viewport()),
+    () => restore(readStorage(STORAGE_KEY), viewport()),
   );
   const layoutRef = useRef(layout);
   layoutRef.current = layout;

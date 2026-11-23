@@ -30,6 +30,17 @@ async def lifespan(app: FastAPI):
     cleanup_expired()
     logger.info("Auth DB ready: %s", config.AUTH_DB_PATH)
 
+    async def _cleanup_loop():
+        # 每小时清一次过期会话和 OAuth state。只在启动时清的话，长期运行的进程里 sessions 表只增不减。
+        while True:
+            await asyncio.sleep(3600)
+            try:
+                await asyncio.get_running_loop().run_in_executor(None, cleanup_expired)
+            except Exception:  # noqa: BLE001 - 清理失败不该影响服务
+                logger.warning("Auth cleanup failed", exc_info=True)
+
+    cleanup_task = asyncio.create_task(_cleanup_loop())
+
     parts = [
         f"{name}={'available' if info['available'] else 'unavailable (' + info['reason'] + ')'}"
         for name, info in config.separation_capabilities().items()
@@ -37,6 +48,7 @@ async def lifespan(app: FastAPI):
     logger.info("Vocal separation backends: %s (default mode: %s)", ", ".join(parts), config.SEPARATION_MODE)
     logger.info("Commands registered: %d", len(commands.registry.all_commands()))
     yield
+    cleanup_task.cancel()
     logger.info("Shutting down.")
 
 

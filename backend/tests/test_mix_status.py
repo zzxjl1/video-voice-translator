@@ -38,6 +38,8 @@ def seed(s):
 store.mutate(VID, seed, actor="system", cmd="seed", summary="seed")
 
 with TestClient(app) as c:
+    from _auth import login, own
+    login(c); own(VID)
     v = c.get(f"/api/projects/{VID}").json()
     mix = v["mix"]
     check("① 视图带 mix.plan", bool(mix and mix.get("plan")), mix and mix.get("version"))
@@ -60,6 +62,7 @@ with TestClient(app) as c:
     # 没有任何可混的配音 → mix 为 None（降级），而不是 500
     VID2 = "emptytest" + "0" * 23
     store.create(VID2, "e.mp4", SRC)
+    own(VID2)
     r = c.get(f"/api/projects/{VID2}")
     check("⑥ 没有配音的工程 → mix=None，不 500", r.status_code == 200 and r.json()["mix"] is None, r.status_code)
 

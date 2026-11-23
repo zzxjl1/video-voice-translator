@@ -364,15 +364,16 @@ async def translate_lines(
 
 
 async def clone_speakers(video_id: str, job: Job, server_url: str, only: Optional[list[str]] = None) -> None:
-    """Clone each speaker. Enrollment is retried; failure aborts init.
+    """给每个说话人克隆音色。**某个说话人克隆不成，就跳过这个声音**，其余照常。
 
-    We intentionally do NOT silently fall back to a system voice: that makes the
-    output look successful while the user's chosen cloned voice is missing.
+    跳过的说话人没有克隆音色，之后 `dub_lines` 的 `ensure_speaker_voices` 会给他分配系统音色，
+    配音照常出；界面里该说话人显示没有克隆，用户可以在音色面板里再试。素材不够和调用失败
+    （重试 3 次后仍失败）都按"跳过"处理，区别只在事件里的 reason，方便排查。
     """
     from app.services import voice_clone_service as vc
     state = store.require_state(video_id)
     if state.dubbing_mode != "remote":
-        return []
+        return
     if not state.enable_voice_clone:
         return
     speakers = [sp for sp in state.speakers if only is None or sp.id in only]
@@ -398,17 +399,13 @@ async def clone_speakers(video_id: str, job: Job, server_url: str, only: Optiona
         except JobCancelled:
             raise
         except Exception as e:
-            # Only *no usable material* falls back to the system voice. Other
-            # picker failures are real errors and must be visible.
-            if "没有可用于克隆的素材" not in str(e) and "没有可用" not in str(e):
-                _emit(video_id, job, {**base, "status": "failed", "error": str(e), "fatal": True})
-                raise RuntimeError(f"{sp.name} 参考素材选择失败：{e}") from e
-            logger.warning(f"[{video_id}] clone skipped for {sp.id} (no material): {e}")
-            _emit(video_id, job, {**base, "status": "skipped", "reason": str(e)})
+            reason = "no_material" if isinstance(e, vc.NoCloneMaterial) else "pick_failed"
+            logger.warning(f"[{video_id}] clone skipped for {sp.id} ({reason}): {e}")
+            _emit(video_id, job, {**base, "status": "skipped", "reason": reason, "error": str(e)})
             continue
 
-        last_error: Exception | None = None
         voice_id = ""
+        last_error: Exception | None = None
         for attempt in range(1, 4):
             job.check()
             try:
@@ -425,8 +422,9 @@ async def clone_speakers(video_id: str, job: Job, server_url: str, only: Optiona
                     _emit(video_id, job, {**base, "status": "retrying", "attempt": attempt, "error": str(e)})
                     await asyncio.sleep(attempt)
         if last_error is not None:
-            _emit(video_id, job, {**base, "status": "failed", "error": str(last_error), "fatal": True})
-            raise RuntimeError(f"{sp.name} 克隆失败（已重试 3 次）：{last_error}") from last_error
+            logger.warning(f"[{video_id}] clone skipped for {sp.id} after 3 attempts: {last_error}")
+            _emit(video_id, job, {**base, "status": "skipped", "reason": "enroll_failed", "error": str(last_error)})
+            continue
 
         def apply(s, voice_id=voice_id, sid=sp.id, plan=plan):
             target = s.speaker(sid)
@@ -438,6 +436,7 @@ async def clone_speakers(video_id: str, job: Job, server_url: str, only: Optiona
         store.mutate(video_id, apply, actor="system", cmd="clone", summary=f"{sp.name} 的克隆音色就绪")
         _emit(video_id, job, {**base, "status": "done", "voice_id": voice_id, "reused": False})
     _emit(video_id, job, {"phase": "voice_clone", "status": "complete"})
+
 
 async def _async_emit(video_id: str, job: Job, event: dict) -> None:
     _emit(video_id, job, event)

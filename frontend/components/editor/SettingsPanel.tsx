@@ -43,7 +43,9 @@ const SettingsPanel: React.FC<Props> = ({ open, onClose, settings, onChange, onC
   const [voicesLoading, setVoicesLoading] = useState(false);
   useEffect(() => { if (open) setPrompt(settings.customPrompt); }, [open, settings.customPrompt]);
   useEffect(() => {
-    if (!open || settings.dubbingMode !== 'browser') return;
+    // 不能只在 browser 模式下才加载：按钮要靠"这个语言有没有本地音色"决定能不能点，
+    // 而用户恰恰是在 remote / off 下想切过去。
+    if (!open) return;
     let alive = true;
     setVoicesLoading(true);
     voicesForLanguage(settings.targetLanguage)
@@ -51,7 +53,7 @@ const SettingsPanel: React.FC<Props> = ({ open, onClose, settings, onChange, onC
       .catch(() => alive && setBrowserVoices([]))
       .finally(() => alive && setVoicesLoading(false));
     return () => { alive = false; };
-  }, [open, settings.dubbingMode, settings.targetLanguage]);
+  }, [open, settings.targetLanguage]);
   if (!open) return null;
 
   const apply = async (patch: Record<string, unknown>) => {
@@ -144,7 +146,9 @@ const SettingsPanel: React.FC<Props> = ({ open, onClose, settings, onChange, onC
                 <option value="">普通话</option>
                 {CHINESE_ACCENTS.map((a) => <option key={a.value} value={a.value}>{accentLabel(a.value)}</option>)}
               </select>
-              <p className="text-[11px] text-gray-400 mt-1.5">只影响之后合成的配音；已有配音会标为“需更新”。</p>
+              <p className="text-[11px] text-gray-400 mt-1.5">
+                {settings.dubbingMode === 'remote' ? '只影响之后合成的配音；已有配音会标为“需更新”。' : '只影响远端配音；本地 Piper 不读方言设置。'}
+              </p>
             </div>
           )}
 

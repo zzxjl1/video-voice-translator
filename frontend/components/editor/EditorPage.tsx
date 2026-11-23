@@ -221,21 +221,32 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
     }
   }, [delivery, keepStyle, visibleCues, id, run, style]);
 
-  // 脚本里的操作：全都是命令
-  const fillBrowser = useCallback(async (only?: Line[]) => {
-    const fresh = await api.getProject(id);
-    if (fresh.settings.dubbingMode !== 'browser') return;
+  // 浏览器配音：一句失败不影响其它句；同一时间只跑一批（重复点击不会并发合成同一句）
+  const browserBusy = useRef(false);
+  const fillBrowser = useCallback(async (only?: Line[], force = false) => {
+    if (browserBusy.current) { setNotice(t('本地配音正在进行，请稍候')); return; }
+    browserBusy.current = true;
     try {
+      const fresh = await api.getProject(id);
+      if (fresh.settings.dubbingMode !== 'browser') return;
       const onlyIds = only ? new Set(only.map((l) => l.id)) : undefined;
-      const done = await fillBrowserDubbing(fresh, {
+      const r = await fillBrowserDubbing(fresh, {
         only: onlyIds,
+        force,
         onProgress: (p) => setNotice(`本地配音 ${p.index}/${p.total}：第 ${p.line.line} 句`),
       });
       await reload();
-      if (done) setNotice(`本地配音完成：${done} 句`);
+      if (r.failed.length) {
+        const first = r.failed[0];
+        setNotice(`本地配音：${r.done} 句完成，${r.failed.length} 句失败（第 ${first.line} 句：${first.reason}）`);
+      } else if (r.done) {
+        setNotice(`本地配音完成：${r.done} 句`);
+      }
     } catch (e) {
       setNotice(`本地配音失败：${e instanceof Error ? e.message : String(e)}`);
       await reload();
+    } finally {
+      browserBusy.current = false;
     }
   }, [id, reload]);
 
@@ -250,7 +261,7 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
     toggleHide: (l: Line) => void run('set_hidden', { lines: [l.line], hidden: !l.hidden }),
     seek,
     redub: async (l: Line) => {
-      if (project!.settings.dubbingMode === 'browser') { await fillBrowser([l]); return; }
+      if (project!.settings.dubbingMode === 'browser') { await fillBrowser([l], l.ttsStatus === 'fresh'); return; }
       const r = await run('redub', { lines: [l.line], force: l.ttsStatus === 'fresh' }); if (!r.ok) setNotice(r.error ?? '配音失败');
     },
     retranslate: async (l: Line, hint) => { const r = await run('retranslate', { lines: [l.line], ...(hint ? { length: hint } : {}) }); if (!r.ok) setNotice(r.error ?? '翻译失败'); },

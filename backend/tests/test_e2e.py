@@ -59,6 +59,8 @@ subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "color=c=bla
 
 _client_cm = TestClient(app)
 c = _client_cm.__enter__()      # 事件循环全程存活：请求里 create_task 出来的后台任务才能跑完（uvicorn 就是这样）
+from _auth import login
+login(c)                          # 鉴权之后所有 /api/projects 都要登录；上传时服务端自己登记 owner
 
 def wait_job(vid, kind=None, timeout=20):
     t = time.time()

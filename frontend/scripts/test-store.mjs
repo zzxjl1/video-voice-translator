@@ -527,17 +527,14 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   check('㊽ 浏览器窗口缩小：浮动窗口尺寸不超过视口，标题栏仍在屏内可抓（不要求整块在屏内，和桌面窗口一样）', PANEL_IDS.every((id) => { const r = P(shrunk, id).rect; return r.w <= 700 && r.h <= 500 - TOP_INSET && r.x <= 700 - KEEP_VISIBLE && r.y >= TOP_INSET && r.y <= 500 - KEEP_VISIBLE; }), PANEL_IDS.map((id) => P(shrunk, id).rect));
 
   l = R(R(R(init(), { type: 'float', id: 'script', rect: { x: 300, y: 200, w: 640, h: 520 } }), { type: 'open', id: 'subtitle' }), { type: 'focus', id: 'chat' });
-  const back = restore(serialize(l), null, VP);
+  const back = restore(serialize(l), VP);
   check('㊾ 存了再读：打开 / 吸附 / 位置 / 当前标签 / 叠放顺序全部一致', PANEL_IDS.every((id) => js(P(back, id)) === js(P(l, id))) && back.active === l.active, [back.panels, l.panels]);
-  check('㊾ 读不出来的内容（null / 空串 / 乱码 / 不是对象）：回到默认布局', ['', 'not json', '[]', '{"panels":42}', 'null'].every((raw) => js(restore(raw, null, VP)) === js(init())) && js(restore(null, null, VP)) === js(init()));
+  check('㊾ 读不出来的内容（null / 空串 / 乱码 / 不是对象）：回到默认布局', ['', 'not json', '[]', '{"panels":42}', 'null'].every((raw) => js(restore(raw, VP)) === js(init())) && js(restore(null, VP)) === js(init()));
   check('㊾ 某一块坏了只那一块用默认；常驻窗口即使存档写成关闭也强制打开', (() => {
     const raw = js({ panels: { script: { open: true, docked: false, rect: { x: 'a' } }, chat: { open: false, docked: true, rect: { x: 10, y: 60, w: 400, h: 400 } } } });
-    const r = restore(raw, null, VP); return !P(r, 'script').docked && js(P(r, 'script').rect) === js(defaultRect('script', VP)) && P(r, 'chat').open && P(r, 'chat').docked;
+    const r = restore(raw, VP); return !P(r, 'script').docked && js(P(r, 'script').rect) === js(defaultRect('script', VP)) && P(r, 'chat').open && P(r, 'chat').docked;
   })());
-  check('㊾ 存下来的位置在更小的屏幕上读回来会被夹进去', (() => { const r = restore(js({ panels: { chat: { open: true, docked: false, rect: { x: 1500, y: 800, w: 900, h: 900 } } } }), null, { w: 800, h: 600 }); const c = P(r, 'chat').rect; return c.w <= 800 - 16 && c.h <= 600 - TOP_INSET - 8 && c.x <= 800 - KEEP_VISIBLE; })());
-  check('㊾ 迁移旧版：只有助手窗口位置的老存档，助手沿用那个位置（默认吸附）', (() => { const r = restore(null, js({ x: 111, y: 222, w: 333, h: 444 }), VP); return js(P(r, 'chat').rect) === js({ x: 111, y: 222, w: 333, h: 444 }) && P(r, 'chat').docked; })());
-  check('㊾ 新存档优先于旧版的助手位置', js(P(restore(serialize(init()), js({ x: 5, y: 60, w: 333, h: 444 }), VP), 'chat').rect) === js(P(init(), 'chat').rect));
-  check('㊾ 旧版位置是坏的：忽略，用默认', js(P(restore(null, '{bad', VP), 'chat').rect) === js(P(init(), 'chat').rect));
+  check('㊾ 存下来的位置在更小的屏幕上读回来会被夹进去', (() => { const r = restore(js({ panels: { chat: { open: true, docked: false, rect: { x: 1500, y: 800, w: 900, h: 900 } } } }), { w: 800, h: 600 }); const c = P(r, 'chat').rect; return c.w <= 800 - 16 && c.h <= 600 - TOP_INSET - 8 && c.x <= 800 - KEEP_VISIBLE; })());
   check('㊾ 存储 key 带版本号', /\.v\d+$/.test(STORAGE_KEY));
   check('㊾ normalize 幂等', js(normalize(normalize(l))) === js(normalize(l)));
 
@@ -549,9 +546,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   check('㊿ 音色面板：打开后成为停靠位里的标签，排在字幕样式之后', P(Vo, 'voice').open && dockedOpen(R(Vo, { type: 'open', id: 'subtitle' })).join() === 'script,chat,subtitle,voice' && activeDock(Vo) === 'voice');
   check('㊿ 音色面板：切换', P(R(V, { type: 'toggle', id: 'voice' }), 'voice').open && !P(R(Vo, { type: 'toggle', id: 'voice' }), 'voice').open);
   const oldSave = js({ panels: { script: { open: true, docked: true, rect: defaultRect('script', VP) }, chat: { open: true, docked: true, rect: defaultRect('chat', VP) }, subtitle: { open: true, docked: true, rect: defaultRect('subtitle', VP) } }, active: 'subtitle' });
-  const migrated = restore(oldSave, null, VP);
-  check('㊿ 音色面板：没有它的旧存档读回来，别的窗口原样、它用默认（收着）', P(migrated, 'subtitle').open && !P(migrated, 'voice').open && js(P(migrated, 'voice').rect) === js(defaultRect('voice', VP)));
-  check('㊿ 音色面板：存取往返', P(restore(serialize(Vo), null, VP), 'voice').open);
+  const migrated = restore(oldSave, VP);
+  check('㊿ 音色面板：存档里没有它：别的窗口原样、它用默认（收着）', P(migrated, 'subtitle').open && !P(migrated, 'voice').open && js(P(migrated, 'voice').rect) === js(defaultRect('voice', VP)));
+  check('㊿ 音色面板：存取往返', P(restore(serialize(Vo), VP), 'voice').open);
 }
 
 console.log(failures === 0 ? '\n合计 全部通过' : `\n合计 ${failures} 项失败`);

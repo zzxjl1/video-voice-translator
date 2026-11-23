@@ -142,6 +142,8 @@ def verify_id_token(id_token: str, nonce: str) -> GoogleProfile:
             _key_for(kid),
             algorithms=["RS256"],
             audience=config.GOOGLE_CLIENT_ID,
+            # 服务器时钟比 Google 慢几秒时，刚签发的 token 会因为 iat 在"未来"被拒（ImmatureSignatureError）
+            leeway=10,
             options={"verify_iss": False, "require": ["exp", "iat", "aud", "sub"]},
         )
     except jwt.PyJWTError as e:

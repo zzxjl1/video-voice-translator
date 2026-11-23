@@ -34,25 +34,25 @@ def create_state(
 
 
 def consume_state(state: str, browser_token: str | None) -> dict | None:
+    """一次性消费：只有第一个到达的回调能拿到这一行。
+
+    SELECT 再 UPDATE 不是原子的——两个并发回调都能先读到"未消费"，然后都通过。这里把"未消费、
+    没过期、浏览器匹配"全部放进同一条 UPDATE 的 WHERE，用 rowcount 判断谁抢到了。
+    """
     if not browser_token:
         return None
     t = db.now()
+    state_hash = _hash(state)
     with db.db() as conn:
-        row = conn.execute(
-            "SELECT state_hash, nonce, code_verifier, redirect_uri, return_to "
-            "FROM oauth_states WHERE state_hash = ? AND consumed_at IS NULL AND expires_at > ?",
-            (_hash(state), t),
-        ).fetchone()
-        if row is None:
-            return None
-        expected_browser = conn.execute(
-            "SELECT browser_hash FROM oauth_states WHERE state_hash = ?",
-            (_hash(state),),
-        ).fetchone()
-        if expected_browser is None or expected_browser["browser_hash"] != _hash(browser_token):
-            return None
-        conn.execute(
-            "UPDATE oauth_states SET consumed_at = ? WHERE state_hash = ?",
-            (t, _hash(state)),
+        cur = conn.execute(
+            "UPDATE oauth_states SET consumed_at = ? "
+            "WHERE state_hash = ? AND browser_hash = ? AND consumed_at IS NULL AND expires_at > ?",
+            (t, state_hash, _hash(browser_token), t),
         )
-        return dict(row)
+        if cur.rowcount != 1:
+            return None
+        row = conn.execute(
+            "SELECT nonce, code_verifier, redirect_uri, return_to FROM oauth_states WHERE state_hash = ?",
+            (state_hash,),
+        ).fetchone()
+        return dict(row) if row else None

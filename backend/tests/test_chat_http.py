@@ -24,6 +24,8 @@ f = os.path.join(TMP, "v.mp4"); open(f, "wb").write(b"\0")
 store.create(VID, "v.mp4", f)
 p = f"/api/projects/{VID}"
 c = TestClient(app)
+from _auth import login, own
+login(c); own(VID)
 
 # ------------------------------------------------------------------ ① 纯读不写盘
 r0 = store.require_state(VID).rev
@@ -119,7 +121,7 @@ async def where_do_they_run():
     agent.resolve_confirmation = lambda vid, cid, ok: seen.__setitem__("confirm", threading.get_ident()) or True
     try:
         transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://t") as ac:
+        async with httpx.AsyncClient(transport=transport, base_url="http://t", cookies=dict(c.cookies)) as ac:
             r1 = await ac.post(f"{p}/chat/stop")
             r2 = await ac.post(f"{p}/chat/confirm", json={"id": "x", "approve": True})
         return loop_thread, seen, (r1.status_code, r2.status_code)

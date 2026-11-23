@@ -572,6 +572,12 @@ def welcome_text(video_id: str) -> str:
         adj = rep.get("reviewAdjusted")
         mode.append("审听增强" + (f"（纠正/标注了 {adj} 句）" if adj else ""))
     parts.append("本次配置：" + "、".join(mode) + "。")
+    if state.dubbing_mode == "browser":
+        # 本地配音在用户的浏览器里合成，服务端不知道它有没有做完 —— 这条消息发出时配音可能
+        # 还在合成。只陈述事实，别说"已配好"；配音和时间槽的检查要等页面合成完才有意义。
+        from app import status as _status
+        n = _status.needs(state)["dub"]
+        parts.append(f"本地配音由浏览器在页面里合成：目前还有 {n} 句没有配音。" if n else "本地配音已经就绪。")
 
     parts.extend(_sound_notes(state, rep.get("sounds") or {}))
     parts.extend(_song_notes(state, rep.get("songs") or {}))

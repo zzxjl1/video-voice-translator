@@ -4,7 +4,8 @@
  * 所有"改东西"的动作都走 `command()`：UI 的每个按钮和 AI 的每个 tool 在服务端是同一套命令。
  */
 import type { AuthUser, ChatMessage, CommandResult, ProjectSummary, ProjectView, SubtitleCapabilities, SubtitleStyle, SubtitleCue, SubtitleTrack, VoiceOption } from './types';
-import { log, safeUrl } from '../utils/log';
+import { log, safeUrl } from '../utils/log.ts';
+import { notifyUnauthorized } from './session.ts';
 
 export const API_BASE = '/api';
 
@@ -25,6 +26,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       const body = await response.json().catch(() => ({ detail: response.statusText }));
       const detail = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail);
       log.warn('api', `← ${response.status} ${method} ${safeUrl(path)} (${ms}ms)`, detail);
+      // /auth/me 的 401 是"没登录"的正常答案，不是会话过期
+      if (response.status === 401 && !path.startsWith('/auth/')) notifyUnauthorized();
       throw new ApiError(detail, response.status);
     }
     log.debug('api', `← ${response.status} ${method} ${safeUrl(path)} (${ms}ms)`);
@@ -182,9 +185,12 @@ export const getSeparatorToken = (id: string) =>
     method: 'POST',
   });
 
-export async function uploadBrowserTts(id: string, segmentId: string, audio: Blob) {
+export async function uploadBrowserTts(id: string, segmentId: string, audio: Blob, text: string, voice: string) {
   const form = new FormData();
   form.append('audio', audio, `${segmentId}.wav`);
+  // 合成时用的译文和音色：服务端核对和当前一致才收，期间被改过就 409
+  form.append('text', text);
+  form.append('voice', voice);
   return request<{ ok: boolean; duration: number }>(`/projects/${id}/browser-tts/${segmentId}`, {
     method: 'POST',
     body: form,

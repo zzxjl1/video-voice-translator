@@ -34,6 +34,10 @@ logger = logging.getLogger(__name__)
 dashscope.api_key = config.DASHSCOPE_API_KEY
 
 
+class NoCloneMaterial(RuntimeError):
+    """这个说话人没有可用的克隆素材。和"克隆调用失败"分开：前者是数据问题，不该重试。"""
+
+
 def clone_target_model() -> str:
     """克隆音色注册到哪个模型：始终跟随 TTS 模型，两者不可能漂移（必须完全一致）。"""
     return config.TTS_MODEL
@@ -198,7 +202,7 @@ async def pick_plan(
                 await say("pick_failed", error=str(e)[:120])
         return presets.default_plan(segments, speaker_id)
     except presets.PresetUnavailable as e:
-        raise RuntimeError(f"说话人 {speaker_id} 没有可用于克隆的素材：{e}") from e
+        raise NoCloneMaterial(f"说话人 {speaker_id} 没有可用于克隆的素材：{e}") from e
 
 
 def sample_source(video_id: str) -> str:

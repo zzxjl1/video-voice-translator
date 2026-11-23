@@ -1,3 +1,5 @@
+import { LOCALES, locale } from '../i18n';
+
 /** Small relative-time label used by the account's project list. */
 export function formatRelativeTime(epochMs: number): string {
   const seconds = Math.max(0, Math.floor((Date.now() - epochMs) / 1000));
@@ -8,5 +10,7 @@ export function formatRelativeTime(epochMs: number): string {
   if (hours < 24) return `${hours} 小时前`;
   const days = Math.floor(hours / 24);
   if (days < 30) return `${days} 天前`;
-  return new Date(epochMs).toLocaleDateString();
+  // 用界面语言格式化，不是浏览器默认语言：选了日语就该是日期的日语写法
+  const tag = LOCALES.find((l) => l.code === locale)?.lang ?? 'en';
+  return new Date(epochMs).toLocaleDateString(tag);
 }

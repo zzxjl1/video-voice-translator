@@ -132,8 +132,9 @@ HttpOnly; SameSite=Lax; Secure(生产); Path=/
 
 - DB 只存 `sha256(token)`
 - 登录时生成新 session；如果当前浏览器已有旧 session，先撤销
-- 默认 30 天滑动过期
+- 默认 30 天滑动过期：服务端最多每小时把 `expires_at` 往后推一次，同时前端每次加载调用 `/api/auth/me`，该接口会**重发** Set-Cookie，浏览器端的 cookie 过期时间才会跟着滑动（只推服务端、不重发 cookie 的话，活跃用户到第 30 天照样被登出）
 - `last_seen_at` 最多每小时写一次，避免每请求写库
+- 清理：启动时清一次，之后每小时清一次过期会话和 OAuth state
 - 多设备/多浏览器各自一个 session，互不踢
 - 退出只撤销当前 session
 - 以后可加“退出所有设备”：`revoke_user_sessions(user_id)`

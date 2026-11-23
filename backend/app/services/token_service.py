@@ -14,9 +14,11 @@ itself requires a `video_id` that already exists — so an abuser has to go
 through the normal upload path, and rate limiting caps how many tokens (and
 therefore how many downloads) a single client can mint.
 
-**This is an abuse speed bump, not authentication.** There are no user
-accounts in this app; anyone who uploads a video can obtain a token for it.
-Real protection means adding authentication and per-account quotas.
+**This is a capability token, not authentication.** Login (Google OAuth, see
+`app/auth`) decides who may touch a project. A token is only for the few
+read-only endpoints that external fetchers (ASR / omni / DashScope) must reach
+without a login cookie: it is bound to one `video_id`, expires quickly, and
+the endpoints it unlocks are listed in `auth/dependencies.py::_TOKEN_ROUTES`.
 """
 import base64
 import hashlib

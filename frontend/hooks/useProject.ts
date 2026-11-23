@@ -237,7 +237,7 @@ export function useProject(id: string | null): ProjectApi {
           const pe = event as { phase?: string; status?: string; speaker_id?: string; error?: string; total?: number; seconds?: number };
           if (pe.phase === 'voice_clone') {
             const line = `${pe.status ?? 'event'} speaker=${pe.speaker_id ?? '?'}`;
-            if (pe.status === 'failed' || pe.status === 'pick_failed') log.warn('clone', line, pe);
+            if (pe.status === 'failed' || pe.status === 'pick_failed' || pe.status === 'skipped') log.warn('clone', line, pe);
             else log.info('clone', line, pe);
           }
           setInit((s) => reduceInit(s, event as never));
@@ -311,7 +311,8 @@ export function useProject(id: string | null): ProjectApi {
     async <T = Record<string, unknown>>(name: string, args: Record<string, unknown> = {}): Promise<CommandResult<T>> => {
       if (!id) return { ok: false, error: '没有打开的工程' };
       const started = performance.now();
-      log.info('command', `→ ${name}`, { id: shortId(id), args });
+      // 参数里可能有用户编辑的译文 / 自定义提示：只记有哪些键，不记值
+      log.info('command', `→ ${name}`, { id: shortId(id), args: Object.keys(args) });
       try {
         const result = await api.command<T>(id, name, args);
         log.info('command', result.ok ? '← ok' : '← rejected', {

@@ -361,6 +361,7 @@ const DYNAMIC_RULES: DynamicRule[] = [
   { re: /变速\s*([\d.]+)x/g, key: 'Speed {0}x', groups: 1 },
   { re: /视频\s*([\d.]+)x/g, key: 'Video {0}x', groups: 1 },
   { re: /配音\s*([\d.]+)s\s*\/\s*时间槽\s*([\d.]+)s/g, key: 'Dubbing {0}s / slot {1}s', groups: 2 },
+  { re: /(\d+)\s*个问题/g, key: '{0} issues', groups: 1 },
   { re: /(\d+)\s*句译文/g, key: '{0} translations', groups: 1 },
   { re: /(\d+)\s*句配音/g, key: '{0} dubbing lines', groups: 1 },
   { re: /·\s*偏长/g, key: '· Too long', groups: 0 },

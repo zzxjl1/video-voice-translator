@@ -18,7 +18,8 @@
     "{0} min ago": "{0} min ago",
     "{0} h ago": "{0} h ago",
     "{0} d ago": "{0} d ago",
-    "{0}s": "{0}s"
+    "{0}s": "{0}s",
+    "{0} issues": "{0} issues"
   },
   "zh": {
     "{0} lines": "{0} 句",
@@ -39,7 +40,8 @@
     "{0} min ago": "{0} 分钟前",
     "{0} h ago": "{0} 小时前",
     "{0} d ago": "{0} 天前",
-    "{0}s": "{0} 秒"
+    "{0}s": "{0} 秒",
+    "{0} issues": "{0} 个问题"
   },
   "ja": {
     "{0} lines": "{0}行",
@@ -60,7 +62,8 @@
     "{0} min ago": "{0}分前",
     "{0} h ago": "{0}時間前",
     "{0} d ago": "{0}日前",
-    "{0}s": "{0}秒"
+    "{0}s": "{0}秒",
+    "{0} issues": "{0}件の問題"
   },
   "ko": {
     "{0} lines": "{0}줄",
@@ -81,7 +84,8 @@
     "{0} min ago": "{0}분 전",
     "{0} h ago": "{0}시간 전",
     "{0} d ago": "{0}일 전",
-    "{0}s": "{0}초"
+    "{0}s": "{0}초",
+    "{0} issues": "문제 {0}개"
   },
   "fr": {
     "{0} lines": "{0} lignes",
@@ -102,7 +106,8 @@
     "{0} min ago": "il y a {0} min",
     "{0} h ago": "il y a {0} h",
     "{0} d ago": "il y a {0} j",
-    "{0}s": "{0} s"
+    "{0}s": "{0} s",
+    "{0} issues": "{0} problèmes"
   },
   "de": {
     "{0} lines": "{0} Zeilen",
@@ -123,7 +128,8 @@
     "{0} min ago": "vor {0} Min.",
     "{0} h ago": "vor {0} Std.",
     "{0} d ago": "vor {0} T.",
-    "{0}s": "{0} s"
+    "{0}s": "{0} s",
+    "{0} issues": "{0} Probleme"
   },
   "pt": {
     "{0} lines": "{0} linhas",
@@ -144,7 +150,8 @@
     "{0} min ago": "há {0} min",
     "{0} h ago": "há {0} h",
     "{0} d ago": "há {0} d",
-    "{0}s": "{0} s"
+    "{0}s": "{0} s",
+    "{0} issues": "{0} problemas"
   },
   "it": {
     "{0} lines": "{0} righe",
@@ -165,7 +172,8 @@
     "{0} min ago": "{0} min fa",
     "{0} h ago": "{0} h fa",
     "{0} d ago": "{0} g fa",
-    "{0}s": "{0} s"
+    "{0}s": "{0} s",
+    "{0} issues": "{0} problemi"
   },
   "vi": {
     "{0} lines": "{0} dòng",
@@ -186,7 +194,8 @@
     "{0} min ago": "{0} phút trước",
     "{0} h ago": "{0} giờ trước",
     "{0} d ago": "{0} ngày trước",
-    "{0}s": "{0} giây"
+    "{0}s": "{0} giây",
+    "{0} issues": "{0} vấn đề"
   },
   "id": {
     "{0} lines": "{0} baris",
@@ -207,6 +216,7 @@
     "{0} min ago": "{0} menit lalu",
     "{0} h ago": "{0} jam lalu",
     "{0} d ago": "{0} hari lalu",
-    "{0}s": "{0} detik"
+    "{0}s": "{0} detik",
+    "{0} issues": "{0} masalah"
   }
 }

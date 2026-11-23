@@ -373,6 +373,20 @@ BROWSER_TTS_DEFAULT_VOICES = {
 def browser_voice_for_language(language: str) -> Optional[str]:
     return BROWSER_TTS_DEFAULT_VOICES.get(language)
 
+
+# Piper voice id 以语言区域开头（zh_CN-huayan-medium、en_US-…）。后端没有 Piper 的完整目录
+# （它在浏览器里），但能按前缀拒掉明显错的：别的语言的音色写进来，前端合成时必然失败。
+BROWSER_VOICE_PREFIX = {
+    "Chinese": "zh_CN", "English": "en_", "French": "fr_FR", "German": "de_DE",
+    "Italian": "it_IT", "Portuguese": "pt_", "Vietnamese": "vi_VN",
+    "Japanese": "ja_", "Korean": "ko_", "Indonesian": "id_",
+}
+
+
+def browser_voice_fits_language(voice: str, language: str) -> bool:
+    prefix = BROWSER_VOICE_PREFIX.get(language)
+    return bool(voice and prefix and voice.startswith(prefix))
+
 TTS_TIMEOUT = _env_int("TTS_TIMEOUT", 60)
 
 # ---- 多模态增强识别：omni 听原声，审核纠错 ASR 结果并标注语气 ----
@@ -790,18 +804,21 @@ def separation_capabilities() -> dict[str, dict]:
     }
 
 # ----- Capability tokens for the client-side compute endpoints -----
-# Signs the short-lived tokens that gate the 64 MB model download and the
-# stem upload. Set a stable value in .env; otherwise an ephemeral one is
-# generated and tokens break on every restart.
+# Signs the short-lived tokens that gate the 64 MB model download, the stem
+# upload, AND the audio URLs handed to external fetchers (ASR / omni / clone).
+# Set a stable value in .env; otherwise an ephemeral one is generated and every
+# token — including the audio link an in-flight ASR job is about to fetch —
+# breaks on restart, and never validates across multiple workers.
 SIGNING_SECRET = (os.environ.get("SIGNING_SECRET") or "").strip()
 if not SIGNING_SECRET:
     import secrets as _secrets
 
     SIGNING_SECRET = _secrets.token_urlsafe(32)
     logger.warning(
-        "SIGNING_SECRET is not set: generated an ephemeral one. Separator tokens "
-        "will be invalidated on restart and will not work across multiple "
-        "workers. Set SIGNING_SECRET in backend/.env."
+        "SIGNING_SECRET is not set: generated an ephemeral one. Capability tokens "
+        "(separator, and the audio links ASR/omni fetch) are invalidated on "
+        "restart and do not work across multiple workers. Set SIGNING_SECRET "
+        "in backend/.env."
     )
 TOKEN_TTL_SECONDS = _env_int("TOKEN_TTL_SECONDS", 1800)
 TOKEN_ISSUE_LIMIT = _env_int("TOKEN_ISSUE_LIMIT", 30)
@@ -920,8 +937,8 @@ SERVER_URL_BASE = _env("SERVER_URL_BASE", "https://video-voice-translator.idealb
 # browser here, so this must match the origin the user is actually visiting.
 APP_BASE_URL = _env("APP_BASE_URL", "https://video-voice-translator.idealbroker.cn").rstrip("/")
 # Google credentials are optional at boot: without them the app still starts,
-# but /api/auth/google/start returns 503 and the UI asks for a login that cannot
-# complete yet. This keeps local non-auth work possible without fake secrets.
+# but /api/auth/google/start redirects to /?auth_error=not_configured (the UI shows
+# a generic login-failed notice) because the login cannot complete yet. This keeps local non-auth work possible without fake secrets.
 GOOGLE_CLIENT_ID = _env("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = _env("GOOGLE_CLIENT_SECRET", "")
 GOOGLE_REDIRECT_URI = _env(

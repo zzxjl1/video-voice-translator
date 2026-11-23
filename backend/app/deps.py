@@ -47,7 +47,7 @@ def resolve_video_id(request: Request) -> str:
 
 # 工程 id 的形状：md5 十六进制，但客户端也可能带上下划线/短横线。长度上限是为了
 # 挡住"用超长 id 建目录/写文件"。
-_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 def validate_video_id(request: Request) -> None:
@@ -59,7 +59,7 @@ def validate_video_id(request: Request) -> None:
     （P2 #16）。这里挡在入口：形状不对直接 400，不进入业务逻辑。
     """
     video_id = request.path_params.get("video_id")
-    if video_id is not None and not _VIDEO_ID_RE.match(video_id):
+    if video_id is not None and not VIDEO_ID_RE.match(video_id):
         raise HTTPException(status_code=400, detail="malformed video id")
 
 

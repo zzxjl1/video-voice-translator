@@ -16,9 +16,10 @@ if (!rootElement) {
 }
 
 const root = ReactDOM.createRoot(rootElement);
-const legalKind = window.location.pathname === '/privacy'
+const legalPath = window.location.pathname.replace(/\/+$/, '');
+const legalKind = legalPath === '/privacy'
   ? 'privacy'
-  : window.location.pathname === '/terms'
+  : legalPath === '/terms'
     ? 'terms'
     : null;
 

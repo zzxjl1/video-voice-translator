@@ -1,5 +1,5 @@
 import React from 'react';
-import { LanguageSwitch } from '@/i18n';
+import { LanguageSwitch, t } from '@/i18n';
 
 type Kind = 'privacy' | 'terms';
 
@@ -15,10 +15,12 @@ export const LegalPage: React.FC<{ kind: Kind }> = ({ kind }) => {
           <LanguageSwitch />
         </div>
 
-        <article className="rounded-3xl border border-[#e5e5e0] bg-white p-7 shadow-sm sm:p-10">
+        <article lang="en" data-i18n-skip className="rounded-3xl border border-[#e5e5e0] bg-white p-7 shadow-sm sm:p-10">
           <p className="mb-2 text-[10px] font-bold uppercase tracking-[0.2em] text-claude-accent">Draft</p>
           <h1 className="font-serif text-3xl font-bold">{privacy ? 'Privacy Policy' : 'Terms of Service'}</h1>
           <p className="mt-2 text-[12px] text-gray-400">Last updated: November 2026</p>
+          {/* 法务文本不做机翻（没有法律效力、还可能误导）：只提供英文，并明说，免得语言开关像是坏了 */}
+          <p data-i18n-skip className="mt-1 text-[12px] text-gray-500">{t('本文档仅提供英文版。')}</p>
 
           {privacy ? (
             <div className="mt-8 space-y-5 text-[14px] leading-relaxed text-gray-600">

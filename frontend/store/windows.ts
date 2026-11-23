@@ -230,8 +230,6 @@ export function reduce(layout: Layout, action: Action, vp: Viewport): Layout {
 
 /** 布局版本号：默认布局改了就升一号，别再复用浏览器里旧版的开合状态。 */
 export const STORAGE_KEY = 'vvt.windows.v3';
-/** 旧版只有助手一个浮动窗口，位置存在这个 key 里。 */
-export const LEGACY_CHAT_KEY = 'vvt.chat.window';
 
 const isRect = (r: unknown): r is Rect =>
   !!r && typeof r === 'object' && ['x', 'y', 'w', 'h'].every((k) => Number.isFinite((r as Record<string, unknown>)[k]));
@@ -246,19 +244,11 @@ export function serialize(layout: Layout): string {
 }
 
 /**
- * 读回布局。任何一块坏了（缺字段、类型不对、JSON 坏）只那一块用默认值，不影响别的；
- * 没有存过但有旧版的助手窗口位置，就沿用它。
+ * 读回布局。任何一块坏了（缺字段、类型不对、JSON 坏）只那一块用默认值，不影响别的。
  */
-export function restore(raw: string | null, legacyChat: string | null, vp: Viewport): Layout {
+export function restore(raw: string | null, vp: Viewport): Layout {
   const base = defaultLayout(vp);
   const panels = { ...base.panels };
-
-  if (legacyChat) {
-    try {
-      const r = JSON.parse(legacyChat);
-      if (isRect(r)) panels.chat = { ...panels.chat, rect: clampRect(r, vp, MIN_SIZE.chat) };
-    } catch { /* 旧值坏了就用默认位置 */ }
-  }
 
   let active: PanelId | null = base.active;
   let order: PanelId[] = [];

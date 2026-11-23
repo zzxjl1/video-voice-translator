@@ -37,10 +37,23 @@ def _clear_oauth_cookie(response: Response) -> None:
     )
 
 
+def _client_ip(request: Request) -> str | None:
+    """反代后 request.client.host 恒为 127.0.0.1，真实地址在 X-Real-IP（只在来自本机的请求里信它）。"""
+    peer = request.client.host if request.client else None
+    if peer in ("127.0.0.1", "::1"):
+        return (request.headers.get("x-real-ip") or "").strip() or peer
+    return peer
+
+
 @router.get("/google/start")
-def google_start(return_to: str = "/") -> RedirectResponse:
+def google_start(request: Request, return_to: str = "/") -> RedirectResponse:
     if not config.AUTH_ENABLED:
         return _error_redirect("not_configured")
+    # 这个接口未登录就能调，每次都会往 oauth_states 写一行：不限流就能被拿来刷库。
+    # 复用令牌签发的滑动窗口限流（按来源地址）。
+    from app.services import token_service
+    if not token_service.check_issue_rate(f"oauth:{_client_ip(request) or 'unknown'}"):
+        return _error_redirect("rate_limited")
 
     state = secrets.token_urlsafe(32)
     browser_token = secrets.token_urlsafe(32)
@@ -114,14 +127,25 @@ def google_callback(
         response = _error_redirect("login_failed")
         _clear_oauth_cookie(response)
         return response
+    except Exception:  # noqa: BLE001 - 数据库 / 网络 / 对方返回了意外的形状：回登录页，不要给用户一个裸 500
+        logger.exception("Google login crashed")
+        response = _error_redirect("login_failed")
+        _clear_oauth_cookie(response)
+        return response
 
     # Rotate the browser session on login. Other devices keep their sessions.
-    sessions.revoke_session(sessions.request_session_token(request))
-    token = sessions.create_session(
-        user_id=user["id"],
-        user_agent=(request.headers.get("user-agent") or "")[:500],
-        ip=request.client.host if request.client else None,
-    )
+    try:
+        sessions.revoke_session(sessions.request_session_token(request))
+        token = sessions.create_session(
+            user_id=user["id"],
+            user_agent=(request.headers.get("user-agent") or "")[:500],
+            ip=_client_ip(request),
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("Creating session failed")
+        response = _error_redirect("login_failed")
+        _clear_oauth_cookie(response)
+        return response
 
     response = RedirectResponse(
         url=_safe_return_to(pending["return_to"]),
@@ -137,6 +161,11 @@ def me(request: Request) -> JSONResponse:
     user = current_user(request)
     response = JSONResponse({"user": user})
     response.headers["Cache-Control"] = "no-store"
+    # 服务端每小时把会话往后推 30 天，但 cookie 只在登录时设置过一次：不重发的话，浏览器里的
+    # cookie 到登录后第 30 天照样过期，活跃用户也被登出。前端每次加载都会调 /me，在这里重发。
+    token = sessions.request_session_token(request)
+    if user is not None and token:
+        sessions.set_session_cookie(response, token)
     return response
 
 

@@ -170,7 +170,7 @@ const TopBar: React.FC<Props> = ({
                     </svg>
                   )}
                 </div>
-                <span className="text-[10px] font-black uppercase tracking-[0.15em] text-gray-400">Issues</span>
+                <span className="text-[10px] font-black uppercase tracking-[0.15em] text-gray-400">问题</span>
               </div>
               <span className={`text-sm font-bold ${pending === 0 ? 'text-gray-700' : 'text-gray-800'}`}>
                 {pending === 0 ? '没问题' : issueText}
@@ -210,7 +210,7 @@ const TopBar: React.FC<Props> = ({
                 )}
               </div>
               <span className="text-[10px] font-black uppercase tracking-[0.15em] text-gray-400">
-                {exporting ? 'Exporting' : 'Export'}
+                {exporting ? '导出中' : '导出'}
               </span>
             </div>
             <span className="text-sm font-bold mt-1 ml-1">导出成片</span>

@@ -103,3 +103,12 @@ def list_projects(owner_id: str) -> list[dict]:
             (owner_id,),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def release_project(project_id: str, owner_id: str) -> None:
+    """Undo a claim made by this very request (upload failed after assign_project)."""
+    with db.db() as conn:
+        conn.execute(
+            "DELETE FROM project_owners WHERE project_id = ? AND owner_id = ?",
+            (project_id, owner_id),
+        )

@@ -155,11 +155,15 @@ export function reduceInit(state: InitState, event: ProgressEvent): InitState {
         status === 'done' ? `${who}：${event.reused ? '复用已有音色' : '克隆完成'}` :
         status === 'failed' ? `${who}：克隆失败（${event.error}）` :
         status === 'retrying' ? `${who}：克隆失败，正在重试 ${event.attempt}/3…` :
-        status === 'skipped' ? `${who}：没有可用素材，使用系统音色` : '';
+        status === 'skipped'
+          ? (event.reason === 'no_material' ? `${who}：没有可用素材，已跳过，使用系统音色`
+            : event.reason === 'enroll_failed' ? `${who}：克隆重试 3 次仍失败，已跳过，使用系统音色（${event.error}）`
+            : `${who}：克隆没做成，已跳过，使用系统音色（${event.error}）`)
+          : '';
       if (!text) return state;
       const progress = event.total ? { done: Number(event.progress ?? 0), total: Number(event.total) } : undefined;
       return pushLog(setStep(state, 'voice_clone', { status: 'running', ...(progress ? { progress } : {}) }),
-        { key: uniq('vc'), text, level: status === 'failed' || status === 'pick_failed' ? 'warn' : status === 'done' ? 'ok' : 'info' });
+        { key: uniq('vc'), text, level: status === 'failed' || status === 'pick_failed' || status === 'skipped' ? 'warn' : status === 'done' ? 'ok' : 'info' });
     }
 
     case 'tts': {

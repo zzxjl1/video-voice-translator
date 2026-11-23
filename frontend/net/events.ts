@@ -13,7 +13,8 @@
  * 纯 TS、不碰 DOM/React：`fetch` 通过参数注入，测试里直接喂一个假的流。
  */
 import type { ServerEvent } from './types';
-import { log } from '../utils/log';
+import { log } from '../utils/log.ts';
+import { notifyUnauthorized } from './session.ts';
 
 export interface EventClientOptions {
   url: (since: number) => string;
@@ -22,6 +23,8 @@ export interface EventClientOptions {
   onState?: (state: 'connecting' | 'open' | 'reconnecting' | 'closed') => void;
   /** 服务端回 404（工程不存在）：不再重连。 */
   onGone?: () => void;
+  /** 服务端回 401（登录态没了）：不再重连，重连也不会成功。 */
+  onUnauthorized?: () => void;
   fetchImpl?: typeof fetch;
   /** 重连退避：首次、上限（毫秒）。 */
   backoff?: { initial: number; max: number };
@@ -57,6 +60,11 @@ export class EventClient {
       try {
         log.info('sse', 'connected');
         const gone = await this.connectOnce();
+        if (gone === 'unauthorized') {
+          notifyUnauthorized();
+          this.opts.onUnauthorized?.();
+          break;
+        }
         if (gone) {
           this.opts.onGone?.();
           break;
@@ -85,8 +93,8 @@ export class EventClient {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  /** 一次连接。返回 true = 工程不存在（别再重连）。流自然结束或出错都会回到 run 的循环。 */
-  private async connectOnce(): Promise<boolean> {
+  /** 一次连接。返回 true = 工程不存在、'unauthorized' = 登录态没了（都别再重连）。流自然结束或出错都会回到 run 的循环。 */
+  private async connectOnce(): Promise<boolean | 'unauthorized'> {
     this.abort = new AbortController();
     const response = await this.opts.fetchImpl(this.opts.url(this.seq), {
       signal: this.abort.signal,
@@ -95,6 +103,11 @@ export class EventClient {
     if (response.status === 404) {
       log.warn('sse', 'project gone (404)');
       return true;
+    }
+    if (response.status === 401) {
+      // 无限退避重连没有意义：会话没了，重连一万次也是 401。交给 AuthProvider 回登录页。
+      log.warn('sse', 'unauthorized (401)');
+      return 'unauthorized';
     }
     if (!response.ok || !response.body) throw new Error(`events: HTTP ${response.status}`);
 
@@ -136,7 +149,8 @@ export class EventClient {
       if (event.seq <= this.seq) return;
       this.seq = event.seq;
     }
-    log.debug('sse', `event ${event.type}#${event.seq ?? '?'}`, event);
+    // 只记类型和序号：事件体里有译文、聊天内容这类用户文本，不该进控制台（用户截图报 bug 时会带出去）
+    log.debug('sse', `event ${event.type}#${event.seq ?? '?'}`);
     this.opts.onEvent(event);
   }
 }

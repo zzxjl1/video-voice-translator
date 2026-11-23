@@ -33,6 +33,9 @@ def assign_browser_voices(ctx: Ctx, voices: list[str]):
         raise CommandError("只有浏览器配音模式才能分配 Piper 音色")
     if not voices:
         raise CommandError("至少要有一个 Piper voice")
+    bad = [v for v in voices if not config.browser_voice_fits_language(v, state.target_language)]
+    if bad:
+        raise CommandError(f"这些音色不是 {state.target_language} 的：{bad}")
     def apply(s):
         for i, sp in enumerate(s.speakers):
             if not sp.browser_voice:
@@ -56,6 +59,8 @@ def set_line_browser_voice(ctx: Ctx, lines: list[int], voice: str = ""):
     segs = resolve_lines(state, lines)
     if not segs:
         raise CommandError("没有找到这些行")
+    if voice and not config.browser_voice_fits_language(voice, state.target_language):
+        raise CommandError(f"音色 {voice!r} 不是 {state.target_language} 的")
     def apply(s):
         for item in segs:
             target = s.segment(item.id)
@@ -109,8 +114,15 @@ def _line_numbers(state, ids: list[str]) -> list[int]:
     return [state.segments.index(s) + 1 for s in (state.segment(i) for i in ids) if s is not None]
 
 
+def _need_remote(state) -> None:
+    """克隆音色、候选、试听都走 DashScope（花钱）。浏览器配音 / 仅字幕模式下不该被触发。"""
+    if state.dubbing_mode != "remote":
+        raise CommandError("声音克隆和试听只在远端配音（remote）模式下可用；浏览器配音用本地 Piper 音色，仅字幕不配音")
+
+
 def _audio_url(video_id: str) -> str:
-    return f"{config.SERVER_URL_BASE}/api/projects/{video_id}/audio"
+    """给 omni 取音频用：它没有登录 cookie，必须带签名令牌（见 jobs._public_audio_url）。"""
+    return jobs._public_audio_url(config.SERVER_URL_BASE, video_id)
 
 
 @command(
@@ -130,9 +142,8 @@ def _audio_url(video_id: str) -> str:
 async def clone_voice(ctx: Ctx, speaker: str, reference_lines: Optional[list] = None, preset: Optional[str] = None):
     from app.services import voice_clone_service as vc
     state = ctx.state
+    _need_remote(state)
     sp = resolve_speaker(state, speaker)
-    if state.dubbing_mode != "remote":
-        raise CommandError("只有远端配音模式支持声音克隆")
 
     async def body(job):
         job.step = f"克隆 {sp.name}"
@@ -219,9 +230,8 @@ async def generate_voice_candidates(ctx: Ctx, speaker: str, presets: Optional[li
                                     reference_lines: Optional[list] = None):
     from app.services import voice_clone_service as vc
     state = ctx.state
+    _need_remote(state)
     sp = resolve_speaker(state, speaker)
-    if state.dubbing_mode != "remote":
-        raise CommandError("只有远端配音模式支持声音克隆")
     options = {o["id"]: o for o in vp.preset_options(state.segments, sp.id)}
     if presets:
         bad = [p for p in presets if p not in options]
@@ -309,6 +319,7 @@ async def generate_voice_candidates(ctx: Ctx, speaker: str, presets: Optional[li
 async def preview_voice_candidates(ctx: Ctx, speaker: str, voice_id: Optional[str] = None):
     from app.services import voice_clone_service as vc
     state = ctx.state
+    _need_remote(state)
     sp = resolve_speaker(state, speaker)
     voices = _preview_voices(state, sp)
     if not voices:
@@ -340,6 +351,7 @@ async def preview_voice_candidates(ctx: Ctx, speaker: str, voice_id: Optional[st
 )
 def use_voice_candidate(ctx: Ctx, speaker: str, candidate: str):
     state = ctx.state
+    _need_remote(state)
     sp = resolve_speaker(state, speaker)
     cand = next((c for c in sp.clone_candidates if c.get("id") == candidate), None)
     if cand is None:
@@ -373,6 +385,7 @@ def use_voice_candidate(ctx: Ctx, speaker: str, candidate: str):
 async def delete_voice_candidates(ctx: Ctx, speaker: str, candidate: Optional[str] = None):
     from app.services import voice_clone_service as vc
     state = ctx.state
+    _need_remote(state)
     sp = resolve_speaker(state, speaker)
     doomed = [c for c in sp.clone_candidates if candidate is None or c.get("id") == candidate]
     if not doomed:
@@ -404,6 +417,7 @@ async def delete_voice_candidates(ctx: Ctx, speaker: str, candidate: Optional[st
 async def preview_voice(ctx: Ctx, speaker: str):
     from app.services import voice_clone_service as vc
     state = ctx.state
+    _need_remote(state)
     sp = resolve_speaker(state, speaker)
     voice = status.clone_voice_id(state, sp) or sp.voice
     if not voice:

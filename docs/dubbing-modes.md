@@ -8,24 +8,7 @@ browser  浏览器本地 Piper；FREE，不克隆
 off      不配音；只做转写/翻译/字幕，原声保持不变
 ```
 
-旧的 `enable_dubbing` 布尔值已经删除，代码不保留双读兼容。
-
-## 迁移
-
-一次性迁移所有 `backend/data/*/project.json`：
-
-```bash
-cd backend
-../.venv/Scripts/python scripts/migrate_dubbing_mode.py
-```
-
-规则：
-
-```text
-enable_dubbing=false -> off
-enable_dubbing=true  -> remote
-enable_voice_clone   -> 保留不动
-```
+本项目处于调试阶段，**不保留任何历史兼容**：旧工程不迁移，需要时直接删掉 `backend/data/<id>/` 重新上传。
 
 工程设置存在 `project.json`，不在 SQLite。SQLite 只存账号、session、工程归属。
 

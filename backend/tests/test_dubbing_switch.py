@@ -37,6 +37,8 @@ subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "color=c=bla
                 "-c:a", "aac", "-b:a", "128k", SRC], check=True)
 
 with TestClient(app) as c:
+    from _auth import login
+    login(c)
     vid = c.post("/api/projects", files={"file": ("in.mp4", open(SRC, "rb"), "video/mp4")}).json()["id"]
     r = c.post(f"/api/projects/{vid}/setup", json={
         "target_language": "Chinese", "dubbing_mode": "off",

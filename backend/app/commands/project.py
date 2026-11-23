@@ -53,9 +53,14 @@ def set_settings(ctx: Ctx, **patch):
         raise CommandError(f"不支持的方言 {changed['accent']!r}，可选：{'、'.join(config.CHINESE_ACCENTS)}")
     if "dubbing_mode" in changed and changed["dubbing_mode"] not in ("remote", "browser", "off"):
         raise CommandError("dubbing_mode 只能是 remote / browser / off")
+    # 用"改完之后"的语言和配音方式一起判断：只改目标语言（工程已经是浏览器配音）同样会
+    # 落到没有本地音色的语言上，那样前端合成必然失败。
     target = changed.get("target_language", state.target_language)
-    if changed.get("dubbing_mode") == "browser" and not config.browser_voice_for_language(target):
+    final_mode = changed.get("dubbing_mode", state.dubbing_mode)
+    if final_mode == "browser" and not config.browser_voice_for_language(target):
         raise CommandError(f"{target} 暂无本地 Piper 音色，请改用 Remote 或 Off")
+    if changed.get("browser_voice") and not config.browser_voice_fits_language(changed["browser_voice"], target):
+        raise CommandError(f"音色 {changed['browser_voice']!r} 不是 {target} 的")
     before = status.needs(state)
 
     def apply(s):

@@ -14,7 +14,7 @@
   POST   /projects/{id}/chat               发一条消息（立刻返回，回复走事件流）
   POST   /projects/{id}/chat/confirm       确认 / 拒绝一张确认卡片
   POST   /projects/{id}/chat/stop          停止当前这轮对话
-  文件：video / audio / audio/original / audio/background / audio/stereo / tts/{seg} / voice-sample / voice-preview / export/download / subtitles.srt
+  文件：video / audio / audio/original / audio/background / audio/stereo / tts/{seg} / voice-preview / export/download / subtitles.srt
   浏览器分离：separator-token / stems
 """
 import asyncio
@@ -28,7 +28,7 @@ import shutil
 import uuid
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 
@@ -128,19 +128,28 @@ def upload(file: UploadFile = File(...), user: dict = Depends(require_user)):
         if owner is None and store.exists(video_id):
             # Old anonymous projects are intentionally not claimed in code.
             raise HTTPException(status_code=409, detail="This video already exists and has no owner")
-        base = get_video_dir(video_id)
-        final_path = os.path.join(base, f"original_video{ext}")
-        existed = os.path.exists(final_path)
-        if existed:
-            os.remove(temp_path)
-        else:
-            os.rename(temp_path, final_path)
-        state = store.create(video_id, file.filename or f"video{ext}", final_path)
+        # 先登记 owner 再落盘：反过来的话，登记失败会留下一个没有主人的工程，之后同一个文件
+        # 再传永远是 409。登记本身是幂等的（同一个人重复登记直接返回）。
+        claimed_here = False
         if owner is None:
             try:
                 auth_users.assign_project(video_id, user["id"])
+                claimed_here = True
             except auth_users.ProjectOwnedError:
                 raise HTTPException(status_code=409, detail="This video already belongs to another account")
+        try:
+            base = get_video_dir(video_id)
+            final_path = os.path.join(base, f"original_video{ext}")
+            existed = os.path.exists(final_path)
+            if existed:
+                os.remove(temp_path)
+            else:
+                os.rename(temp_path, final_path)
+            state = store.create(video_id, file.filename or f"video{ext}", final_path)
+        except Exception:
+            if claimed_here:                      # 工程没建成，别留着一个指向空目录的归属
+                auth_users.release_project(video_id, user["id"])
+            raise
         return {"id": video_id, "filename": state.filename, "exists": existed, "stage": state.stage,
                 "hasLines": bool(state.segments)}
     except HTTPException:
@@ -151,7 +160,7 @@ def upload(file: UploadFile = File(...), user: dict = Depends(require_user)):
         if os.path.exists(temp_path):
             os.remove(temp_path)
         logger.error(f"Upload failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="upload failed")
 
 
 @router.get("/{video_id}")
@@ -213,6 +222,9 @@ async def setup_and_start(video_id: str, body: SetupBody):
         raise HTTPException(status_code=400, detail="dubbing_mode 必须是 remote / browser / off")
     if body.dubbing_mode == "browser" and not config.browser_voice_for_language(body.target_language):
         raise HTTPException(status_code=400, detail=f"{body.target_language} 暂无本地 Piper 音色")
+    if body.dubbing_mode == "browser" and body.browser_voice \
+            and not config.browser_voice_fits_language(body.browser_voice, body.target_language):
+        raise HTTPException(status_code=400, detail=f"音色 {body.browser_voice!r} 不是 {body.target_language} 的")
     if body.accent and body.accent not in config.CHINESE_ACCENTS:
         raise HTTPException(status_code=400, detail="不支持的方言")
     if body.target_language not in config.TARGET_LANGUAGES:
@@ -546,17 +558,6 @@ def serve_kept_original(video_id: str, segment_id: str):
     return Response(wav, media_type="audio/wav", headers={"Cache-Control": "private, max-age=31536000, immutable"})
 
 
-@router.get("/{video_id}/voice-sample/{speaker_id}")
-def voice_sample(video_id: str, speaker_id: str):
-    """克隆参考样本 —— DashScope 通过公网 URL 取它来注册音色。"""
-    if not tts_service.is_safe_segment_id(speaker_id):
-        raise HTTPException(status_code=400, detail="malformed speaker id")
-    path = os.path.join(video_dir_path(video_id), "voice_clone", speaker_id, "sample.wav")
-    if not os.path.exists(path):
-        raise HTTPException(status_code=404, detail="Sample not found")
-    return FileResponse(path, media_type="audio/wav")
-
-
 @router.get("/{video_id}/voice-preview/{speaker_id}")
 def voice_preview(video_id: str, speaker_id: str):
     if not tts_service.is_safe_segment_id(speaker_id):
@@ -624,8 +625,20 @@ def preview_cues(video_id: str, body: dict):
 # ----------------------------------------------------------------------------
 
 @router.post("/{video_id}/browser-tts/{segment_id}")
-async def upload_browser_tts(video_id: str, segment_id: str, audio: UploadFile = File(...)):
-    """Receive one browser-Piper WAV and write it to the normal tts/<seg>.mp3 path."""
+async def upload_browser_tts(
+    video_id: str,
+    segment_id: str,
+    audio: UploadFile = File(...),
+    text: str = Form(...),
+    voice: str = Form(...),
+):
+    """
+    Receive one browser-Piper WAV and write it to the normal tts/<seg>.mp3 path.
+
+    客户端要带上**合成时用的**译文和音色。浏览器合成一句要几秒到几十秒，整批要几分钟，期间用户
+    可能改了译文或音色；服务端按"现在"的状态算指纹的话，按旧文本合成的音频会被标成新鲜，
+    导出时音字不一致。所以这里核对：和当前状态不一致就拒绝（409），让客户端重做这一句。
+    """
     if not tts_service.is_safe_segment_id(segment_id):
         raise HTTPException(status_code=400, detail="invalid segment id")
     state = store.require_state(video_id)
@@ -634,8 +647,11 @@ async def upload_browser_tts(video_id: str, segment_id: str, audio: UploadFile =
     seg = state.segment(segment_id)
     if seg is None or not status.dubbable(state, seg):
         raise HTTPException(status_code=400, detail="segment is not dubbable")
-    if not status.resolve_voice(state, seg):
+    current_voice = status.resolve_voice(state, seg)
+    if not current_voice:
         raise HTTPException(status_code=409, detail="this language has no local Piper voice")
+    if (seg.translated_text or "").strip() != (text or "").strip() or current_voice != voice:
+        raise HTTPException(status_code=409, detail="line changed while it was being synthesized")
 
     raw = await audio.read()
     if not raw or len(raw) > 30 * 1024 * 1024:
@@ -645,39 +661,70 @@ async def upload_browser_tts(video_id: str, segment_id: str, audio: UploadFile =
         raise HTTPException(status_code=503, detail="ffmpeg is not available")
 
     project_dir = get_video_dir(video_id)
-    tmp_path = os.path.join(project_dir, f".browser-tts-{segment_id}.wav")
     out_path = tts_audio_path(video_id, segment_id)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    # 临时文件名带随机后缀：两个标签页同时传同一句，不会写同一个文件；ffmpeg 先写临时 mp3，
+    # 成功再原子替换，失败也不会留下半截的 mp3（旧指纹仍匹配时它会被当成新鲜）。
+    token = uuid.uuid4().hex[:8]
+    tmp_in = os.path.join(project_dir, f".browser-tts-{segment_id}-{token}.wav")
+    tmp_out = os.path.join(os.path.dirname(out_path), f".{segment_id}-{token}.mp3")
     try:
-        with open(tmp_path, "wb") as fh:
+        with open(tmp_in, "wb") as fh:
             fh.write(raw)
-        proc = await asyncio.create_subprocess_exec(
-            ffmpeg, "-y", "-i", tmp_path, "-vn", "-codec:a", "libmp3lame", "-q:a", "2", out_path,
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
-        )
-        _, err = await proc.communicate()
-        if proc.returncode != 0:
-            raise HTTPException(status_code=422, detail=f"ffmpeg failed: {err[-300:].decode(errors='replace')}")
-        duration = subtitle_service.probe_duration(out_path)
+        async def _encode(extra: list[str]) -> None:
+            proc = await asyncio.create_subprocess_exec(
+                ffmpeg, "-y", "-i", tmp_in, "-vn", *extra, "-codec:a", "libmp3lame", "-q:a", "2", "-f", "mp3", tmp_out,
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+            )
+            _, err = await proc.communicate()
+            if proc.returncode != 0:
+                raise HTTPException(status_code=422, detail=f"ffmpeg failed: {err[-300:].decode(errors='replace')}")
+
+        await _encode([])
+        duration = subtitle_service.probe_duration(tmp_out)
         if not duration:
             raise HTTPException(status_code=422, detail="audio duration could not be read")
 
+        # 时间槽适配。远端 TTS 是"估语速 → 合成 → 量时长 → 一次纠偏"；本地 Piper 没有语速参数，
+        # 合成出来是自然语速。比时间槽长的话，混音器只允许加速到 MIX_RATE_MAX，超出的部分会被
+        # 直接截断（句尾被吞）。所以在这里先用 atempo（保持音高）把它压进"混音器能接受"的范围：
+        # 压到槽长，但不超过混音器的上限；还超的，混音器照旧裁剪，这是自然语速的物理极限。
+        slot = max(0.0, (seg.end_time or 0.0) - (seg.start_time or 0.0))
+        if slot > 0 and duration > slot * 1.02:
+            from app.services import mix_service
+            tempo = min(duration / slot, mix_service.RATE_MAX)
+            if tempo > 1.02:
+                await _encode(["-filter:a", f"atempo={tempo:.4f}"])
+                fitted = subtitle_service.probe_duration(tmp_out)
+                if fitted:
+                    duration = fitted
+
+        # 落盘 + 写指纹放在同一个临界区里：再核对一次（音频传输和转码期间也可能被改了），
+        # 一致才替换文件并写指纹；不一致丢弃，让客户端重做。
+        stale = {"v": False}
+
         def apply(s):
             line = s.segment(segment_id)
-            if line is None:
+            if line is None or (line.translated_text or "").strip() != (text or "").strip() \
+                    or status.resolve_voice(s, line) != voice:
+                stale["v"] = True
                 return
+            os.replace(tmp_out, out_path)
             line.actual_duration = duration
             line.tts_gain_db = None
             line.tts_fp = status.expected_tts_fp(s, line)
 
         store.mutate(video_id, apply, actor="user", cmd="browser_tts",
                      summary=f"浏览器配音：{segment_id}", undoable=False)
+        if stale["v"]:
+            raise HTTPException(status_code=409, detail="line changed while it was being synthesized")
         return {"ok": True, "duration": duration}
     finally:
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
+        for path in (tmp_in, tmp_out):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
 
 
 @router.post("/{video_id}/separator-token")

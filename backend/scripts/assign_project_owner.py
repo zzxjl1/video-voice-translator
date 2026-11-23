@@ -21,15 +21,22 @@ if BACKEND_DIR not in sys.path:
 
 from app import config  # noqa: E402
 from app.auth import db, users  # noqa: E402
+from app.deps import VIDEO_ID_RE  # noqa: E402
 
 
 def find_user(email: str) -> dict | None:
+    """按邮箱找账号。邮箱列不是 UNIQUE（用户可能改过邮箱）：匹配到多个就拒绝，不替你选一个。"""
     with db.db() as conn:
-        row = conn.execute(
-            "SELECT id, email, name FROM users WHERE lower(email) = lower(?) LIMIT 1",
+        rows = conn.execute(
+            "SELECT id, email, name FROM users WHERE lower(email) = lower(?)",
             (email,),
-        ).fetchone()
-        return dict(row) if row else None
+        ).fetchall()
+    if len(rows) > 1:
+        print(f"{len(rows)} accounts share the email {email}; refusing to guess:", file=sys.stderr)
+        for r in rows:
+            print(f"  {r['id']}  {r['name']}", file=sys.stderr)
+        sys.exit(3)
+    return dict(rows[0]) if rows else None
 
 
 def all_project_ids() -> list[str]:
@@ -49,6 +56,7 @@ def main() -> int:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
+    db.init_db()                       # 库不存在时先建好，而不是直接抛 sqlite 错误
     user = find_user(args.email)
     if user is None:
         print(f"User not found: {args.email}", file=sys.stderr)
@@ -56,11 +64,22 @@ def main() -> int:
 
     if args.project_id:
         ids = list(dict.fromkeys(args.project_id))
+        bad = [i for i in ids if not VIDEO_ID_RE.fullmatch(i) or not os.path.isfile(os.path.join(config.DATA_DIR, i, "project.json"))]
+        if bad:
+            # 给不存在的 id 占位，会让之后别人上传同一个文件得到 409
+            print(f"not an existing project id: {bad}", file=sys.stderr)
+            return 2
     elif args.all_anonymous:
         ids = all_project_ids()
     else:
         print("Pass --project-id or --all-anonymous", file=sys.stderr)
         return 2
+
+    if args.all_anonymous and not args.dry_run:
+        n = sum(1 for i in ids if users.owner_of(i) is None)
+        if input(f"Assign {n} ownerless projects to {user['email']}? [y/N] ").strip().lower() != "y":
+            print("aborted")
+            return 1
 
     assigned = skipped = conflicts = 0
     for project_id in ids:

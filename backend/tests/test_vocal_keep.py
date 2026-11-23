@@ -266,6 +266,8 @@ def seed_vocal(s):
     s.segments.append(Segment("v1", "0", 7.0, 8.5, "（笑声）", kind="vocal"))
 store.mutate(VID, seed_vocal, actor="user", cmd="t", summary="t")
 client = TestClient(app); P = f"/api/projects/{VID}"
+from _auth import login, own
+login(client); own(VID)
 r = client.get(f"{P}/keep/v1")
 check("③ 预览接口：没做过人声分离 → 404 并说明原因", r.status_code == 404 and "分离" in r.json()["detail"], (r.status_code, r.text[:80]))
 write_wav(os.path.join(D, "background.wav"), track(44100, 14.0, []), 44100)
@@ -527,6 +529,7 @@ if os.path.exists(os.path.join(SAMPLE, "speech_stem.flac")) and os.path.exists(o
           for (_, g), e in zip(vocal, truth_nv)), [(g.start_time, g.end_time) for _, g in vocal])
     check("⑥ 再问一次：没有剩下的了（插入的行把候选覆盖掉，幂等）", ai("find_uncovered_sounds")["result"]["count"] == 0)
     c2 = TestClient(app)
+    login(c2); own(E2E)
     keep_urls = [view.segment_view(es, g, i)["audioUrl"] for i, g in enumerate(es.segments) if g.kind == "vocal"]
     check("⑥ 三行都有预览地址，接口真的返回对应时长的 wav",
           all(u and (lambda r: r.status_code == 200 and abs(wave.open(io.BytesIO(r.content)).getnframes() / config.EXPORT_SAMPLE_RATE - (g.end_time - g.start_time)) < 0.03)(c2.get(u))
@@ -743,6 +746,7 @@ if os.path.exists(os.path.join(SAMPLE, "speech_stem.flac")) and os.path.exists(o
         return False
 
     with TestClient(app) as cc:
+        login(cc); own(AID)
         r = cc.post(f"/api/projects/{AID}/setup", json={"target_language": "English", "dubbing_mode": "remote"})
         check("⑦ 端到端：setup 启动初始化", r.status_code == 200, r.text)
         check("⑦ 端到端：等初始化结束", wait_init()); time.sleep(0.3)
@@ -1071,6 +1075,8 @@ d_ = video_dir_path(VID)
 write_wav(os.path.join(d_, "background.wav"), track(44100, 30.0, []), 44100)
 write_wav(os.path.join(d_, "vocals.wav"), track(44100, 30.0, [(12.0, 24.0, 660)]), 44100)
 c10 = TestClient(app); PP = f"/api/projects/{VID}"
+login(c10)
+own(VID)       # fresh() 重建了工程，owner 登记在上一个用户名下；换成这个客户端的用户
 sv = store.get_state(VID)
 idx = [g.id for g in sv.segments].index("sg")
 check("⑩ 视图：歌曲行带预览地址、kind=song", view.segment_view(sv, sv.segments[idx], idx)["audioUrl"] == f"{PP}/keep/sg?v=12.000-24.000" and view.segment_view(sv, sv.segments[idx], idx)["kind"] == "song")
@@ -1209,6 +1215,7 @@ if os.path.exists(os.path.join(SAMPLE, "speech_stem.flac")) and os.path.exists(o
         return False
     try:
         with TestClient(app) as cs:
+            login(cs); own(SID)
             r = cs.post(f"/api/projects/{SID}/setup", json={"target_language": "English", "dubbing_mode": "remote", "mm_enhance": True})
             check("⑩ 端到端：setup（审听增强打开）启动初始化", r.status_code == 200, r.text)
             check("⑩ 端到端：等初始化结束", wait_song_init()); _t3.sleep(0.3)

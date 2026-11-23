@@ -81,6 +81,8 @@ const App: React.FC = () => {
   const [browserPreparing, setBrowserPreparing] = useState(false);
   const [browserError, setBrowserError] = useState<string | null>(null);
   const browserInitKey = useRef<string | null>(null);
+  // 取消本地配音：每句开始前检查；取消后不再自动开始（key 保持，直到用户重试或重新开始）
+  const browserAbort = useRef<AbortController | null>(null);
   const initWasRunning = useRef(false);
   const [browserArmed, setBrowserArmed] = useState(false);
   const startInFlight = useRef(false);
@@ -91,6 +93,18 @@ const App: React.FC = () => {
     && reportMatchesLanguage && view.needs.dub > 0
     && browserInitKey.current !== `${view.id}:${view.settings.dubbingMode}:${view.settings.targetLanguage}:${view.settings.accent ?? ''}`,
   );
+
+  // 本地配音的状态属于"某一个工程"：切到另一个工程（或回首页）时全部清掉，并停掉还在跑的那批。
+  // 否则 A 工程失败后打开 B，B 的初始化页会显示 A 的错误并被锁在初始化页。
+  useEffect(() => {
+    browserAbort.current?.abort();
+    browserAbort.current = null;
+    browserInitKey.current = null;
+    initWasRunning.current = false;
+    setBrowserPreparing(false);
+    setBrowserError(null);
+    setBrowserArmed(false);
+  }, [videoId]);
 
   // —— 前进/后退 ——
   useEffect(() => {
@@ -282,7 +296,6 @@ const App: React.FC = () => {
     setBrowserError(null);
     setBrowserPreparing(true);
     const startedAt = Date.now();
-    console.info('[browser-tts] start', view.needs.dub, 'lines');
     log.info('browser-tts', 'init auto start', { id: shortId(view.id), lines: view.needs.dub, lang: view.settings.targetLanguage, accent: view.settings.accent });
     const put = (text: string, level: 'info' | 'error' = 'info') => setPrep((s) => {
       const i = s.log.findIndex((l) => l.key === 'browser-tts');
@@ -290,23 +303,31 @@ const App: React.FC = () => {
       return { ...s, log: i >= 0 ? s.log.map((l, j) => (j === i ? line : l)) : [...s.log, line] };
     });
     put(`本地配音：${view.needs.dub} 句待生成`);
+    const abort = new AbortController();
+    browserAbort.current = abort;
     void fillBrowserDubbing(view, {
+      signal: abort.signal,
       onProgress: (p) => {
         put(`本地配音 ${p.index}/${p.total}：第 ${p.line.line} 句`);
-        console.info('[browser-tts]', p.index + '/' + p.total, 'line', p.line.line, p.voice);
         log.info('browser-tts', 'progress', { index: p.index, total: p.total, line: p.line.line, voice: p.voice });
       },
     })
-      .then((done) => {
-        const text = done ? `本地配音完成：${done} 句` : '本地配音无需生成';
-        put(text);
-        console.info('[browser-tts] done', done, 'lines');
-        log.info('browser-tts', 'init auto done', { lines: done });
+      .then((r) => {
+        if (r.cancelled) {
+          put(`本地配音已取消（完成 ${r.done} 句）`);
+        } else if (r.failed.length) {
+          // 有句子没做成不该把人锁在初始化页：其余句子已经配好，进编辑器后可以单独重做那几句
+          const first = r.failed[0];
+          put(`本地配音：${r.done} 句完成，${r.failed.length} 句失败（第 ${first.line} 句：${first.reason}），可进入编辑器后重做`, 'error');
+        } else {
+          put(r.done ? `本地配音完成：${r.done} 句` : '本地配音无需生成');
+        }
+        log.info('browser-tts', 'init auto done', { done: r.done, failed: r.failed.length, cancelled: r.cancelled });
       })
       .catch((e) => {
+        // 只有"整批做不了"才走这里（没有本地音色、分配音色失败）
         const message = e instanceof Error ? e.message : String(e);
         setBrowserError(`本地配音失败：${message}`);
-        console.error('[browser-tts] failed', message);
         log.error('browser-tts', 'init auto failed', message);
         put(`本地配音失败：${message}`, 'error');
       })
@@ -315,6 +336,7 @@ const App: React.FC = () => {
         // finishes in under a second.
         const remaining = 1200 - (Date.now() - startedAt);
         if (remaining > 0) await new Promise((r) => setTimeout(r, remaining));
+        if (browserAbort.current === abort) browserAbort.current = null;
         await project.reload();
         setBrowserPreparing(false);
       });
@@ -425,8 +447,14 @@ const App: React.FC = () => {
           error={browserError ?? (view.stage === 'failed' ? view.initError : startError)}
           currentStep={job?.step ?? (browserPreparing ? '浏览器配音' : preparing ? '人声分离' : null)}
           elapsedS={elapsed}
-          cancelling={job?.cancelling}
-          onCancel={() => void project.run('cancel_job')}
+          cancelling={job?.cancelling || browserAbort.current?.signal.aborted}
+          onCancel={() => {
+            if (browserAbort.current) { browserAbort.current.abort(); return; }
+            // 取消的是服务端初始化：之后即使工程回到 ready，也不自动开始本地配音（违背取消意图）
+            browserInitKey.current = `${view.id}:${view.settings.dubbingMode}:${view.settings.targetLanguage}:${view.settings.accent ?? ''}`;
+            setBrowserArmed(false);
+            void project.run('cancel_job');
+          }}
           onRetry={() => { setStartError(null); setBrowserError(null); browserInitKey.current = null; void project.reload(); }}
           onEnter={() => void project.reload()}
           onBack={() => open(null)}
