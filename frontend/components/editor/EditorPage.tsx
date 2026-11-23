@@ -57,6 +57,8 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
   const [notice, setNotice] = useState<string | null>(null);
   // 从脚本点某个说话人的"音色"进来时，音色面板滚到这个说话人
   const [voiceFocus, setVoiceFocus] = useState<string | null>(null);
+  const autoBrowserKey = useRef<string | null>(null);
+  const [browserAutoRunning, setBrowserAutoRunning] = useState(false);
   const [browserVoices, setBrowserVoices] = useState<Voice[]>([]);
   useEffect(() => {
     if (project!.settings.dubbingMode !== 'browser') { setBrowserVoices([]); return; }
@@ -320,6 +322,19 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
     }
   }, [project, dubbing, run, fillBrowser]);
 
+  // Browser dubbing is generated automatically once init is ready; this is
+  // the TTS stage (model download happens on the first synthesis).
+  useEffect(() => {
+    if (project!.stage !== 'ready' || project!.settings.dubbingMode !== 'browser' || project!.needs.dub <= 0) {
+      return;
+    }
+    const key = `${project!.id}:${project!.settings.dubbingMode}`;
+    if (autoBrowserKey.current === key) return;
+    autoBrowserKey.current = key;
+    setBrowserAutoRunning(true);
+    void fillBrowser().finally(() => setBrowserAutoRunning(false));
+  }, [project!.id, project!.stage, project!.settings.dubbingMode, project!.needs.dub, fillBrowser]);
+
   // 顶栏的语言切换：会让译文/配音大面积过期，所以先问一下
   const changeLanguage = useCallback(async (language: string) => {
     if (language === project!.settings.targetLanguage) return;
@@ -377,6 +392,15 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
 
   return (
     <div className="h-screen flex flex-col bg-claude-bg overflow-hidden">
+      {browserAutoRunning && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-white/80 backdrop-blur-sm">
+          <div className="rounded-2xl border border-claude-border bg-white px-6 py-5 text-center shadow-xl">
+            <div className="mx-auto mb-3 h-6 w-6 animate-spin rounded-full border-2 border-claude-accent border-t-transparent" />
+            <p className="text-sm font-bold text-claude-text">正在生成本地配音</p>
+            <p className="mt-1 text-[11px] text-gray-400">首次会下载本地音色模型，之后会缓存。</p>
+          </div>
+        </div>
+      )}
       <TopBar
         filename={project!.filename}
         targetLanguage={project!.settings.targetLanguage}

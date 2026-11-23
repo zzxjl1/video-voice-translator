@@ -23,7 +23,6 @@ import { t } from '@/i18n';
 import { emptyInit, reduceInit, type InitState } from './store/init';
 import { pageFor } from './store/page';
 import type { BackendAvailability, DubbingMode, ProjectSummary, SeparationBackends, SeparationMode } from './net/types';
-import { defaultVoiceForLanguage, downloadBrowserVoice } from './features/browserTts';
 
 const PARAM = 'v';
 
@@ -181,31 +180,6 @@ const App: React.FC = () => {
         mm_enhance: mmEnhance,
         custom_prompt: customPrompt,
       });
-
-      // Browser Piper model download belongs to the init's TTS stage. The
-      // server init keeps running ASR/translation while this downloads; the
-      // editor fill step then finds the model cached.
-      if (dubbingMode === 'browser') {
-        const voice = browserVoice ?? defaultVoiceForLanguage(targetLanguage);
-        if (voice) {
-          const key = 'browser-tts-model';
-          const put = (text: string) => setPrep((s) => {
-            const i = s.log.findIndex((l) => l.key === key);
-            const line = { key, text, level: 'info' as const };
-            return { ...s, log: i >= 0 ? s.log.map((l, j) => (j === i ? line : l)) : [...s.log, line] };
-          });
-          put(`浏览器配音模型：${voice}`);
-          try {
-            await downloadBrowserVoice(voice, (loaded, total) => {
-              const pct = total ? Math.round((loaded / total) * 100) : 0;
-              put(`浏览器配音模型 ${pct}%（${(loaded / 1048576).toFixed(1)}/${(total / 1048576).toFixed(1)} MB）`);
-            });
-            put('浏览器配音模型已缓存');
-          } catch (e) {
-            put(`浏览器配音模型下载失败：${e instanceof Error ? e.message : String(e)}`);
-          }
-        }
-      }
     } catch (e) {
       setPreparing(false);
       setStartError(e instanceof Error ? e.message : String(e));
