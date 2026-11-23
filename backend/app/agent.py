@@ -559,12 +559,12 @@ def welcome_text(video_id: str) -> str:
         needs = _status.needs(state)
         parts.append(
             f"中途出错：{error}。已完成的部分都在，缺 {needs['translate']} 句译文"
-            + (f"、{needs['dub']} 句配音" if state.enable_dubbing else "")
+            + (f"、{needs['dub']} 句配音" if state.dubbing_mode != 'off' else "")
             + "。跟我说「补齐」就会只补缺的，不用重跑。"
         )
     mode = []
-    mode.append("配音" if state.enable_dubbing else "仅字幕（不配音）")
-    if state.enable_dubbing and state.enable_voice_clone:
+    mode.append("本地配音" if state.dubbing_mode == "browser" else "配音" if state.dubbing_mode == "remote" else "仅字幕（不配音）")
+    if state.dubbing_mode == "remote" and state.enable_voice_clone:
         mode.append("声音克隆" + ("（智能选材）" if state.clone_smart_pick else ""))
     if state.separation_mode == "client":
         mode.append("人声分离")

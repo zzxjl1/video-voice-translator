@@ -208,9 +208,14 @@ const App: React.FC = () => {
   // 初始化页的日志 = 浏览器分离阶段的日志 + 服务端事件流推来的日志
   const initState = useMemo<InitState>(() => {
     const server = project.init;
-    const steps = server.steps.map((s) => (s.id === 'separation' ? prep.steps.find((p) => p.id === 'separation') ?? s : s));
+    let steps = server.steps.map((s) => (s.id === 'separation' ? prep.steps.find((p) => p.id === 'separation') ?? s : s));
+    if (browserPreparing) {
+      steps = steps.map((s) => s.id === 'tts'
+        ? { ...s, status: 'running' as const, detail: '浏览器本地配音' }
+        : s);
+    }
     return { ...server, steps, log: [...prep.log, ...server.log] };
-  }, [project.init, prep]);
+  }, [project.init, prep, browserPreparing]);
 
   // Browser TTS is part of init: after ASR/translation finish, keep the init
   // screen and generate the dubbing locally before opening the editor.
