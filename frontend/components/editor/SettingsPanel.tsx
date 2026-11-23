@@ -108,16 +108,19 @@ const SettingsPanel: React.FC<Props> = ({ open, onClose, settings, onChange, onC
             </div>
             {settings.dubbingMode === 'browser' && (
               <div className="mt-2.5">
-                <select
-                  value={settings.browserVoice ?? ''}
-                  disabled={voicesLoading || browserVoices.length === 0}
-                  onChange={(e) => void apply({ browser_voice: e.target.value })}
-                  className="w-full text-[13px] bg-white border border-claude-border rounded-xl px-3 py-2.5 outline-none focus:border-claude-accent/50 disabled:opacity-50"
-                >
-                  {browserVoices.length === 0 && <option value="">{voicesLoading ? '读取本地音色…' : '该语言暂无本地音色'}</option>}
-                  {browserVoices.map((v) => <option key={v.key} value={v.key}>{browserVoiceLabel(v)}</option>)}
-                </select>
-                <p className="text-[11px] text-gray-400 mt-1.5">首次使用会下载 voice 模型；不克隆原说话人。</p>
+                <div className="mb-1.5 flex items-baseline justify-between">
+                  <span className="text-[12px] font-medium text-claude-text">预制音色 · {settings.targetLanguage}</span>
+                  <span className="text-[10px] text-gray-400">{browserVoices.length} 个</span>
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {browserVoices.slice(0, 12).map((v) => (
+                    <span key={v.key} className="rounded-md border border-claude-border bg-white px-1.5 py-0.5 text-[10px] text-gray-600">{browserVoiceLabel(v)}</span>
+                  ))}
+                  {browserVoices.length > 12 && <span className="px-1 py-0.5 text-[10px] text-gray-400">+{browserVoices.length - 12}</span>}
+                </div>
+                <p className="text-[11px] text-gray-400 mt-1.5">
+                  {voicesLoading ? '读取本地音色…' : '多说话人视频会自动为每位说话人分配不同的音色。生成后可在每一行的菜单里改。'}
+                </p>
               </div>
             )}
           </div>

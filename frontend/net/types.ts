@@ -45,6 +45,8 @@ export interface Line {
   muted: boolean;
   hidden: boolean;
   ttsVoice: string | null;
+  /** Piper voice for this line in browser mode; null = follow speaker. */
+  browserVoice: string | null;
   ttsRate: number | null;
   ttsInstruction: string | null;
   trStatus: LineStatus;
@@ -88,6 +90,7 @@ export interface SpeakerView {
   id: string;
   name: string;
   voice: string | null;
+  browserVoice: string | null;
   voiceLabel: string | null;
   cloned: boolean;
   lines: number;

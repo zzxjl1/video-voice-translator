@@ -43,6 +43,7 @@ class Speaker:
     id: str                              # ASR 的 speaker_id（"0"、"1"…），音色按它记
     name: str                            # 展示名，用户/AI 可改
     voice: Optional[str] = None          # 系统音色（自动分配或手动指定，都在这）
+    browser_voice: Optional[str] = None  # 浏览器 Piper voice id（仅 browser 模式）
     # 克隆音色：{"voice_id", "target_model", "created_at"}。绑定 TTS 模型，换模型即失效。
     clone: Optional[dict] = None
     # 候选克隆音色：同一说话人用不同取材方式（预设）做的几个音色，让用户听着挑。
@@ -87,6 +88,7 @@ class Segment:
     tr_fp: str = ""
     # 本行配音的单独设置（空 = 跟随说话人/工程）。
     tts_voice: Optional[str] = None
+    browser_voice: Optional[str] = None  # 本行指定 Piper voice（仅 browser 模式）
     tts_rate: Optional[float] = None
     tts_instruction: Optional[str] = None
     # 当前这份 mp3 是用哪组（文本, 音色, 语速, 指令, 模型, 语言）合成的；

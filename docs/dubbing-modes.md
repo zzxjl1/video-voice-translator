@@ -34,8 +34,9 @@ enable_voice_clone   -> 保留不动
 - 配音方式三选一：Remote / In-browser / Off
 - In-browser 和 BGM 分离 In-browser 右上角有 `FREE`
 - Off：隐藏 BGM 分离、声音克隆、智能选材、音色
-- In-browser：隐藏声音克隆、智能选材；只显示 `预制音色 · <目标语言>`
-- Remote：保留声音克隆、智能选材、远端音色
+- In-browser：隐藏声音克隆、智能选材；显示 `预制音色 · <目标语言>` 音色池
+- 音色池列出 12 个、超出显示 `+N`；多说话人首次生成时自动给每位说话人分配不同 voice
+- 生成后可在每一行的菜单里改这一句的 voice，或恢复跟随说话人
 - 没有本地 Piper 音色的语言，In-browser 置灰并显示原因
 
 ## 本地音色
@@ -56,7 +57,7 @@ enable_voice_clone   -> 保留不动
 
 日语、韩语、印尼语当前标准 Piper 目录里没有可用 voice，因此 In-browser 禁用；以后接 Piper Plus 再补。
 
-首次合成会下载并缓存 voice 模型，模型体积约几十 MB。
+首次合成会下载并缓存 voice 模型，模型体积约几十 MB。In-browser 选中的默认 voice 在初始化进入 TTS 阶段时预下载；多说话人分配到的其他 voice 在第一次生成到那一句时下载。
 
 ## 音频路径
 

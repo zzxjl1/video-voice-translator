@@ -28,7 +28,8 @@ import Timeline from '../Timeline';
 import SubtitleStylePanel from '../SubtitleStylePanel';
 import VoicePanel from './VoicePanel';
 import ExportModal, { type SubtitleDelivery } from '../ExportModal';
-import { defaultVoiceForLanguage, synthesizeBrowserSpeech } from '../../features/browserTts';
+import { browserVoiceLabel, defaultVoiceForLanguage, synthesizeBrowserSpeech, voicesForLanguage } from '../../features/browserTts';
+import type { Voice } from '@diffusionstudio/vits-web';
 
 interface Props {
   project: ReturnType<typeof useProject>;
@@ -56,6 +57,15 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
   const [notice, setNotice] = useState<string | null>(null);
   // 从脚本点某个说话人的"音色"进来时，音色面板滚到这个说话人
   const [voiceFocus, setVoiceFocus] = useState<string | null>(null);
+  const [browserVoices, setBrowserVoices] = useState<Voice[]>([]);
+  useEffect(() => {
+    if (project!.settings.dubbingMode !== 'browser') { setBrowserVoices([]); return; }
+    let alive = true;
+    voicesForLanguage(project!.settings.targetLanguage)
+      .then((vs) => alive && setBrowserVoices(vs))
+      .catch(() => alive && setBrowserVoices([]));
+    return () => { alive = false; };
+  }, [project!.settings.dubbingMode, project!.settings.targetLanguage]);
 
   // 字幕样式：以服务端为准；拖滑块时本地先行，停下再保存（防抖）
   const [styleOverride, setStyleOverride] = useState<Partial<SubtitleStyle> | null>(null);
@@ -207,6 +217,51 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
   }, [delivery, keepStyle, visibleCues, id, run, style]);
 
   // 脚本里的操作：全都是命令
+  const fillBrowser = useCallback(async (only?: Line[]) => {
+    let fresh = await api.getProject(id);
+    if (fresh.settings.dubbingMode !== 'browser') return;
+    const voices = await voicesForLanguage(fresh.settings.targetLanguage);
+    if (!voices.length) {
+      setNotice(`${fresh.settings.targetLanguage} 暂无本地 Piper 音色，请改用 Remote 或 Off`);
+      return;
+    }
+    // 多说话人：第一次生成前给每个说话人分一个不同 voice；已有选择不覆盖。
+    const fallback = defaultVoiceForLanguage(fresh.settings.targetLanguage);
+    const orderedKeys = [
+      ...(fallback ? [fallback] : []),
+      ...voices.map((v) => v.key).filter((key) => key !== fallback),
+    ];
+    await run('assign_browser_voices', { voices: orderedKeys });
+    fresh = await api.getProject(id);
+    const wanted = only ? new Set(only.map((l) => l.id)) : null;
+    const todo = fresh.segments.filter((l) =>
+      l.kind === 'speech' && !l.muted && l.translation.trim()
+      && l.ttsStatus !== 'fresh' && (!wanted || wanted.has(l.id)));
+    if (!todo.length) return;
+    const voice = fresh.settings.browserVoice ?? defaultVoiceForLanguage(fresh.settings.targetLanguage);
+    if (!voice) {
+      setNotice(`${fresh.settings.targetLanguage} 暂无本地 Piper 音色，请改用 Remote 或 Off`);
+      return;
+    }
+    const speakerVoice = new Map(fresh.speakers.map((sp) => [sp.id, sp.browserVoice]));
+    for (let i = 0; i < todo.length; i += 1) {
+      const line = todo[i];
+      const lineVoice = line.browserVoice ?? speakerVoice.get(line.speakerId) ?? voice;
+      setNotice(`本地配音 ${i + 1}/${todo.length}：第 ${line.line} 句`);
+      try {
+        const blob = await synthesizeBrowserSpeech(line.translation, lineVoice);
+        await api.uploadBrowserTts(id, line.id, blob);
+      } catch (e) {
+        setNotice(`本地配音失败（第 ${line.line} 句）：${e instanceof Error ? e.message : String(e)}`);
+        await reload();
+        return;
+      }
+    }
+    await reload();
+    setNotice(`本地配音完成：${todo.length} 句`);
+  }, [id, reload, run]);
+
+
   const actions = useMemo<ScriptActions>(() => ({
     edit: async (_lineId, field, value, line) => {
       const r = field === 'text'
@@ -235,7 +290,12 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
         if (!d.ok) setNotice(d.error ?? '配音失败');
       }
     },
-  }), [run, seek, openWindow]);
+    setBrowserVoice: async (l: Line, voice: string | null) => {
+      const r = await run('set_line_browser_voice', { lines: [l.line], voice: voice ?? '' });
+      if (!r.ok) { setNotice(r.error ?? '修改失败'); return; }
+      await fillBrowser([l]);
+    },
+  }), [run, seek, openWindow, fillBrowser]);
 
   const colorOf = useCallback((sid: string) => speakerColor(project!, sid), [project]);
 
@@ -244,35 +304,6 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
     id: l.id, speakerId: l.speakerId, start: l.start, end: l.end, kind: l.kind, muted: l.muted, hidden: l.hidden,
     text: l.text, translation: l.translation, kept: (l.kind === 'vocal' || l.kind === 'song') && !l.muted && !!l.audioUrl,
   })), [lines]);
-
-  const fillBrowser = useCallback(async (only?: Line[]) => {
-    const fresh = await api.getProject(id);
-    if (fresh.settings.dubbingMode !== 'browser') return;
-    const wanted = only ? new Set(only.map((l) => l.id)) : null;
-    const todo = fresh.segments.filter((l) =>
-      l.kind === 'speech' && !l.muted && l.translation.trim()
-      && l.ttsStatus !== 'fresh' && (!wanted || wanted.has(l.id)));
-    if (!todo.length) return;
-    const voice = fresh.settings.browserVoice ?? defaultVoiceForLanguage(fresh.settings.targetLanguage);
-    if (!voice) {
-      setNotice(`${fresh.settings.targetLanguage} 暂无本地 Piper 音色，请改用 Remote 或 Off`);
-      return;
-    }
-    for (let i = 0; i < todo.length; i += 1) {
-      const line = todo[i];
-      setNotice(`本地配音 ${i + 1}/${todo.length}：第 ${line.line} 句`);
-      try {
-        const blob = await synthesizeBrowserSpeech(line.translation, voice);
-        await api.uploadBrowserTts(id, line.id, blob);
-      } catch (e) {
-        setNotice(`本地配音失败（第 ${line.line} 句）：${e instanceof Error ? e.message : String(e)}`);
-        await reload();
-        return;
-      }
-    }
-    await reload();
-    setNotice(`本地配音完成：${todo.length} 句`);
-  }, [id, reload]);
 
   const fill = useCallback(async () => {
     const translated = project!.needs.translate > 0;
@@ -303,7 +334,9 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
     script: (c) => (
       <ScriptPanel
         lines={lines} speakers={project!.speakers} colorOf={colorOf} currentTime={currentTime} flash={flash}
-        mix={mixEntries} dubbing={dubbing} actions={actions}
+        mix={mixEntries} dubbing={dubbing}
+        browserVoices={browserVoices.map((v) => ({ key: v.key, label: browserVoiceLabel(v) }))}
+        actions={actions}
         docked={c.docked} dragProps={c.headerProps} windowControls={c.controls}
       />
     ),

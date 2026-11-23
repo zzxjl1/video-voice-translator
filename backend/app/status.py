@@ -134,7 +134,11 @@ def clone_voice_id(state: VideoState, speaker: Optional[Speaker]) -> Optional[st
 def resolve_voice(state: VideoState, seg: Segment) -> Optional[str]:
     """优先级：本行指定 > 克隆音色 > 说话人的系统音色。都没有返回 None（合成时再分配）。"""
     if state.dubbing_mode == "browser":
-        return state.browser_voice or config.browser_voice_for_language(state.target_language)
+        if seg.browser_voice:
+            return seg.browser_voice
+        speaker = state.speaker(seg.speaker_id)
+        return (speaker.browser_voice if speaker else None) or state.browser_voice \
+            or config.browser_voice_for_language(state.target_language)
     if seg.tts_voice:
         return seg.tts_voice
     speaker = state.speaker(seg.speaker_id)

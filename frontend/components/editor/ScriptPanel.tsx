@@ -27,6 +27,7 @@ export interface ScriptActions {
   openVoice: (speakerId: string) => void;
   /** 单句改用说话人的某个候选音色；null = 清除，回到跟随说话人。 */
   setVoice: (line: Line, candidateId: string | null) => void;
+  setBrowserVoice: (line: Line, voice: string | null) => void;
 }
 
 interface Props {
@@ -37,6 +38,7 @@ interface Props {
   flash: Flash;
   mix: Map<string, MixPlanSegment>;
   dubbing: boolean;
+  browserVoices?: { key: string; label: string }[];
   actions: ScriptActions;
   /** 吸附在右栏时自己画卡片的边框和圆角；浮动时由窗口外框画。 */
   docked?: boolean;
@@ -54,7 +56,7 @@ const STATUS: Record<string, { text: string; tone: string }> = {
 };
 
 const ScriptPanel: React.FC<Props> = ({
-  lines, speakers, colorOf, currentTime, flash, mix, dubbing, actions, docked = true, dragProps, windowControls,
+  lines, speakers, colorOf, currentTime, flash, mix, dubbing, browserVoices, actions, docked = true, dragProps, windowControls,
 }) => {
   const listRef = useRef<HTMLDivElement>(null);
   const speakerById = useMemo(() => new Map(speakers.map((s) => [s.id, s])), [speakers]);
@@ -98,6 +100,7 @@ const ScriptPanel: React.FC<Props> = ({
               color={colorOf(line.speakerId)}
               active={line.id === activeId}
               flashBy={flash[line.id]}
+              browserVoices={browserVoices}
               mixEntry={mix.get(line.id)}
               dubbing={dubbing}
               actions={actions}
@@ -119,10 +122,11 @@ interface CardProps {
   flashBy?: 'user' | 'ai' | 'system';
   mixEntry?: MixPlanSegment;
   dubbing: boolean;
+  browserVoices?: { key: string; label: string }[];
   actions: ScriptActions;
 }
 
-const LineCard = memo(({ line, speaker, color, active, flashBy, mixEntry, dubbing, actions }: CardProps) => {
+const LineCard = memo(({ line, speaker, color, active, flashBy, mixEntry, dubbing, browserVoices, actions }: CardProps) => {
   const slot = line.end - line.start;
   const nonSpeech = line.kind !== 'speech';
   const ratio = line.audioDuration && slot > 0 ? line.audioDuration / slot : null;
@@ -186,7 +190,7 @@ const LineCard = memo(({ line, speaker, color, active, flashBy, mixEntry, dubbin
             <button onClick={() => setMenu((v) => !v)} data-line-menu-trigger className="p-1.5 rounded-md hover:bg-claude-paper text-gray-400 hover:text-gray-600 transition-colors" title="更多">
               <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
             </button>
-            {menu && <LineMenu line={line} speaker={speaker} dubbing={dubbing} actions={actions} onClose={() => setMenu(false)} />}
+            {menu && <LineMenu line={line} speaker={speaker} dubbing={dubbing} browserVoices={browserVoices} actions={actions} onClose={() => setMenu(false)} />}
           </div>
         </div>
       </div>
@@ -453,7 +457,7 @@ const Editable: React.FC<EditableProps> = ({ label, value, placeholder, secondar
 
 // ----------------------------------------------------------------------------
 
-const LineMenu: React.FC<{ line: Line; speaker?: SpeakerView; dubbing: boolean; actions: ScriptActions; onClose: () => void }> = ({ line, speaker, dubbing, actions, onClose }) => {
+const LineMenu: React.FC<{ line: Line; speaker?: SpeakerView; dubbing: boolean; browserVoices?: { key: string; label: string }[]; actions: ScriptActions; onClose: () => void }> = ({ line, speaker, dubbing, browserVoices, actions, onClose }) => {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
@@ -503,6 +507,27 @@ const LineMenu: React.FC<{ line: Line; speaker?: SpeakerView; dubbing: boolean; 
                 c.presetLabel ?? '候选音色',
                 () => actions.setVoice(line, c.id),
                 c.lines.length ? `第 ${c.lines.join('、')} 句取材` : undefined,
+              ))}
+            </div>
+          )}
+        </>
+      )}
+      {dubbing && !nonSpeech && browserVoices && browserVoices.length > 0 && (
+        <>
+          <button
+            onClick={() => setVoices((v) => !v)}
+            className="w-full text-left px-3.5 py-2 text-[12px] hover:bg-claude-paper transition-colors text-claude-text flex items-center justify-between"
+          >
+            <span className="font-medium">这句用别的音色</span>
+            <span className="text-[10px] text-gray-400">{voices ? '▾' : '▸'}</span>
+          </button>
+          {voices && (
+            <div className="bg-[#fbfbf9] border-y border-claude-border/60 max-h-64 overflow-y-auto">
+              {line.browserVoice && item('跟随说话人', () => actions.setBrowserVoice(line, null), '清除这一句单独的音色')}
+              {browserVoices.map((v) => item(
+                v.label,
+                () => actions.setBrowserVoice(line, v.key),
+                v.key === line.browserVoice ? '当前' : undefined,
               ))}
             </div>
           )}

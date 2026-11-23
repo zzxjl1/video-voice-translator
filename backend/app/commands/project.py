@@ -65,8 +65,10 @@ def set_settings(ctx: Ctx, **patch):
             # 音色 id 是语言专属的：旧语言的音色在新语言下会被服务端直接拒绝。
             for sp in s.speakers:
                 sp.voice = None
+                sp.browser_voice = None
             for seg in s.segments:
                 seg.tts_voice = None
+                seg.browser_voice = None
             s.browser_voice = config.browser_voice_for_language(s.target_language)
         if s.dubbing_mode == "off":
             s.separation_mode = "off"

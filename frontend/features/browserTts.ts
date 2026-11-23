@@ -73,3 +73,11 @@ export async function synthesizeBrowserSpeech(
     onProgress ? (p) => onProgress(p.loaded, p.total) : undefined,
   );
 }
+
+export async function downloadBrowserVoice(
+  voiceId: string,
+  onProgress?: (loaded: number, total: number) => void,
+): Promise<void> {
+  const m = await import('@diffusionstudio/vits-web');
+  await m.download(voiceId as never, onProgress ? (p) => onProgress(p.loaded, p.total) : undefined);
+}

@@ -21,6 +21,51 @@ from app.services import voice_presets as vp
 
 
 @command(
+    "assign_browser_voices",
+    "为浏览器 Piper 配音的每位说话人分配不同音色（只填空着的；已有选择不覆盖）。",
+    {"type": "object", "properties": {
+        "voices": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+    }, "required": ["voices"]},
+)
+def assign_browser_voices(ctx: Ctx, voices: list[str]):
+    state = ctx.state
+    if state.dubbing_mode != "browser":
+        raise CommandError("只有浏览器配音模式才能分配 Piper 音色")
+    if not voices:
+        raise CommandError("至少要有一个 Piper voice")
+    def apply(s):
+        for i, sp in enumerate(s.speakers):
+            if not sp.browser_voice:
+                sp.browser_voice = voices[i % len(voices)]
+    ctx.change(apply, "分配浏览器 Piper 音色")
+    return {"assigned": {sp.id: sp.browser_voice for sp in ctx.state.speakers}}
+
+
+@command(
+    "set_line_browser_voice",
+    "单句改用某个 Piper 音色；voice 为空 = 跟随说话人。",
+    {"type": "object", "properties": {
+        "lines": {"type": "array", "items": {"type": "integer", "minimum": 1}},
+        "voice": {"type": "string"},
+    }, "required": ["lines"]},
+)
+def set_line_browser_voice(ctx: Ctx, lines: list[int], voice: str = ""):
+    state = ctx.state
+    if state.dubbing_mode != "browser":
+        raise CommandError("只有浏览器配音模式才能改 Piper 音色")
+    segs = resolve_lines(state, lines)
+    if not segs:
+        raise CommandError("没有找到这些行")
+    def apply(s):
+        for item in segs:
+            target = s.segment(item.id)
+            if target is not None:
+                target.browser_voice = voice or None
+    ctx.change(apply, "改浏览器单句音色")
+    return {"lines": [s.id for s in segs], "voice": voice or None}
+
+
+@command(
     "set_speaker_voice", "给说话人指定系统音色（见 list_voices）；voice 为空 = 交回自动分配。"
     "该说话人所有句子的配音随之过期。",
     {"type": "object", "properties": {

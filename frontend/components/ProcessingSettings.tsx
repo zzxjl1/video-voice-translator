@@ -268,31 +268,28 @@ const ProcessingSettings: React.FC<ProcessingSettingsProps> = ({
                                     {!enableVoiceClone && cloneOffExtra}
                                 </div>
                             ) : dubbingMode === 'browser' ? (
-                                /* 浏览器：只列 Piper 预制音色；没有克隆/智能选材。 */
+                                /* 浏览器：只展示本语言音色池；多说话人自动分配不同音色。 */
                                 <div className="mt-2 rounded-lg border border-gray-200/70 bg-white/80 px-2.5 py-2">
-                                    <div className="mb-1.5 flex items-center">
+                                    <div className="mb-1.5 flex items-baseline justify-between">
                                         <span className="text-xs font-medium text-gray-700">
                                             预制音色 · {targetLanguage}
                                         </span>
-                                        <span className="ml-auto rounded-full bg-emerald-50 px-1.5 py-px text-[9px] font-bold text-emerald-600">
-                                            FREE
-                                        </span>
+                                        <span className="text-[10px] text-gray-400">{browserVoices.length} 个</span>
                                     </div>
-                                    <select
-                                        value={browserVoice ?? ''}
-                                        disabled={!browserAvailable}
-                                        onChange={(e) => onBrowserVoiceChange(e.target.value)}
-                                        className="w-full rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs text-gray-700 disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-400 focus:outline-none focus:border-claude-accent/50"
-                                    >
-                                        {!browserAvailable && <option value="">{browserReason ?? '暂无本地音色'}</option>}
-                                        {browserVoices.map((v) => (
-                                            <option key={v.key} value={v.key}>
+                                    <div className="flex flex-wrap gap-1">
+                                        {browserVoices.slice(0, 12).map((v) => (
+                                            <span key={v.key} className="rounded-md border border-gray-200 bg-white px-1.5 py-0.5 text-[10px] text-gray-600">
                                                 {browserVoiceLabel(v)}
-                                            </option>
+                                            </span>
                                         ))}
-                                    </select>
-                                    <p className="mt-1 text-[10px] leading-relaxed text-gray-400">
-                                        首次使用会下载该 voice 模型并缓存在浏览器；不克隆原说话人。
+                                        {browserVoices.length > 12 && (
+                                            <span className="px-1 py-0.5 text-[10px] text-gray-400">
+                                                +{browserVoices.length - 12}
+                                            </span>
+                                        )}
+                                    </div>
+                                    <p className="mt-1.5 text-[10px] leading-snug text-gray-400">
+                                        多说话人视频会自动为每位说话人分配不同的音色。生成后可在每一行的菜单里改。
                                     </p>
                                 </div>
                             ) : null}
