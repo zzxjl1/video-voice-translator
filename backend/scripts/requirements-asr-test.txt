@@ -1,0 +1,4 @@
+# Standalone ASR spike only; not part of the production backend requirements.
+# PyAV 19 removed metadata_errors=, which faster-whisper 1.2.1 still passes.
+faster-whisper>=1.2.1
+av>=18,<19
