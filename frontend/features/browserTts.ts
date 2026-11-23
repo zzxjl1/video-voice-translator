@@ -29,6 +29,10 @@ export const BROWSER_DEFAULT_VOICE: Record<string, string> = {
 
 let catalog: Promise<Voice[]> | null = null;
 
+// zh_CN-huayan-x_low has a broken phoneme table in the pinned browser
+// runtime (Gather idx out of bounds); only medium is usable.
+const UNUSABLE_VOICES = new Set(['zh_CN-huayan-x_low']);
+
 export async function allVoices(): Promise<Voice[]> {
   if (!catalog) {
     catalog = import('@diffusionstudio/vits-web').then((m) => m.voices()).catch((e) => {
@@ -43,7 +47,7 @@ export async function voicesForLanguage(language: string): Promise<Voice[]> {
   const prefix = PREFIX[language];
   if (!prefix) return [];
   const voices = await allVoices();
-  return voices.filter((v) => v.key.startsWith(prefix));
+  return voices.filter((v) => v.key.startsWith(prefix) && !UNUSABLE_VOICES.has(v.key));
 }
 
 export function browserVoiceLabel(voice: Pick<Voice, 'key' | 'name' | 'quality'>): string {

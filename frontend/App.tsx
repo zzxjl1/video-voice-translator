@@ -76,7 +76,12 @@ const App: React.FC = () => {
   const [prep, setPrep] = useState<InitState>(emptyInit);
   const [preparing, setPreparing] = useState(false);
   const [browserPreparing, setBrowserPreparing] = useState(false);
+  const [browserError, setBrowserError] = useState<string | null>(null);
   const browserInitKey = useRef<string | null>(null);
+  const browserAutoPending = Boolean(
+    view && view.stage === 'ready' && view.settings.dubbingMode === 'browser'
+    && view.needs.dub > 0 && browserInitKey.current !== `${view.id}:${view.settings.dubbingMode}`,
+  );
 
   // —— 前进/后退 ——
   useEffect(() => {
@@ -214,8 +219,16 @@ const App: React.FC = () => {
         ? { ...s, status: 'running' as const, detail: '浏览器本地配音' }
         : s);
     }
-    return { ...server, steps, log: [...prep.log, ...server.log] };
-  }, [project.init, prep, browserPreparing]);
+    const log = [...prep.log, ...server.log];
+    if (browserPreparing && !log.some((l) => l.key === 'browser-tts')) {
+      log.push({ key: 'browser-tts', text: '浏览器本地配音进行中…', level: 'info' });
+    }
+    return {
+      ...server, steps,
+      finished: server.finished && !(browserPreparing || browserAutoPending || browserError),
+      log,
+    };
+  }, [project.init, prep, browserPreparing, browserAutoPending, browserError]);
 
   // Browser TTS is part of init: after ASR/translation finish, keep the init
   // screen and generate the dubbing locally before opening the editor.
@@ -225,6 +238,7 @@ const App: React.FC = () => {
     const key = `${view.id}:${view.settings.dubbingMode}`;
     if (browserInitKey.current === key) return;
     browserInitKey.current = key;
+    setBrowserError(null);
     setBrowserPreparing(true);
     const put = (text: string, level: 'info' | 'error' = 'info') => setPrep((s) => {
       const i = s.log.findIndex((l) => l.key === 'browser-tts');
@@ -236,7 +250,11 @@ const App: React.FC = () => {
       onProgress: (p) => put(`本地配音 ${p.index}/${p.total}：第 ${p.line.line} 句`),
     })
       .then((done) => put(done ? `本地配音完成：${done} 句` : '本地配音无需生成'))
-      .catch((e) => put(`本地配音失败：${e instanceof Error ? e.message : String(e)}`, 'error'))
+      .catch((e) => {
+        const message = e instanceof Error ? e.message : String(e);
+        setBrowserError(`本地配音失败：${message}`);
+        put(`本地配音失败：${message}`, 'error');
+      })
       .finally(async () => {
         await project.reload();
         setBrowserPreparing(false);
@@ -262,13 +280,9 @@ const App: React.FC = () => {
   }
   if (!auth.user && videoId) return <AuthGate />;
 
-  const browserAutoPending = Boolean(
-    view && view.stage === 'ready' && view.settings.dubbingMode === 'browser'
-    && view.needs.dub > 0 && browserInitKey.current !== `${view.id}:${view.settings.dubbingMode}`,
-  );
   const page = pageFor({
     videoId, stage: view?.stage ?? null, starting,
-    preparing: preparing || browserPreparing || browserAutoPending,
+    preparing: preparing || browserPreparing || browserAutoPending || !!browserError,
   });
   if (page === 'landing') {
     return (
@@ -337,12 +351,12 @@ const App: React.FC = () => {
         <InitView
           filename={view.filename}
           init={initState}
-          error={view.stage === 'failed' ? view.initError : startError}
+          error={browserError ?? (view.stage === 'failed' ? view.initError : startError)}
           currentStep={job?.step ?? (browserPreparing ? '浏览器配音' : preparing ? '人声分离' : null)}
           elapsedS={elapsed}
           cancelling={job?.cancelling}
           onCancel={() => void project.run('cancel_job')}
-          onRetry={() => { setStartError(null); void project.run('run_initialize'); }}
+          onRetry={() => { setStartError(null); setBrowserError(null); browserInitKey.current = null; void project.reload(); }}
           onEnter={() => void project.reload()}
           onBack={() => open(null)}
         />
