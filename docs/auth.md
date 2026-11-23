@@ -158,7 +158,6 @@ OAuth 安全点：
 - 只使用 ID token 里的身份信息，丢弃 Google access token
 
 ## 工程权限
-
 `projects.router` 和 `upload_router` 都要求 `require_user`。  
 项目详情/媒体/导出等再经过 `require_project_access`：
 
@@ -167,6 +166,20 @@ OAuth 安全点：
 - 删除工程时同时删 `project_owners` 映射
 
 旧匿名工程不做运行时兼容：没有 `project_owners` 记录的工程直接 404。
+
+### 外部 ASR/克隆的音频读取
+
+DashScope ASR、omni、音色克隆通过公网 URL 取 `/api/projects/<id>/audio`，带不了登录 cookie。  
+这些 GET 音频请求改用短时签名 token：
+
+```text
+/api/projects/<id>/audio?token=<signed-token>
+```
+
+- token 绑定 `video_id`，默认有效期覆盖 ASR 最大等待时间
+- 只允许 `/audio` 和 `/audio/original` 两个只读 GET
+- 无 token 仍然 401；其他项目接口不能靠这个 token 访问
+
 
 ## 旧工程补 owner
 

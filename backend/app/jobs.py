@@ -28,7 +28,7 @@ from app.bus import bus
 from app.models import (
     STAGE_FAILED, STAGE_INITIALIZING, STAGE_READY, Segment, Speaker, get_video_dir,
 )
-from app.services import asr_service, llm_service, loudness, mix_service, speech_timing, tts_service
+from app.services import asr_service, llm_service, loudness, mix_service, speech_timing, token_service, tts_service
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +162,13 @@ async def run(
 AUDIO_URL = "{base}/api/projects/{vid}/audio"
 
 
+def _public_audio_url(server_url: str, video_id: str) -> str:
+    """Audio URL for external fetchers (ASR/omni/clone), with a signed read token."""
+    ttl = max(1800, config.ASR_MAX_WAIT + 900)
+    token, _ = token_service.issue_token(video_id, ttl=ttl)
+    return AUDIO_URL.format(base=server_url, vid=video_id) + f"?token={token}"
+
+
 def _line_dict(seg: Segment) -> dict:
     return {"id": seg.id, "speaker_id": seg.speaker_id, "start_time": seg.start_time,
             "end_time": seg.end_time, "text": seg.text}
@@ -200,7 +207,7 @@ async def step_transcribe(video_id: str, job: Job, server_url: str) -> None:
     _emit(video_id, job, {"phase": "asr", "status": "started"})
     audio_path = await step_prepare_audio(video_id, job)
     lines = await asr_service.transcribe_video(
-        video_id, state.file_path, audio_path, AUDIO_URL.format(base=server_url, vid=video_id)
+        video_id, state.file_path, audio_path, _public_audio_url(server_url, video_id)
     )
 
     def apply(s):
@@ -264,7 +271,7 @@ async def step_review(video_id: str, job: Job, server_url: str) -> list[str]:
         _emit(video_id, job, {"phase": "mm_enhance", "status": "listening"})
         enhanced, sung = await omni_service.enhance_transcript(
             video_id, [{"id": s.id, "text": s.text} for s in todo],
-            AUDIO_URL.format(base=server_url, vid=video_id),
+            _public_audio_url(server_url, video_id),
         )
 
         def apply(s):
@@ -379,7 +386,7 @@ async def clone_speakers(video_id: str, job: Job, server_url: str, only: Optiona
                 continue
             plan = await vc.pick_plan(
                 video_id, current.segments, sp.id,
-                audio_url=AUDIO_URL.format(base=server_url, vid=video_id),
+                audio_url=_public_audio_url(server_url, video_id),
                 target_language=current.target_language, smart=current.clone_smart_pick,
                 emit=lambda e: _async_emit(video_id, job, e),
             )
