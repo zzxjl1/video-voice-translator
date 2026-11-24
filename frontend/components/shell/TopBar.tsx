@@ -11,6 +11,7 @@
  * 顶栏是 fixed 的（展开时要浮在画面上方），所以编辑页的 main 要留出顶部空间。
  */
 import React, { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { ALL_LANGUAGES } from '../../utils/languages';
 import { AccountMenu } from '../../auth/AccountMenu';
 import { t } from '@/i18n';
@@ -49,6 +50,18 @@ const ProjectCostHover: React.FC<{ billing: ProjectBilling; onOpenBilling: () =>
   const [pinned, setPinned] = React.useState(false);
   const [hovered, setHovered] = React.useState(false);
   const open = hovered || pinned;
+  // 卡片是 portal 到 body 的，和胶囊之间隔着 6px 空隙：鼠标穿过去会先触发
+  // mouseleave。延迟关闭，进卡片时再取消。
+  const closeTimer = React.useRef<number | null>(null);
+  const keepOpen = () => {
+    if (closeTimer.current) { window.clearTimeout(closeTimer.current); closeTimer.current = null; }
+    setHovered(true);
+  };
+  const releaseSoon = () => {
+    if (closeTimer.current) window.clearTimeout(closeTimer.current);
+    closeTimer.current = window.setTimeout(() => { setHovered(false); }, 150);
+  };
+  React.useEffect(() => () => { if (closeTimer.current) window.clearTimeout(closeTimer.current); }, []);
   // 顶栏是 overflow-hidden（裁圆角），absolute 浮层会被裁掉——用 fixed 挂在按钮下方。
   const btnRef = React.useRef<HTMLButtonElement>(null);
   const [pos, setPos] = React.useState<{ top: number; right: number } | null>(null);
@@ -67,8 +80,8 @@ const ProjectCostHover: React.FC<{ billing: ProjectBilling; onOpenBilling: () =>
   return (
     <div
       className="relative"
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      onMouseEnter={keepOpen}
+      onMouseLeave={releaseSoon}
     >
       <button
         ref={btnRef}
@@ -79,10 +92,12 @@ const ProjectCostHover: React.FC<{ billing: ProjectBilling; onOpenBilling: () =>
       >
         {t('本工程')} {fmt(billing.total_points)} {t('积分')}
       </button>
-      {open && pos && (
+      {open && pos && createPortal(
         <div
           style={{ position: 'fixed', top: pos.top, right: pos.right }}
           className="z-[80] w-[190px] rounded-xl border border-claude-border bg-white p-2.5 shadow-lg"
+          onMouseEnter={keepOpen}
+          onMouseLeave={releaseSoon}
         >
           <div className="mb-1 text-[9px] font-bold uppercase tracking-[0.12em] text-gray-400">{t('本工程消耗')}</div>
           {steps.length === 0 && <div className="text-[10px] text-gray-400">{t('还没有消耗')}</div>}
@@ -104,7 +119,8 @@ const ProjectCostHover: React.FC<{ billing: ProjectBilling; onOpenBilling: () =>
           >
             {t('明细')}
           </button>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
