@@ -100,6 +100,12 @@ class EventBus:
             if ch is not None:
                 ch.subs.discard(queue)
 
+    def has_subscribers(self, video_id: str) -> bool:
+        """有没有页面正连着这个工程的事件流（界面意图只有它们收得到，没人听就是白发）。"""
+        with self._lock:
+            ch = self._channels.get(video_id)
+            return bool(ch and ch.subs)
+
     def recent(self, video_id: str, types: Optional[tuple] = None, limit: int = 300) -> list[dict]:
         with self._lock:
             events = list(self._channel(video_id).ring)

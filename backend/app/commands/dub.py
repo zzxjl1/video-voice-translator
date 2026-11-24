@@ -17,6 +17,7 @@ from app import config, jobs, status, store
 from app.commands.registry import (
     CONFIRM_COST, CommandError, Ctx, command, resolve_lines,
 )
+from app.bus import bus
 from app.commands.transcript import _guard
 
 
@@ -86,20 +87,47 @@ def set_dub_style(ctx: Ctx, lines: list, instruction: Optional[str] = None, rate
             "note": "配音已过期；调用 redub 重新合成，之后看 dub_vs_slot 是否还在时间槽内"}
 
 
+def _request_browser_dub(ctx: Ctx, state, ids: Optional[list], force: bool) -> dict:
+    """
+    本地配音模式：合成在用户的浏览器里做，服务端合成不了。所以这里不开任务，而是给页面发一个
+    `browser_dub` 界面意图，编辑器收到后跑本地合成（和点"补"是同一条路径，免费）。
+
+    命令返回时还没合成完 —— 返回值里写明，免得 AI 把"已请求"说成"已配好"。
+    """
+    want = set(ids) if ids else None
+    todo = [s for s in state.segments
+            if status.dubbable(state, s) and (want is None or s.id in want)
+            and (force or status.tts_status(state, s) in (status.MISSING, status.STALE))]
+    if not todo:
+        return {"queued": 0, "note": "没有需要配音的句子（该配的都已是最新）"}
+    if not bus.has_subscribers(ctx.video_id):
+        raise CommandError(
+            "本地配音是在用户的浏览器页面里合成的，但现在没有打开这个工程的页面，没法替他合成",
+            hint="让用户打开这个工程，点顶栏的「补」；或等他回来再试",
+        )
+    ctx.ui("browser_dub", line_ids=[s.id for s in todo], force=bool(force))
+    return {
+        "queued": len(todo),
+        "lines": [state.segments.index(s) + 1 for s in todo],
+        "async": True,
+        "note": "已请用户的页面在浏览器里合成这些句子（本地合成，免费）。命令返回时还没合成完，"
+                "不要说已配好；之后看概览里还差多少句配音来确认。合成失败的句子会在页面上提示用户。",
+    }
+
+
 @command(
-    "redub", "重新合成若干句的配音（会调用 TTS，花钱）。不给 lines = 所有缺失/过期的句子。",
+    "redub", "重新合成若干句的配音。不给 lines = 所有缺失/过期的句子。远端配音会调用 TTS（花钱，要先确认）；"
+             "本地配音（浏览器配音）模式下是请用户的页面在浏览器里合成：免费，但异步，返回时还没合成完。",
     {"type": "object", "properties": {
         "lines": {"type": "array", "items": {"type": "integer", "minimum": 1}, "description": "行号；不给 = 所有缺失/过期的"},
         "force": {"type": "boolean", "description": "即使配音是新鲜的也强制重做（随机性让同一句每次略有不同）"},
     }},
-    confirm=CONFIRM_COST, group="job",
+    confirm=CONFIRM_COST, confirm_unless=lambda s: s.dubbing_mode == "browser", group="job",
 )
 async def redub(ctx: Ctx, lines: Optional[list] = None, force: bool = False):
     state = ctx.state
     if state.dubbing_mode == "off":
         raise CommandError("当前是仅字幕模式，没有配音；先把 dubbing_mode 改成 remote")
-    if state.dubbing_mode == "browser":
-        raise CommandError("当前是浏览器配音模式，请在页面里生成本地配音")
     ids = [s.id for s in resolve_lines(state, lines)] if lines else None
     if ids:
         _guard(ctx, [state.segment(i) for i in ids])
@@ -107,6 +135,8 @@ async def redub(ctx: Ctx, lines: Optional[list] = None, force: bool = False):
                       if status.tr_status(state, state.segment(i)) in (status.MISSING, status.STALE)]
         if missing_tr:
             raise CommandError(f"第 {missing_tr} 句的译文还缺/已过期，先 retranslate 再配音")
+    if state.dubbing_mode == "browser":
+        return _request_browser_dub(ctx, state, ids, force)
     job = await jobs.run(
         ctx.video_id, "dub", "配音", ctx.actor,
         lambda job: jobs.dub_lines(ctx.video_id, job, ids=ids, force=force),

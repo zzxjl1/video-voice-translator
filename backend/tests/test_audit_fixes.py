@@ -160,5 +160,82 @@ n404 = NotFoundError(message="404", response=httpx.Response(404, request=httpx.R
 check("⑦ 404 不算鉴权失败（不误导去查 API key）", L._is_auth_error(n404) is False)
 check("⑦ 404 仍属于永久错误（不重试）", L._is_permanent_error(n404) is True)
 
+# ------------------------------------------------------------------ ⑧ 本地配音：AI 的 redub 不再被拒，改请页面合成
+from app import jobs
+
+def seed_browser():
+    fresh()
+    def to_browser(s):
+        s.dubbing_mode = "browser"
+        for seg in s.segments:
+            seg.translated_text = "Hello"
+            seg.tr_fp = status.expected_tr_fp(s, seg)
+    store.mutate(VID, to_browser, actor="system", cmd="seed", summary="browser")
+
+def ui_events(q):
+    out = []
+    while not q.empty():
+        e = q.get_nowait()
+        if e.get("type") == "ui": out.append(e)
+    return out
+
+seed_browser()
+r = run("redub", {}, actor="ai")
+check("⑧ 没有页面在线 → 明说做不了（而不是假装已请求）", (not r["ok"]) and "没有打开" in r["error"], r)
+
+q = bus.subscribe(VID, since=store.current_seq(VID))
+r = run("redub", {}, actor="ai")
+ev = ui_events(q)
+check("⑧ 浏览器模式 redub：成功，不再被拒", r["ok"], r)
+check("⑧ 发出 browser_dub 界面意图，带上要合成的句子 id", len(ev) == 1 and ev[0]["action"] == "browser_dub" and ev[0]["line_ids"] == ["a", "b", "c"] and ev[0]["force"] is False, ev)
+check("⑧ 返回值说明是异步的、没合成完（防止 AI 说\"已配好\"）", r["result"]["queued"] == 3 and r["result"]["async"] is True and "还没合成完" in r["result"]["note"], r["result"])
+check("⑧ 没有起服务端配音任务", jobs.find(VID, kind="dub") is None)
+
+r = run("redub", {"lines": [2]}, actor="ai")
+ev = ui_events(q)
+check("⑧ 指定行号：只请求那一句", r["ok"] and len(ev) == 1 and ev[0]["line_ids"] == ["b"] and r["result"]["lines"] == [2], (r, ev))
+
+# 一句已经是最新：不带 force 不重做；带 force 才重做
+seg_b = store.get_state(VID).segment("b")
+p = status.tts_audio_path(VID, "b"); os.makedirs(os.path.dirname(p), exist_ok=True); open(p, "wb").write(b"x")
+def fp(s): s.segment("b").tts_fp = status.expected_tts_fp(s, s.segment("b"))
+store.mutate(VID, fp, actor="system", cmd="seed", summary="b fresh")
+ui_events(q)
+r = run("redub", {"lines": [2]}, actor="ai")
+check("⑧ 该句配音已是最新 → 不发事件，告诉 AI 没活可做", r["ok"] and r["result"]["queued"] == 0 and not ui_events(q), r)
+r = run("redub", {"lines": [2], "force": True}, actor="ai")
+ev = ui_events(q)
+check("⑧ force → 照样重做，事件带 force=true", r["ok"] and len(ev) == 1 and ev[0]["line_ids"] == ["b"] and ev[0]["force"] is True, (r, ev))
+r = run("redub", {}, actor="ai")
+ev = ui_events(q)
+check("⑧ 不给行号 = 所有缺口，已最新的那句不在其中", r["ok"] and len(ev) == 1 and ev[0]["line_ids"] == ["a", "c"], (r, ev))
+
+# 译文缺失仍然拦（校验在分支之前，不因为改走页面就绕过）
+def drop_tr(s): s.segment("c").translated_text = ""
+store.mutate(VID, drop_tr, actor="system", cmd="seed", summary="no tr")
+r = run("redub", {"lines": [3]}, actor="ai")
+check("⑧ 译文缺失仍被拒，先 retranslate", (not r["ok"]) and "译文" in r["error"], r)
+bus.unsubscribe(VID, q)
+
+fresh()      # dubbing_mode = off
+r = run("redub", {}, actor="ai")
+check("⑧ 仅字幕模式仍被拒", (not r["ok"]) and "dubbing_mode" in r["error"], r)
+
+# ------------------------------------------------------------------ ⑧b 确认：本地合成免费，不该让 AI 去问用户"会花钱"
+seed_browser()
+st_browser = store.get_state(VID)
+def to_remote(s): s.dubbing_mode = "remote"
+store.mutate(VID, to_remote, actor="system", cmd="seed", summary="remote")
+st_remote = store.get_state(VID)
+check("⑧b 远端配音：AI 的 redub 仍要确认（花钱）", R.needs_confirmation("redub", "ai", st_remote) == R.CONFIRM_COST)
+check("⑧b 浏览器配音：AI 的 redub 不用确认（免费）", R.needs_confirmation("redub", "ai", st_browser) is None)
+check("⑧b 不传状态时保持原行为（要确认）", R.needs_confirmation("redub", "ai") == R.CONFIRM_COST)
+check("⑧b 其它花钱的命令不受影响", R.needs_confirmation("clone_voice", "ai", st_browser) == R.CONFIRM_COST
+      and R.needs_confirmation("retranslate", "ai", st_browser) == R.CONFIRM_COST)
+check("⑧b agent 在判断确认时传了工程状态", "needs_confirmation(name, \"ai\", store.get_state(video_id))" in open(os.path.join(BACKEND, "app", "agent.py")).read())
+check("⑧b 事件总线：没人订阅 / 有人订阅 的区别", bus.has_subscribers("no-such-project") is False)
+_q = bus.subscribe(VID, since=0); check("⑧b 订阅后 has_subscribers=True", bus.has_subscribers(VID) is True)
+bus.unsubscribe(VID, _q); check("⑧b 退订后恢复 False", bus.has_subscribers(VID) is False)
+
 print(f"\n合计 {'全部通过' if not fails else str(len(fails)) + ' 项失败: ' + ', '.join(fails)}")
 sys.exit(1 if fails else 0)

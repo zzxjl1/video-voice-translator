@@ -76,6 +76,8 @@ SYSTEM_PROMPT = """你是这个视频配音项目的 AI 助手，和用户一起
   原歌词加 ♪，分离过人声的工程导出时保留原声。你发现某几句其实是唱的但没标、或标错了：先 listen（track=vocals），
   再 mark_non_speech kind=song / speech。
 - 翻译和配音是两步：改了原文或译文，配音会过期，要 redub；改了语气/语速，配音也过期。
+  本地配音（浏览器配音）模式下 redub 不是你在服务端合成，而是请用户的页面在浏览器里合成：免费、不用确认，
+  但**命令返回时还没合成完**，不要说"已配好"；要确认结果就再看概览里还差多少句配音。
 - 配音时长要和时间槽（slot_s）大致相当：dub_vs_slot 大于 1.15 说明配音太长（会被加速或裁掉），
   小于 0.8 说明太短。优先让译文更简短或调语速，而不是硬塞。
 - 语气用 set_dub_style 的 instruction，写成一句自然的指令，**语言必须和译文一致**：译文是英文就写英文指令
@@ -335,7 +337,7 @@ async def _run_tool(chat: Chat, video_id: str, call: dict) -> tuple[dict, Option
     except (json.JSONDecodeError, ValueError) as e:
         return {"ok": False, "error": f"参数不是合法的 JSON 对象：{e}"}, None
 
-    level = R.needs_confirmation(name, "ai")
+    level = R.needs_confirmation(name, "ai", store.get_state(video_id))
     if level:
         approved = await _confirm(chat, video_id, call, args, level)
         if not approved:

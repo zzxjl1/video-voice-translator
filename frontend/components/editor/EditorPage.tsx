@@ -220,15 +220,17 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
     }
   }, [delivery, keepStyle, visibleCues, id, run, style]);
 
-  // 浏览器配音：一句失败不影响其它句；同一时间只跑一批（重复点击不会并发合成同一句）
-  const browserBusy = useRef(false);
-  const fillBrowser = useCallback(async (only?: Line[], force = false) => {
-    if (browserBusy.current) { setNotice(t('本地配音正在进行，请稍候')); return; }
-    browserBusy.current = true;
+  // 浏览器配音：一句失败不影响其它句；同一时间只合成一批（fillBrowserDubbing 内部排队）。
+  // 人手重复点击在有批次进行时直接拒绝；AI 的请求（fromAi）不能被丢掉——它已经被告知"已请求"，
+  // 所以照样提交，排在当前批次后面，进队时重新取工程状态，已经做完的句子自然跳过。
+  const browserBusy = useRef(0);
+  const fillBrowser = useCallback(async (only?: Line[] | string[], force = false, fromAi = false) => {
+    if (browserBusy.current > 0 && !fromAi) { setNotice(t('本地配音正在进行，请稍候')); return; }
+    browserBusy.current += 1;
     try {
       const fresh = await api.getProject(id);
       if (fresh.settings.dubbingMode !== 'browser') return;
-      const onlyIds = only ? new Set(only.map((l) => l.id)) : undefined;
+      const onlyIds = only ? new Set(only.map((l) => (typeof l === 'string' ? l : l.id))) : undefined;
       const r = await fillBrowserDubbing(fresh, {
         only: onlyIds,
         force,
@@ -247,9 +249,20 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
       setNotice(`本地配音失败：${e instanceof Error ? e.message : String(e)}`);
       await reload();
     } finally {
-      browserBusy.current = false;
+      browserBusy.current -= 1;
     }
   }, [id, reload]);
+
+  // AI 请求本地配音（redub 在浏览器配音模式下发的界面意图）：服务端合成不了，由这里在浏览器里做。
+  // 和点顶栏「补」是同一条路径。
+  useEffect(() => {
+    if (!ui || ui.action !== 'browser_dub') return;
+    const ids = Array.isArray(ui.line_ids) ? (ui.line_ids as unknown[]).filter((x): x is string => typeof x === 'string') : [];
+    if (!ids.length) return;
+    log.info('browser-tts', 'ai request', { id: shortId(id), lines: ids.length, force: ui.force === true });
+    setNotice(`AI 请求本地配音：${ids.length} 句`);
+    void fillBrowser(ids, ui.force === true, true);
+  }, [ui, id, fillBrowser]);
 
   const actions = useMemo<ScriptActions>(() => ({
     edit: async (_lineId, field, value, line) => {

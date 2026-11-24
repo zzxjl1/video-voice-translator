@@ -102,6 +102,21 @@ const r = (p) => fs.readFileSync(new URL(`../${p}`, import.meta.url), 'utf8');
   check('③b vite：ORT 的 wasm 与 JS 取自同一份构建（overrides 去重 + kokoro-ort 解析器）', /name: 'kokoro-ort'/.test(vite) && pkg.overrides?.['onnxruntime-web'] === '$onnxruntime-web');
 }
 
+// ---------------------------------------------------------------- ③d AI 请求本地配音：编辑器接住 browser_dub
+{
+  const page = r('components/editor/EditorPage.tsx');
+  const types = r('net/types.ts');
+  check('③d UiEvent 的 action 里有 browser_dub', /'browser_dub'/.test(types));
+  check('③d 编辑器处理 browser_dub：读 line_ids / force，走 fillBrowser',
+    /ui\.action !== 'browser_dub'/.test(page) && /ui\.line_ids/.test(page) && /fillBrowser\(ids, ui\.force === true, true\)/.test(page));
+  check('③d fillBrowser 接受 id 列表（AI 给的是句子 id）和 Line 两种', /only\?: Line\[\] \| string\[\]/.test(page) && /typeof l === 'string' \? l : l\.id/.test(page));
+  check('③d 人手点击：有批次进行时拒绝重复；AI 请求（fromAi）不拒绝，排队执行（AI 已被告知"已请求"，不能悄悄丢掉）',
+    /browserBusy\.current > 0 && !fromAi/.test(page) && /browserBusy\.current \+= 1/.test(page) && /browserBusy\.current -= 1/.test(page));
+  check('③d busy 用计数而不是布尔：AI 批次排在人手批次后面时，先结束的不会把"进行中"误清掉', /const browserBusy = useRef\(0\)/.test(page));
+  const dub = r('features/browserDubbing.ts');
+  check('③d 真正的串行在 fillBrowserDubbing 里（排队 + 进队时重新取状态，已做完的句子自然跳过）', /tail\.then\(\(\) => runBrowserDubbing/.test(dub));
+}
+
 // ---------------------------------------------------------------- ③c 分离模型已并入 features/
 {
   check('③c 分离模型在 features/separation/，旧的 utils/mdx 已不存在', fs.existsSync(new URL('../features/separation/separatorClient.js', import.meta.url)) && !fs.existsSync(new URL('../utils/mdx', import.meta.url)));

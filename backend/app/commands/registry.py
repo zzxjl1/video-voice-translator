@@ -57,6 +57,8 @@ class Command:
     readonly: bool = False       # 只读命令不产生变更，也不需要确认
     ai: bool = True              # False = 只给 UI（比如需要浏览器能力的动作）
     group: str = "edit"
+    # 这个状态下命令不花钱（比如 redub 在浏览器配音模式是本地合成）：AI 调用就不必先问用户
+    confirm_unless: Optional[Callable[[VideoState], bool]] = None
 
 
 _REGISTRY: dict[str, Command] = {}
@@ -71,6 +73,7 @@ def command(
     readonly: bool = False,
     ai: bool = True,
     group: str = "edit",
+    confirm_unless: Optional[Callable[[VideoState], bool]] = None,
 ):
     def deco(fn):
         if name in _REGISTRY:
@@ -79,6 +82,7 @@ def command(
             name=name, description=description,
             params=params or {"type": "object", "properties": {}},
             fn=fn, confirm=confirm, readonly=readonly, ai=ai, group=group,
+            confirm_unless=confirm_unless,
         )
         return fn
     return deco
@@ -302,10 +306,15 @@ def _check_type(key: str, value, spec: dict) -> Optional[str]:
     return None
 
 
-def needs_confirmation(name: str, actor: str) -> Optional[str]:
-    """AI 调用需要确认时返回确认级别；用户自己点的按钮本身就是确认。"""
+def needs_confirmation(name: str, actor: str, state: Optional[VideoState] = None) -> Optional[str]:
+    """AI 调用需要确认时返回确认级别；用户自己点的按钮本身就是确认。
+
+    给了 `state` 时，命令声明的 `confirm_unless` 也会生效（这个状态下不花钱就不问）。
+    """
     cmd = get(name)
     if cmd is None or actor != "ai" or cmd.readonly:
+        return None
+    if state is not None and cmd.confirm_unless is not None and cmd.confirm_unless(state):
         return None
     return cmd.confirm if cmd.confirm != CONFIRM_NEVER else None
 

@@ -280,7 +280,7 @@ export interface UiEvent {
   type: 'ui';
   seq: number;
   ts: number;
-  action: 'focus_line' | 'open_panel' | 'browser_action' | 'play_voice_preview' | 'export_ready';
+  action: 'focus_line' | 'open_panel' | 'browser_action' | 'browser_dub' | 'play_voice_preview' | 'export_ready';
   actor: Actor;
   [key: string]: unknown;
 }
