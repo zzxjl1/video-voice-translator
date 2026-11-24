@@ -279,9 +279,9 @@ def _cap(result: Any) -> str:
     return text
 
 
-def _estimate_yuan(video_id: str, name: str, args: dict) -> tuple[float | None, str]:
+def _estimate_points(video_id: str, name: str, args: dict) -> tuple[float | None, str]:
     """
-    确认卡上的"预估金额"（含服务费）。能算准的才算，算不准就明说按用量计费——
+    确认卡上的"预估积分"（已含服务费）。能算准的才算，算不准就明说按用量计费——
     卡片上给一个编出来的数比不给更糟。
     """
     from app import config
@@ -292,7 +292,7 @@ def _estimate_yuan(video_id: str, name: str, args: dict) -> tuple[float | None, 
             if not unit:
                 return None, ""
             n = 1 if name == "clone_voice" else max(1, len(args.get("presets") or []) or 3)
-            return round(unit["price_micro"] * n / pricing.MICRO, 2), f"每次新建音色 ¥{unit['price_yuan']:.2f}"
+            return round(unit["points"] * n, 2), f"每次新建音色 {pricing.fmt_points(unit['points_micro'])} 积分"
         if name in ("redub", "retranslate", "run_initialize"):
             return None, "按实际用量计费"
     except Exception:  # noqa: BLE001 - 估算失败不该拦住确认流程
@@ -307,10 +307,10 @@ async def _confirm(chat: Chat, video_id: str, call: dict, args: dict, level: str
     fut: asyncio.Future = asyncio.get_running_loop().create_future()
     conv = chat.conv
     chat.pending[card_id] = (fut, conv)
-    estimate, estimate_note = _estimate_yuan(video_id, call["name"], args)
+    estimate, estimate_note = _estimate_points(video_id, call["name"], args)
     _msg(video_id, "confirm", conv=conv, id=card_id, command=call["name"], description=cmd.description,
          args=args, level=level, status="pending",
-         estimateYuan=estimate, estimateNote=estimate_note)
+         estimatePoints=estimate, estimateNote=estimate_note)
     try:
         return bool(await asyncio.wait_for(fut, timeout=CONFIRM_TIMEOUT_S))
     except asyncio.TimeoutError:

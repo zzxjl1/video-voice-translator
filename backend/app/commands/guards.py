@@ -194,17 +194,17 @@ def _need_balance(ctx, what: str, need_micro: int = 0) -> None:
     """
     会花钱的命令在动手之前先确认余额够。
 
-    估不准（ASR/TTS 按用量计费）时用起步线 `config.BILLING_MIN_START_MICRO`：
+    估不准（ASR/TTS 按用量计费）时用起步线 `config.BILLING_MIN_START_POINTS_MICRO`：
     目的不是精确扣款，而是"余额见底的人别开始一件会跑十分钟的活"。
-    真正的钱在每次调用后按实际用量扣（billing.service.charge）。
+    真正的积分在每次调用后按实际用量扣（billing.service.charge）。
     """
     from app import config
     from app.billing import service as billing
     try:
         billing.require_balance(
             billing.user_for_project(ctx.video_id),
-            need_micro or config.BILLING_MIN_START_MICRO,
+            need_micro or config.BILLING_MIN_START_POINTS_MICRO,
             what,
         )
     except billing.BillingError as e:
-        raise CommandError(str(e), hint="在账户菜单里查看余额；充值后重试") from e
+        raise CommandError(str(e), hint="在账户菜单里查看积分余额；充值后重试") from e

@@ -381,7 +381,7 @@ def get_recent_changes(ctx: Ctx, limit: int = 15):
     return {"changes": out}
 
 
-@command("get_cost", "这个工程到目前为止花了多少钱（人民币，含服务费）。", readonly=True, group="read")
+@command("get_cost", "这个工程到目前为止用了多少积分（1 积分 ≈ 0.01 元）。", readonly=True, group="read")
 def get_cost(ctx: Ctx):
     from app.billing import service as billing
     data = billing.project_summary(ctx.video_id)

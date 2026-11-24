@@ -302,8 +302,8 @@ export interface ChatMessage {
   args?: Record<string, unknown>;
   level?: 'cost' | 'destroy';
   status?: 'pending' | 'approved' | 'rejected';
-  /** 确认卡上的预估金额（元，含服务费）；null/缺省 = 按用量计费或算不准。 */
-  estimateYuan?: number | null;
+  /** 确认卡上的预估积分（1 积分 ≈ 0.01 元）；null/缺省 = 按用量计费或算不准。 */
+  estimatePoints?: number | null;
   estimateNote?: string;
 }
 
@@ -415,33 +415,34 @@ export const DEFAULT_SUBTITLE_STYLE: SubtitleStyle = {
 
 export const srtFilename = (videoId: string, track: SubtitleTrack): string => `${track}_${videoId.slice(0, 8)}.srt`;
 
-/** 钱一律是人民币（含服务费）。金额用 micro 元整数传，避免浮点累加漂移。 */
+/** 用户侧单位是**积分**：积分 = 成本 × 倍率 × 100，所以 1 积分 ≈ 0.01 元。
+ *  数字用 micro 积分整数传（1e-6），避免小数累加丢零头；成本不在任何接口里返回。 */
 export interface BillingStep {
   step: string;
   calls: number;
-  spent_micro: number;
-  spent_yuan: number;
+  points_micro: number;
+  points: number;
 }
 
 export interface BillingSummary {
-  balance_micro: number;
-  balance_yuan: number;
-  month_spent_micro: number;
-  month_spent_yuan: number;
+  balance_points_micro: number;
+  balance_points: number;
+  month_points_micro: number;
+  month_points: number;
   month_calls: number;
   by_step: BillingStep[];
-  currency: 'CNY';
+  unit: 'points';
 }
 
 export interface ProjectBilling {
   project_id: string;
-  total_micro: number;
-  total_yuan: number;
+  total_points_micro: number;
+  total_points: number;
   calls: number;
   by_step: BillingStep[];
-  /** 账户余额（工程页顺带展示，省一次请求）。 */
-  balance_yuan?: number;
-  currency: 'CNY';
+  /** 账户积分余额（工程页顺带展示，省一次请求）。 */
+  balance_points?: number;
+  unit: 'points';
 }
 
 export interface BillingEntry {
@@ -452,14 +453,14 @@ export interface BillingEntry {
   detail: string;
   input_tokens: number;
   output_tokens: number;
-  price_micro: number;
-  price_yuan: number;
+  points_micro: number;
+  points: number;
   cost_source: 'computed' | 'api' | 'no_price' | 'free';
   at: number;
 }
 
 export interface BillingPrices {
-  currency: 'CNY';
+  unit: 'points';
   /** 按次计费的价目（目前只有克隆音色）；按用量计费的不给单价。 */
-  per_unit: { step: string; model: string; price_micro: number; price_yuan: number }[];
+  per_unit: { step: string; model: string; points_micro: number; points: number }[];
 }

@@ -514,7 +514,6 @@
   "按步骤": "Theo bước",
   "最近": "Gần đây",
   "免费": "Miễn phí",
-  "金额为人民币，已含服务费。本地配音、人声分离与导出不收费。": "Số tiền tính bằng CNY và đã gồm phí dịch vụ. Lồng tiếng cục bộ, tách giọng và xuất đều miễn phí.",
   "费用明细": "Chi tiết chi phí",
   "审听 / 聊天": "Duyệt / trò chuyện",
   "本地配音（免费）": "Lồng tiếng cục bộ (miễn phí)",
@@ -523,5 +522,10 @@
   "用「{0}」克隆 {1} 的音色？要几十秒，做好后可以直接试听。": "Nhân bản giọng của {1} bằng “{0}”? Mất vài chục giây, sau đó nghe thử được ngay.",
   "克隆 {0} 的音色？要几十秒。": "Nhân bản giọng của {0}? Mất vài chục giây.",
   "\n约 {0} 元（含服务费）": "\nKhoảng ¥{0} (đã gồm phí dịch vụ).",
-  "\n约 {0} 元（含服务费），从余额扣。": "\nKhoảng ¥{0} (đã gồm phí), trừ từ số dư."
+  "\n约 {0} 元（含服务费），从余额扣。": "\nKhoảng ¥{0} (đã gồm phí), trừ từ số dư.",
+  "积分": "tín dụng",
+  "积分余额": "Số dư tín dụng",
+  "消耗以积分计（1 积分 ≈ 0.01 元，已含服务费）。本地配音、人声分离与导出不消耗积分。": "Mức dùng tính bằng tín dụng (1 tín dụng ≈ ¥0,01, đã gồm phí). Lồng tiếng cục bộ, tách giọng và xuất không tốn tín dụng.",
+  "\\n约 {0} 积分（已含服务费）": "\\nKhoảng {0} tín dụng (đã gồm phí).",
+  "\\n约 {0} 积分（已含服务费），从积分余额扣。": "\\nKhoảng {0} tín dụng (đã gồm phí), trừ từ số dư."
 }

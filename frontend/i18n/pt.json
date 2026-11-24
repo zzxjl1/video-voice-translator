@@ -514,7 +514,6 @@
   "按步骤": "Por etapa",
   "最近": "Recente",
   "免费": "Grátis",
-  "金额为人民币，已含服务费。本地配音、人声分离与导出不收费。": "Os valores são em CNY e incluem a taxa de serviço. Dublagem local, separação vocal e exportação são grátis.",
   "费用明细": "Detalhes da cobrança",
   "审听 / 聊天": "Revisão / chat",
   "本地配音（免费）": "Dublagem local (grátis)",
@@ -523,5 +522,10 @@
   "用「{0}」克隆 {1} 的音色？要几十秒，做好后可以直接试听。": "Clonar a voz de {1} com “{0}”? Leva dezenas de segundos; você poderá ouvir logo depois.",
   "克隆 {0} 的音色？要几十秒。": "Clonar a voz de {0}? Leva dezenas de segundos.",
   "\n约 {0} 元（含服务费）": "\nCerca de ¥{0} (taxa incluída).",
-  "\n约 {0} 元（含服务费），从余额扣。": "\nCerca de ¥{0} (taxa incluída), debitado do saldo."
+  "\n约 {0} 元（含服务费），从余额扣。": "\nCerca de ¥{0} (taxa incluída), debitado do saldo.",
+  "积分": "créditos",
+  "积分余额": "Saldo de créditos",
+  "消耗以积分计（1 积分 ≈ 0.01 元，已含服务费）。本地配音、人声分离与导出不消耗积分。": "O uso é cobrado em créditos (1 crédito ≈ ¥0,01, taxa incluída). Dublagem local, separação vocal e exportação não consomem créditos.",
+  "\\n约 {0} 积分（已含服务费）": "\\nCerca de {0} créditos (taxa incluída).",
+  "\\n约 {0} 积分（已含服务费），从积分余额扣。": "\\nCerca de {0} créditos (taxa incluída), debitados do saldo."
 }

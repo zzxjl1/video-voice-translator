@@ -974,7 +974,8 @@ BILLING_MARKUP = {
     "clone": _env_float("BILLING_MARKUP_CLONE", 2.0),
 }
 # 开始一件按用量计费的任务前，余额至少要够这个数（精确预估做不到，只做起跑线）。
-BILLING_MIN_START_MICRO = _env_int("BILLING_MIN_START_MICRO", 1_000_000)   # ¥1
+# 单位是 micro 积分：1 积分 = 1e6，所以默认 1 亿 = 100 积分（约 ¥1 的量级）。
+BILLING_MIN_START_POINTS_MICRO = _env_int("BILLING_MIN_START_POINTS_MICRO", 100_000_000)
 # 能调用人工充值接口的账号（逗号分隔）。空 = 没人能调。
 BILLING_ADMIN_EMAILS = tuple(
     e.strip().lower() for e in _env("BILLING_ADMIN_EMAILS", "").split(",") if e.strip()

@@ -1,9 +1,9 @@
 /**
  * 费用面板：账户余额 / 本月已用 / 按步骤明细 / 最近的分录。
  *
- * 口径（和 docs/billing.md 一致）：显示的都是**含服务费的用户价**，成本不在任何
- * 接口里返回，所以这里也不可能显示它。明细保留 4 位小数——单句常常不到一分钱，
- * 四舍五入到分会看起来像"免费"。
+ * 口径（和 docs/billing.md 一致）：用户侧单位是**积分**（= 成本 × 倍率 × 100，
+ * 所以 1 积分 ≈ 0.01 元）。成本不在任何接口里返回，这里也不可能显示它。
+ * 小数额保留更多小数——单句常常不到 1 积分，全舍到整数会看起来像"免费"。
  */
 import React, { useCallback, useEffect, useState } from 'react';
 import { billing as api } from '../../net/client';
@@ -21,7 +21,13 @@ const STEP_LABEL: Record<string, string> = {
   export: '导出（免费）',
 };
 
-const yuan = (micro: number, digits = 2) => (micro / 1_000_000).toFixed(digits);
+/** micro 积分 → 显示串：大额两位、小额三位，去掉尾随 0。 */
+const fmtPoints = (micro: number): string => {
+  const pts = micro / 1_000_000;
+  if (pts === 0) return '0';
+  const text = Math.abs(pts) < 1 ? pts.toFixed(3) : pts.toFixed(2);
+  return text.replace(/\.?0+$/, '');
+};
 
 const BillingPanel: React.FC<{ open: boolean; onClose: () => void; projectId?: string }> = ({ open, onClose, projectId }) => {
   const [summary, setSummary] = useState<BillingSummary | null>(null);
@@ -74,20 +80,28 @@ const BillingPanel: React.FC<{ open: boolean; onClose: () => void; projectId?: s
         {summary && (
           <div className="grid grid-cols-2 gap-3 px-5 py-4">
             <div className="rounded-xl bg-[#fbfbf9] px-3 py-2">
-              <div className="text-[10px] text-gray-400">{t('余额')}</div>
-              <div className="text-[18px] font-bold">¥{summary.balance_yuan.toFixed(2)}</div>
+              <div className="text-[10px] text-gray-400">{t('积分余额')}</div>
+              <div className="text-[18px] font-bold">
+                {fmtPoints(summary.balance_points_micro)}
+                <span className="ml-1 text-[10px] font-normal text-gray-400">{t('积分')}</span>
+              </div>
             </div>
             <div className="rounded-xl bg-[#fbfbf9] px-3 py-2">
               <div className="text-[10px] text-gray-400">{t('本月已用')}</div>
               <div className="text-[18px] font-bold">
-                ¥{summary.month_spent_yuan.toFixed(2)}
-                <span className="ml-1 text-[10px] font-normal text-gray-400">{summary.month_calls} {t('次调用')}</span>
+                {fmtPoints(summary.month_points_micro)}
+                <span className="ml-1 text-[10px] font-normal text-gray-400">
+                  {t('积分')} · {summary.month_calls} {t('次调用')}
+                </span>
               </div>
             </div>
             {project && (
               <div className="col-span-2 rounded-xl bg-[#fbfbf9] px-3 py-2">
                 <div className="text-[10px] text-gray-400">{t('这个工程累计')}</div>
-                <div className="text-[18px] font-bold">¥{yuan(project.total_micro)}</div>
+                <div className="text-[18px] font-bold">
+                  {fmtPoints(project.total_points_micro)}
+                  <span className="ml-1 text-[10px] font-normal text-gray-400">{t('积分')}</span>
+                </div>
               </div>
             )}
           </div>
@@ -100,7 +114,7 @@ const BillingPanel: React.FC<{ open: boolean; onClose: () => void; projectId?: s
               <div key={s.step} className="flex items-center justify-between border-b border-claude-border/50 py-1.5 text-[12px]">
                 <span>{t(STEP_LABEL[s.step] ?? s.step)}</span>
                 <span className="text-gray-500">
-                  {s.calls}× · <span className="font-medium text-claude-text">¥{yuan(s.spent_micro, 4)}</span>
+                  {s.calls}× · <span className="font-medium text-claude-text">{fmtPoints(s.points_micro)}</span>
                 </span>
               </div>
             ))}
@@ -116,7 +130,7 @@ const BillingPanel: React.FC<{ open: boolean; onClose: () => void; projectId?: s
                   {t(STEP_LABEL[e.step] ?? e.step)}{e.detail ? ` · ${e.detail}` : ''}
                 </span>
                 <span className="shrink-0">
-                  {e.cost_source === 'free' ? t('免费') : `¥${yuan(e.price_micro, 4)}`}
+                  {e.cost_source === 'free' ? t('免费') : `${fmtPoints(e.points_micro)} ${t('积分')}`}
                 </span>
               </div>
             ))}
@@ -124,7 +138,7 @@ const BillingPanel: React.FC<{ open: boolean; onClose: () => void; projectId?: s
         )}
 
         <p className="px-5 pb-4 text-[10px] leading-relaxed text-gray-400">
-          {t('金额为人民币，已含服务费。本地配音、人声分离与导出不收费。')}
+          {t('消耗以积分计（1 积分 ≈ 0.01 元，已含服务费）。本地配音、人声分离与导出不消耗积分。')}
         </p>
       </div>
     </div>

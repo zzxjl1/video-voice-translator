@@ -89,9 +89,9 @@ export const AccountMenu: React.FC<{ className?: string }> = ({ className = '' }
             <div className="truncate text-[13px] font-bold text-claude-text">{user.name || user.email || t('账号')}</div>
             {user.email && <div className="mt-0.5 truncate text-[11px] text-gray-400">{user.email}</div>}
             <div className="mt-2 flex items-baseline gap-3 text-[11px]">
-              <span className="text-gray-400">{t('余额')}</span>
+              <span className="text-gray-400">{t('积分余额')}</span>
               <span data-i18n-skip className="font-bold text-claude-text">
-                {money ? `¥${money.balance_yuan.toFixed(2)}` : '—'}
+                {money ? `${money.balance_points.toFixed(2)} ${t('积分')}` : '—'}
               </span>
               <button
                 type="button"

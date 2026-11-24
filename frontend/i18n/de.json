@@ -514,7 +514,6 @@
   "按步骤": "Nach Schritt",
   "最近": "Zuletzt",
   "免费": "Kostenlos",
-  "金额为人民币，已含服务费。本地配音、人声分离与导出不收费。": "Beträge in CNY inklusive Servicegebühr. Lokale Synchronisation, Stimmseparierung und Export sind kostenlos.",
   "费用明细": "Abrechnungsdetails",
   "审听 / 聊天": "Prüfung / Chat",
   "本地配音（免费）": "Lokale Synchronisation (kostenlos)",
@@ -523,5 +522,10 @@
   "用「{0}」克隆 {1} 的音色？要几十秒，做好后可以直接试听。": "Stimme von {1} mit „{0}“ klonen? Dauert einige zehn Sekunden, danach direkt anhörbar.",
   "克隆 {0} 的音色？要几十秒。": "Stimme von {0} klonen? Dauert einige zehn Sekunden.",
   "\n约 {0} 元（含服务费）": "\nEtwa ¥{0} (inkl. Servicegebühr).",
-  "\n约 {0} 元（含服务费），从余额扣。": "\nEtwa ¥{0} (inkl. Gebühr), vom Guthaben abgebucht."
+  "\n约 {0} 元（含服务费），从余额扣。": "\nEtwa ¥{0} (inkl. Gebühr), vom Guthaben abgebucht.",
+  "积分": "Guthaben",
+  "积分余额": "Guthabenstand",
+  "消耗以积分计（1 积分 ≈ 0.01 元，已含服务费）。本地配音、人声分离与导出不消耗积分。": "Die Nutzung wird in Guthaben abgerechnet (1 Guthaben ≈ 0,01 CNY, inkl. Servicegebühr). Lokale Synchronisation, Stimmseparierung und Export verbrauchen kein Guthaben.",
+  "\\n约 {0} 积分（已含服务费）": "\\nEtwa {0} Guthaben (inkl. Servicegebühr).",
+  "\\n约 {0} 积分（已含服务费），从积分余额扣。": "\\nEtwa {0} Guthaben (inkl. Gebühr), vom Guthaben abgebucht."
 }

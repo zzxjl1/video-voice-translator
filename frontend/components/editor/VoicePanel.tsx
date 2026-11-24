@@ -37,14 +37,14 @@ const CARD_HEAD = 'px-6 py-5 border-b border-[#e5e5e0] flex items-center justify
 const CARD_TITLE = 'text-xs font-serif font-bold text-gray-700 flex items-center gap-2 tracking-wide';
 
 /**
- * 每个新建音色的价格（元，含服务费）。**从接口取**：写死在代码里会和后台调价脱节。
- * 取不到时用 null，确认框就不显示金额（宁可不说，也不报错价）。
+ * 每个新建音色的价格（积分，已含服务费）。**从接口取**：写死在代码里会和后台调价脱节。
+ * 取不到时用 null，确认框就不显示数量（宁可不说，也不报错价）。
  */
 let clonePricePromise: Promise<number | null> | null = null;
 function clonePrice(): Promise<number | null> {
   if (!clonePricePromise) {
     clonePricePromise = billingApi.prices()
-      .then((p) => p.per_unit.find((x) => x.step === 'clone')?.price_yuan ?? null)
+      .then((p) => p.per_unit.find((x) => x.step === 'clone')?.points ?? null)
       .catch((): number | null => { clonePricePromise = null; return null; });
   }
   return clonePricePromise;
@@ -222,7 +222,7 @@ const SpeakerVoices: React.FC<VoicesProps> = ({ speaker, lines, player, run, onN
   const clone = async (row: Row) => {
     if (!row.preset) return;
     const price = await clonePrice();
-    const money = price == null ? '' : t("\n约 {0} 元（含服务费）", [price.toFixed(2)]);
+    const money = price == null ? '' : t("\n约 {0} 积分（已含服务费）", [price.toFixed(2)]);
     if (!window.confirm(t("用「{0}」克隆 {1} 的音色？要几十秒，做好后可以直接试听。", [t(row.name), speaker.name]) + money)) return;
     await act(`gen-${row.key}`, () => run('generate_voice_candidates', { speaker: speaker.id, presets: [row.preset] }), '克隆失败');
   };
@@ -232,7 +232,7 @@ const SpeakerVoices: React.FC<VoicesProps> = ({ speaker, lines, player, run, onN
   const hasMaterial = presetOptions.some((o) => o.id !== 'smart' && o.available);
   const cloneDefault = async () => {
     const price = await clonePrice();
-    const money = price == null ? '' : t("\n约 {0} 元（含服务费），从余额扣。", [price.toFixed(2)]);
+    const money = price == null ? '' : t("\n约 {0} 积分（已含服务费），从积分余额扣。", [price.toFixed(2)]);
     if (!window.confirm(t("克隆 {0} 的音色？要几十秒。", [speaker.name]) + money)) return;
     const r = await act('gen-default', () => run('clone_voice', { speaker: speaker.id }), '克隆失败');
     if (!r.ok) return;

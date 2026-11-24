@@ -30,8 +30,8 @@ interface Props {
   onExport: () => void;
   onHome: () => void;
   exporting: boolean;
-  /** 这个工程累计花了多少（人民币，含服务费）。undefined = 还没取到 / 没有记录。 */
-  projectCostYuan?: number;
+  /** 这个工程累计用了多少积分。undefined = 还没取到 / 没有记录。 */
+  projectPoints?: number;
   onOpenBilling: () => void;
 }
 
@@ -41,7 +41,7 @@ const GEAR = 'M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l
 
 const TopBar: React.FC<Props> = ({
   filename, targetLanguage, onLanguageChange, needs, dubbing, jobs, undoSummary, onUndo, onFill,
-  onCancelJobs, onOpenSettings, onExport, onHome, exporting, projectCostYuan, onOpenBilling,
+  onCancelJobs, onOpenSettings, onExport, onHome, exporting, projectPoints, onOpenBilling,
 }) => {
   // 悬停展开是桌面习惯；点「Show Tools」可以钉住展开，触屏也能拿到语言/导出。
   const [hovered, setHovered] = useState(false);
@@ -251,14 +251,14 @@ const TopBar: React.FC<Props> = ({
             </>
           )}
 
-          {projectCostYuan !== undefined && (
+          {projectPoints !== undefined && (
             <button
               type="button"
               onClick={onOpenBilling}
-              title="这个工程累计花费（人民币，含服务费）"
+              title="这个工程累计消耗的积分（1 积分 ≈ 0.01 元）"
               className="flex h-7 items-center rounded-full border border-[#e5e5e0] bg-white/90 px-2 text-[11px] font-bold text-gray-600 shadow-sm transition-colors hover:border-claude-accent/40 hover:text-claude-accent whitespace-nowrap"
             >
-              ¥{projectCostYuan.toFixed(2)}
+              {projectPoints.toFixed(2)} 积分
             </button>
           )}
           {!pinned && (

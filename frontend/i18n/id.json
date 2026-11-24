@@ -514,7 +514,6 @@
   "按步骤": "Per langkah",
   "最近": "Terbaru",
   "免费": "Gratis",
-  "金额为人民币，已含服务费。本地配音、人声分离与导出不收费。": "Nilai dalam CNY dan sudah termasuk biaya layanan. Sulih suara lokal, pemisahan vokal, dan ekspor gratis.",
   "费用明细": "Rincian biaya",
   "审听 / 聊天": "Tinjau / obrolan",
   "本地配音（免费）": "Sulih suara lokal (gratis)",
@@ -523,5 +522,10 @@
   "用「{0}」克隆 {1} 的音色？要几十秒，做好后可以直接试听。": "Klon suara {1} dengan “{0}”? Butuh puluhan detik, lalu bisa langsung didengarkan.",
   "克隆 {0} 的音色？要几十秒。": "Klon suara {0}? Butuh puluhan detik.",
   "\n约 {0} 元（含服务费）": "\nSekitar ¥{0} (termasuk biaya layanan).",
-  "\n约 {0} 元（含服务费），从余额扣。": "\nSekitar ¥{0} (termasuk biaya), dipotong dari saldo."
+  "\n约 {0} 元（含服务费），从余额扣。": "\nSekitar ¥{0} (termasuk biaya), dipotong dari saldo.",
+  "积分": "kredit",
+  "积分余额": "Saldo kredit",
+  "消耗以积分计（1 积分 ≈ 0.01 元，已含服务费）。本地配音、人声分离与导出不消耗积分。": "Pemakaian dihitung dalam kredit (1 kredit ≈ ¥0,01, termasuk biaya layanan). Sulih suara lokal, pemisahan vokal, dan ekspor tidak memakai kredit.",
+  "\\n约 {0} 积分（已含服务费）": "\\nSekitar {0} kredit (termasuk biaya layanan).",
+  "\\n约 {0} 积分（已含服务费），从积分余额扣。": "\\nSekitar {0} kredit (termasuk biaya), dipotong dari saldo kredit."
 }
