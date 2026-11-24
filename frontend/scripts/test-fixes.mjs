@@ -93,7 +93,10 @@ const r = (p) => fs.readFileSync(new URL(`../${p}`, import.meta.url), 'utf8');
   check('③b fillBrowserDubbing：排队执行，一批失败不卡住后面的', /tail\.then\(/.test(dubbing) && /run\.catch\(/.test(dubbing));
   check('③b fillBrowserDubbing：排队期间已被取消的不再开始', /排队等待期间就被取消/.test(dubbing));
   const vite = r('vite.config.ts');
-  check('③b vite：ORT 的 wasm 与 JS 取自同一份构建（kokoro-ort 解析器）', /name: 'kokoro-ort'/.test(vite) && /NESTED_ORT/.test(vite));
+  const pkg = JSON.parse(r('package.json'));
+  // ORT 去重靠 package.json overrides（transformers.js 钉的是旧 1.22 dev build，不 override
+  // 就会嵌套出第二份 ort、打包两份 wasm）。kokoro-ort 解析器把 wasm 指到唯一那份构建。
+  check('③b vite：ORT 的 wasm 与 JS 取自同一份构建（overrides 去重 + kokoro-ort 解析器）', /name: 'kokoro-ort'/.test(vite) && pkg.overrides?.['onnxruntime-web'] === '$onnxruntime-web');
 }
 
 // ---------------------------------------------------------------- ③c 分离模型已并入 features/

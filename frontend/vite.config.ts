@@ -1,18 +1,15 @@
-import fs from 'fs';
 import path from 'path';
 import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 
 /**
- * The onnxruntime-web that @huggingface/transformers (Kokoro) runs on. npm nests
- * it under transformers when its version differs from the top-level one (the
- * vocal-separation model uses the top-level 1.30; transformers pins a 1.22 dev
- * build). The Kokoro worker imports that build's wasm through the `kokoro-ort:` resolver below so the
- * JS and wasm always come from the SAME build — mixing them breaks session
- * creation — and so nothing is fetched from a CDN at runtime.
+ * There is ONE onnxruntime-web in the app. package.json `overrides` forces
+ * @huggingface/transformers (Kokoro) onto the same copy the vocal-separation model uses; left to
+ * itself transformers.js pins an old 1.22 dev build, npm nests it, and the bundle then ships TWO
+ * wasm runtimes (21.6 MB + 28.3 MB). The Kokoro worker imports the wasm through the `kokoro-ort:`
+ * resolver below so it is bundled and handed to ORT explicitly, never fetched from a CDN.
  */
-const NESTED_ORT = path.resolve(__dirname, 'node_modules/@huggingface/transformers/node_modules/onnxruntime-web/dist');
-const KOKORO_ORT = fs.existsSync(NESTED_ORT) ? NESTED_ORT : path.resolve(__dirname, 'node_modules/onnxruntime-web/dist');
+const KOKORO_ORT = path.resolve(__dirname, 'node_modules/onnxruntime-web/dist');
 
 /**
  * `kokoro-ort:<file>?url` -> the ORT file inside KOKORO_ORT (see above). A plugin rather than a
