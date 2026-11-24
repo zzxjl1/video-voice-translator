@@ -45,7 +45,7 @@ const CANDIDATE_PARAMS = {
 ort.env.wasm.numThreads = 1;
 ort.env.wasm.wasmPaths = path.join(process.cwd(), 'node_modules/onnxruntime-web/dist/');
 
-const MODEL = path.join(process.cwd(), '../backend/models/UVR-MDX-NET-Inst_HQ_3.onnx');
+const MODEL = path.join(process.cwd(), '../backend/models/uvr-mdx-net-inst-hq-3/UVR-MDX-NET-Inst_HQ_3.onnx');
 const SR = 44100;
 const TOTAL = 240000; // ~5.4 s -> keeps mixtureLength at exactly one chunk size
 

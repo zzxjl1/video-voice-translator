@@ -24,57 +24,94 @@ off      不配音；只做转写/翻译/字幕，原声保持不变
 
 ## 引擎（Kokoro-82M，24kHz，Apache-2.0）
 
-`frontend/features/kokoro/` 里跑在一个专用 Web Worker（主线程不卡）：
+`frontend/features/kokoro/` 里跑在一个专用 Web Worker（主线程不卡）。**WebGPU 和 WASM 用同一个模型文件**
+`model_int8.onnx`（92 MB）：
 
-| 后端 | 条件 | 模型下载 | 实测速度 |
+| 后端 | 条件 | 实测速度（Chrome / Apple M 系列） |
+| --- | --- | --- |
+| WebGPU | `navigator.gpu` 有适配器 | **~11-14x 实时**（fp16 同机 14-18x，慢约 20%） |
+| WASM | 其余（自动降级） | ~0.8x 实时（单线程） |
+
+### 为什么是"改过图的 int8"
+
+官方的 int8 模型（`model_quantized.onnx`）在 WebGPU 上和 WASM 一样慢：它的每个线性层 / 卷积都是
+`DynamicQuantizeLinear → MatMulInteger / ConvInteger → Cast → Mul`，ORT 的 WebGPU 后端没有这几个算子的
+GPU 实现，整批回落 CPU。`backend/scripts/kokoro_int8.py` 只改图、不改权重：
+
+- 148 个 `MatMulInteger` → `MatMul`，87 个 `ConvInteger` → `Conv`，权重在图里仍是 int8（文件和官方 int8 一样大）。
+- 反量化用 `Cast → Sub → Mul`，输入全是常量，ORT 建会话时折叠成浮点权重；激活不再量化，所以数值比官方 int8 更接近 fp32。
+- 4 个词嵌入查表后的反量化也同样替换。`DynamicQuantizeLSTM`（6 个）保留，它在 WebGPU 上走 CPU，不影响正确性。
+- **不能用 `DequantizeLinear`**：ORT 的 WebGPU 后端会把它算成全零。同一个文件在 WASM 上音频正常（峰值约 20000），
+  在 WebGPU 上每个采样都是 0；onnxruntime-web 1.31.1 和 1.33 dev 都一样。换成 `Cast/Sub/Mul` 后正常。
+
+实测（真实浏览器，同一个 worker，只换模型文件，预热后合成一句英语和一句中文）：
+
+| 模型 | 大小 | WebGPU 英语 / 中文 | 音频 |
 | --- | --- | --- | --- |
-| WebGPU + fp16 | `navigator.gpu` 有适配器 | 163 MB | ~8-10x 实时 |
-| WASM + q8 | 其余（自动降级） | 92 MB | ~0.7x 实时 |
+| **`model_int8`（改图版）** | **92 MB** | 2.67 s / 235 ms = **11x**，4.33 s / 314 ms = **14x** | 正常 |
+| `model_fp16` | 163 MB | 2.70 s / 192 ms = 14x，4.97 s / 282 ms = 18x | 正常 |
+| 官方 `model_quantized`（int8） | 92 MB | ~0.8x（算子回落 CPU） | 正常 |
+| 只做 `DequantizeLinear` 替换的版本 | 92 MB | 10x | **全零（静音）** |
+| `model_q8f16` | 86 MB | 31 s 才出 **23 秒**音频（时长被拉长约 8 倍） | **错误** |
 
-实测（Chrome / Apple M 系列 / WebGPU，同一个 worker，只换模型文件，预热后合成两句）：
+为什么只提交这一个：GitHub 单文件上限 100 MB，fp16（163 MB）推不上去；改图 int8 只比 fp16 慢约 20%，却小一半。
 
-| 模型文件 | 大小 | 合成 2.7 秒英语 | 合成 5 秒中文 | 结论 |
-| --- | --- | --- | --- | --- |
-| `model_fp16.onnx` | 163 MB | 0.33 s | 0.48 s | **采用** |
-| `model.onnx`（fp32） | 325 MB | 0.33 s | 0.46 s | 同速，体积翻倍，不用 |
-| `model_q8f16.onnx` | 86 MB | 31 s，**输出 23 秒** | 50 s，**输出 37 秒** | **输出是错的**：时长被拉长约 8 倍，也只有 0.7x |
+> 历史：提交 `062c5d0` 声称 "q8f16 实测 10.86x" 是误测。`KokoroTTS.from_pretrained` 只透传 `dtype` / `device`，
+> **不透传 `model_file_name`**，当时请求的其实是默认的 `model.onnx`（fp32），所以才快。`engine.ts` 因此绕开
+> `from_pretrained`，自己组装 model + tokenizer，并由测试保证加载的就是 `model_int8`。
 
-- **不要用 `model_q8f16`**。之前的提交（`062c5d0`）写的"q8f16 实测 10.86x"是误测：`KokoroTTS.from_pretrained`
-  只透传 `dtype` / `device`，**不透传 `model_file_name`**，当时请求的其实是默认的 `model.onnx`（fp32），
-  所以才快。真正加载 q8f16 后，ort-web 的 WebGPU 上它既慢又出错音频。
-- 纯 int8 的 `q8` 在 WebGPU 上没有 GPU 算子实现，会回落 CPU，速度等同 WASM；所以 WebGPU 用 fp16，
-  WASM 用 q8（`model_quantized.onnx`）。
-- 想让 transformers.js 选某个文件，只能用它认识的 dtype（fp16 → `_fp16`，q8 → `_quantized`）；写
-  `model_file_name` 不会报错，只会悄悄加载别的文件。
 - **只在引擎自己出错时才降级到 WASM**（会话创建失败、推理失败）。文本问题、音色不支持、文件取不到，
-  降级也一样会失败，还白白多下 92 MB、之后慢约 15 倍，所以直接把错误报给用户。
+  降级也一样会失败，还白白慢约 15 倍，所以直接把错误报给用户。
 - worker **串行处理请求**（单个 ORT 会话），每条消息（含下载进度）都带它所属请求的 `id`；
   `fillBrowserDubbing` 也串行：初始化页的自动配音和编辑器的「补配音」同时触发时，后者排队。
+- 想提速 WASM 兜底：给页面加 COOP/COEP 响应头开启多线程，同一个 int8 文件实测从 ~0.8x 到 ~2.5x。
+  目前没有开（需要改 nginx 和 Vite 的响应头，且所有跨域资源都要带 CORP）。
 
-### 运行时不访问任何第三方站点
+### 模型资源随代码库提供，运行和部署都不联网
 
-模型、tokenizer、54 个音色、espeak-ng 数据都由**本项目后端同源提供**（`GET /api/models/kokoro/*`，
-要登录，支持 Range）。ONNX Runtime 的 wasm 由 Vite 打包进 `dist/assets/`。浏览器不再访问
-HuggingFace、hf-mirror、jsDelivr，所以内网 / 国内网络 / 严格 CSP 下也能用，文件内容也由 sha256 钉死。
+`backend/models/` 下**一个模型一个文件夹**：
 
-部署时下载一次（需要能访问 HF 或 hf-mirror、jsDelivr 的机器）：
-
-```bash
-python backend/scripts/fetch_kokoro_models.py            # 约 310 MB，已有且大小一致的跳过
-python backend/scripts/fetch_kokoro_models.py --verify   # 只校验
+```text
+backend/models/
+  uvr-mdx-net-inst-hq-3/    人声分离（64 MB）+ 它的参数表（download_checks / mdx_model_data / vr_model_data.json）
+  kokoro-82m/               本地配音（133 MB）
+    config.json, tokenizer.json, tokenizer_config.json
+    onnx/model_int8.onnx    92 MB，改图后的 int8（见上）
+    voices/*.bin            应用里能选到的 42 个音色（中 8 / 英 28 / 法 1 / 意 2 / 葡 3），每个 0.5 MB
+    espeak/                 espeak-ng.js / .data（fr/it/pt 音素化，24 MB）+ COPYING（GPL-3.0）
+    manifest.json           每个文件的大小和 sha256
 ```
 
-文件放在 `backend/models/kokoro/`（已 gitignore），布局和 `manifest.json`（大小 + sha256）见脚本头注释。
-缺文件时 `GET /api/models/kokoro` 返回 `available:false` 和缺失清单，worker 报"本地配音资源缺失，
-请运行 fetch_kokoro_models.py"，而不是让用户去撞 404。
+这些文件**已经提交进代码库**（不再 gitignore），部署不需要下载。后端同源提供（`GET /api/models/kokoro/*`，
+要登录，支持 Range）；ONNX Runtime 的 wasm 由 Vite 打包进 `dist/assets/`。浏览器不访问 HuggingFace、
+hf-mirror、jsDelivr，所以内网 / 国内网络 / 严格 CSP 下也能用。
+
+维护者要升级模型、增减音色、或怀疑文件损坏时：
+
+```bash
+pip install onnx numpy
+python backend/scripts/prepare_kokoro_models.py --verify   # 只校验现有文件（sha256），不联网
+python backend/scripts/prepare_kokoro_models.py            # 下载缺的、转换模型、写 manifest
+```
+
+缺文件时 `GET /api/models/kokoro` 返回 `available:false` 和缺失清单，worker 报"本地配音资源缺失"，
+而不是让用户去撞 404。
+
+**改了模型内容，必须同时换文件名**（`model_int8` → `model_int8_2`），并改前端
+`features/kokoro/assets.ts` 的 `KOKORO_MODEL_FILE` 和 `prepare_kokoro_models.py` 的 `MODEL_FILE`：
+transformers.js 按 URL 缓存模型文件、不会重新校验，同名换文件会让老用户一直用旧模型。
+`scripts/test-kokoro.mjs` 检查两个名字一致、onnx/ 里只有这一个模型。
 
 官方 kokoro-js 的注册表只有英语音色；其它语言由 worker 自行音素化后走 `generate_from_ids` 绕过
-（54 个音色 bin 随 kokoro-js 的 npm 包分发，`generate_from_ids` 不校验音色名）。
+（音色 bin 来自 kokoro-js 的 npm 包，`generate_from_ids` 不校验音色名）。
+
+> 仓库体积：每次**更换**这些大文件，git 历史都会永久多出一份（模型 92 MB、espeak data 24 MB）。
+> 所以升级模型是低频操作；日常改动不要动 `backend/models/`。
 
 ### 许可
 
 espeak-ng 是 **GPL-3.0**。`espeak/espeak-ng.js` 和 `espeak-ng.data`（fr/it/pt 用）是它的编译产物，
-`backend/models/kokoro/espeak/COPYING` 随文件一起放着，请勿删除。英语走 kokoro-js 内置的
+`backend/models/kokoro-82m/espeak/COPYING` 随文件一起放着，请勿删除。英语走 kokoro-js 内置的
 `phonemizer`（同为 espeak-ng 的 WASM 构建）。商用分发前请自行确认合规。Kokoro 模型本身 Apache-2.0，
 misaki 的 G2P 表 Apache-2.0。
 

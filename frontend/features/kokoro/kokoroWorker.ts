@@ -2,9 +2,9 @@
  * Kokoro TTS worker: the whole engine (model + G2P + espeak) runs here so the
  * UI thread never blocks during synthesis.
  *
- * - Model via transformers.js, loaded from OUR server (see assets.ts): WebGPU
- *   `model_fp16` (163 MB, ~8-10x realtime) when the GPU is usable, else WASM `q8`
- *   (92 MB, ~0.7x). The browser never contacts HuggingFace or a CDN.
+ * - Model via transformers.js, loaded from OUR server (see assets.ts): ONE file,
+ *   `model_int8` (92 MB), on WebGPU (~11x realtime) when the GPU is usable, else on WASM
+ *   (~0.8x single-threaded). The browser never contacts HuggingFace or a CDN.
  * - ONNX Runtime's wasm/mjs are bundled by Vite and handed to ORT explicitly.
  *   Without that, transformers.js points ORT at jsDelivr (a hidden runtime
  *   dependency that fails behind firewalls).
@@ -12,7 +12,7 @@
  *   HuggingFace URL, so its fetch is redirected below.
  * - Phonemization: en via kokoro-js's built-in espeak (en-us, with number
  *   normalization); zh via zhG2P (misaki-format tones; Latin words go through
- *   the English phonemizer); fr/it/pt/es/hi via the full espeak-ng WASM build.
+ *   the English phonemizer); fr/it/pt via the full espeak-ng WASM build.
  *   The official kokoro-js registry is English-only; other languages go
  *   through generate_from_ids with our own phonemes.
  *
@@ -26,13 +26,14 @@
  *        message carries the id of the request it belongs to.
  */
 /// <reference lib="webworker" />
-import { KokoroTTS } from 'kokoro-js';
+import type { KokoroTTS } from 'kokoro-js';
 import { env } from '@huggingface/transformers';
 import { phonemize as englishPhonemize } from 'phonemizer';
 import ortMjs from 'kokoro-ort:ort-wasm-simd-threaded.jsep.mjs?url';
 import ortWasm from 'kokoro-ort:ort-wasm-simd-threaded.jsep.wasm?url';
-import { KOKORO_BASE, KOKORO_MODEL, voiceUrl } from './assets';
+import { MODELS_ROOT, voiceUrl } from './assets';
 import { KOKORO_VOCAB } from './catalog';
+import { loadKokoro } from './engine';
 import { espeakPhonemize } from './espeakFull';
 import { bisect, splitSentences } from './text';
 import { zhG2PWith } from './zhG2P';
@@ -40,7 +41,7 @@ import { zhG2PWith } from './zhG2P';
 // ---- no third-party hosts at runtime ---------------------------------------
 env.allowRemoteModels = false;
 env.allowLocalModels = true;
-env.localModelPath = `${KOKORO_BASE}/`;
+env.localModelPath = MODELS_ROOT;
 // transformers.js defaults ORT's wasm location to jsDelivr unless one is set.
 (env.backends.onnx as { wasm: { wasmPaths: unknown } }).wasm.wasmPaths = { mjs: ortMjs, wasm: ortWasm };
 
@@ -63,7 +64,6 @@ let current = 0;
 interface Engine {
   tts: KokoroTTS;
   device: 'webgpu' | 'wasm';
-  dtype: string;
 }
 
 let engine: Engine | null = null;
@@ -74,31 +74,23 @@ let preferWasm = self.name === 'kokoro-wasm';
 /** The model session failed to run (as opposed to: bad text, missing file). Only these justify a WASM retry. */
 class EngineError extends Error {}
 
-type EngineChoice = { device: 'webgpu' | 'wasm'; dtype: 'fp16' | 'q8' };
-
 /**
- * WebGPU → `model_fp16.onnx`（163MB），实测约 8-10 倍实时，输出与 fp32 一致。
- * 其余 → WASM + `model_quantized.onnx`（q8，92MB，~0.7 倍实时）。
+ * One model file for both devices. WebGPU when the browser has a usable adapter, else WASM.
  *
- * 不要换成 `model_q8f16`（86MB）：它在 ort-web 的 WebGPU 上输出的音频是错的（时长被拉长约 8 倍，
- * 速度也只有 0.7 倍），实测对比见 docs/dubbing-modes.md。纯 int8 的 `q8` 在 WebGPU 上则没有 GPU
- * 算子实现，会回落 CPU，同样慢。
- *
- * 另一个坑：`KokoroTTS.from_pretrained` 只透传 dtype / device，**不透传 model_file_name**，所以
- * 想靠 model_file_name 选文件，实际加载的是默认的 `model.onnx`（325MB fp32）而不报错。要选文件，
- * 只能用 transformers.js 认识的 dtype（fp16 → `_fp16`，q8 → `_quantized`）。
- * 测试 `test-fixes.mjs` 会断言这里不再出现 model_file_name。
+ * It is the official dynamic-int8 graph with its integer operators rewritten (see
+ * backend/scripts/kokoro_int8.py): ORT's WebGPU backend has no MatMulInteger / ConvInteger, and its
+ * DequantizeLinear returns all zeros, so the stock int8 file ran at CPU speed on WebGPU. The
+ * rewritten file runs ~11x realtime on WebGPU (about 20% behind fp16) at 92 MB instead of 163 MB.
+ * Do NOT swap in `model_q8f16`: on ort-web WebGPU its audio comes out ~8x too long and wrong.
  */
-async function pickDevice(): Promise<EngineChoice> {
+async function pickDevice(): Promise<'webgpu' | 'wasm'> {
   if (!preferWasm) {
     try {
       const gpu = (globalThis as { navigator?: { gpu?: { requestAdapter: () => Promise<unknown> } } }).navigator?.gpu;
-      if (gpu && await gpu.requestAdapter()) {
-        return { device: 'webgpu', dtype: 'fp16' };
-      }
+      if (gpu && await gpu.requestAdapter()) return 'webgpu';
     } catch { /* fall through to wasm */ }
   }
-  return { device: 'wasm', dtype: 'q8' };
+  return 'wasm';
 }
 
 /** A failure to GET one of our files (missing, not logged in, offline) — retrying on another device cannot fix it. */
@@ -109,29 +101,27 @@ function explainAssetError(e: unknown): Error {
   const msg = String((e as Error)?.message ?? e);
   if (/Unauthorized|\b401\b/i.test(msg)) return new Error('未登录或登录已过期，无法加载本地配音资源');
   if (/Could not locate|\b404\b/i.test(msg)) {
-    return new Error(`本地配音资源缺失（${msg}）。请在服务器运行 backend/scripts/fetch_kokoro_models.py`);
+    return new Error(`本地配音资源缺失（${msg}）。这些文件应随代码库提交（backend/models/kokoro-82m），请检查部署是否完整`);
   }
   return e instanceof Error ? e : new Error(msg);
 }
 
 async function load(): Promise<Engine> {
-  const choice = await pickDevice();
+  const device = await pickDevice();
   const progress = (p: { status?: string; file?: string; loaded?: number; total?: number }) => {
     if (p.status === 'progress' && p.file?.endsWith('.onnx') && p.loaded && p.total) {
       post({ id: current, type: 'progress', phase: 'model', loaded: p.loaded, total: p.total });
     }
   };
   try {
-    const tts = await KokoroTTS.from_pretrained(KOKORO_MODEL, { ...choice, progress_callback: progress });
-    return { tts, device: choice.device, dtype: choice.dtype };
+    return { tts: await loadKokoro(device, progress), device };
   } catch (e) {
-    if (choice.device === 'webgpu' && !isAssetError(e)) {
+    if (device === 'webgpu' && !isAssetError(e)) {
       // WebGPU adapter answered but the session could not be created (driver quirks etc.) — WASM always works.
       post({ id: current, type: 'device', device: 'wasm-fallback', message: String((e as Error)?.message ?? e) });
       preferWasm = true;
       try {
-        const tts = await KokoroTTS.from_pretrained(KOKORO_MODEL, { device: 'wasm', dtype: 'q8', progress_callback: progress });
-        return { tts, device: 'wasm', dtype: 'q8' };
+        return { tts: await loadKokoro('wasm', progress), device: 'wasm' };
       } catch (e2) {
         throw explainAssetError(e2);
       }
@@ -147,19 +137,17 @@ async function getEngine(): Promise<Engine> {
 
 // ---- phonemization -----------------------------------------------------------
 
-function voiceLanguage(voice: string): 'zh' | 'en' | 'fr' | 'it' | 'pt' | 'es' | 'hi' | 'ja' | '' {
+function voiceLanguage(voice: string): 'zh' | 'en' | 'fr' | 'it' | 'pt' | 'ja' | '' {
   if (/^(zf|zm)_/.test(voice)) return 'zh';
   if (/^(af|am|bf|bm)_/.test(voice)) return 'en';
   if (/^ff_/.test(voice)) return 'fr';
   if (/^(if|im)_/.test(voice)) return 'it';
   if (/^(pf|pm)_/.test(voice)) return 'pt';
-  if (/^(ef|em)_/.test(voice)) return 'es';
-  if (/^(hf|hm)_/.test(voice)) return 'hi';
   if (/^(jf|jm)_/.test(voice)) return 'ja';
   return '';
 }
 
-const ESPEAK_CODE: Record<string, string> = { fr: 'fr-fr', it: 'it', pt: 'pt-br', es: 'es', hi: 'hi' };
+const ESPEAK_CODE: Record<string, string> = { fr: 'fr-fr', it: 'it', pt: 'pt-br' };
 
 /** Keep only characters the Kokoro tokenizer knows; anything else would become an unknown token. */
 const keepVocab = (phonemes: string) => [...phonemes].filter((c) => KOKORO_VOCAB.has(c)).join('');
@@ -291,7 +279,7 @@ async function handle(msg: { id: number; kind: 'synth' | 'warmup'; text?: string
   try {
     const t0 = performance.now();
     const eng = await getEngine();
-    post({ id, type: 'device', device: eng.device, dtype: eng.dtype });
+    post({ id, type: 'device', device: eng.device });
     if (kind === 'warmup') {
       post({ id, type: 'ok', wav: new ArrayBuffer(0), ms: Math.round(performance.now() - t0) });
       return;

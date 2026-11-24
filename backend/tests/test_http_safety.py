@@ -102,6 +102,7 @@ check("③b 两条音轨都不在 → /audio 和 /audio/original 都 404",
 check("③c 服务端默认开启浏览器分离", config.ENABLE_BGM_SEPARATION_DEFAULT is True)
 models_tmp = os.path.join(TMP, "sep_models")
 os.makedirs(models_tmp, exist_ok=True)
+os.makedirs(os.path.dirname(os.path.join(models_tmp, config.SEPARATOR_MODEL_FILE)), exist_ok=True)   # 一个模型一个文件夹
 open(os.path.join(models_tmp, config.SEPARATOR_MODEL_FILE), "wb").write(b"dummy")
 old_models = config.MODELS_DIR
 config.MODELS_DIR = models_tmp

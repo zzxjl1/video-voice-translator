@@ -4,7 +4,7 @@ Model distribution routes.
 The vocal-separation model runs **in the browser** (WebGPU / WASM), so the
 server's only job is to hand the weights over once and describe how to drive
 them. Serving the file ourselves — rather than shipping it in the frontend
-bundle — keeps a 64 MB binary out of the JS build and out of git.
+bundle — keeps a 64 MB binary out of the JS build.
 """
 import hashlib
 import json
@@ -57,8 +57,8 @@ def separator_info():
             status_code=404,
             detail=(
                 f"Separator model not found at {path}. Place "
-                f"'{config.SEPARATOR_MODEL_FILE}' in backend/models/ or set "
-                "SEPARATOR_MODEL_FILE."
+                f"'{config.SEPARATOR_MODEL_FILE}' under backend/models/ (it ships with the "
+                "repository) or set SEPARATOR_MODEL_FILE."
             ),
         )
 
@@ -72,7 +72,7 @@ def separator_info():
         "default_enabled": config.ENABLE_BGM_SEPARATION_DEFAULT,
         # Per-backend availability + reason, so the picker never has to guess.
         "backends": config.separation_capabilities(),
-        "filename": config.SEPARATOR_MODEL_FILE,
+        "filename": os.path.basename(config.SEPARATOR_MODEL_FILE),
         "size_bytes": size,
         "size_mb": round(size / 1024 / 1024, 1),
         "fingerprint": _model_fingerprint(path),
@@ -143,8 +143,8 @@ async def download_separator_model(request: Request):
 # ---------------------------------------------------------------------------
 #
 # 这些文件原本由浏览器在运行时从 HuggingFace / jsDelivr 取：用户网络到不了就整个失败，也没有
-# 任何完整性校验。现在由 scripts/fetch_kokoro_models.py 在部署时下载到 backend/models/kokoro/，
-# 这里同源提供，运行时不再访问第三方站点。要登录：和工程接口一样，不当开放 CDN 用。
+# 任何完整性校验。现在它们随代码库提交（backend/models/kokoro-82m/，manifest 里有 sha256），
+# 这里同源提供，运行时不访问第三方站点，部署也不需要下载。要登录：和工程接口一样，不当开放 CDN 用。
 
 _KOKORO_EXT = {".onnx", ".json", ".bin", ".js", ".data"}
 _KOKORO_EXTRA = {"COPYING"}          # espeak 的 GPL 许可文本，随文件一起提供
@@ -165,13 +165,13 @@ def kokoro_info():
     files = _kokoro_manifest()
     if files is None:
         return {"available": False, "missing": ["manifest.json"],
-                "hint": "运行 backend/scripts/fetch_kokoro_models.py 下载本地配音资源"}
+                "hint": "backend/models/kokoro-82m/ 应随代码库提交；缺失请恢复它（git checkout），或由维护者运行 scripts/prepare_kokoro_models.py 重新生成"}
     missing = [rel for rel, meta in files.items()
                if not os.path.exists(os.path.join(config.KOKORO_MODELS_DIR, rel))
                or os.path.getsize(os.path.join(config.KOKORO_MODELS_DIR, rel)) != meta["size"]]
     return {"available": not missing, "missing": missing,
             "size_mb": round(sum(m["size"] for m in files.values()) / 1e6),
-            **({"hint": "运行 backend/scripts/fetch_kokoro_models.py 补齐缺失文件"} if missing else {})}
+            **({"hint": "这些文件应随代码库提交；请恢复（git checkout backend/models/kokoro-82m），或由维护者运行 scripts/prepare_kokoro_models.py 重新生成"} if missing else {})}
 
 
 @router.api_route("/kokoro/{rel_path:path}", methods=["GET", "HEAD"], dependencies=[Depends(require_user)])
@@ -187,7 +187,7 @@ async def kokoro_file(rel_path: str, request: Request):
     if not os.path.isfile(path):
         raise HTTPException(
             status_code=404,
-            detail="本地配音资源缺失；运行 backend/scripts/fetch_kokoro_models.py 下载",
+            detail="本地配音资源缺失（应随代码库提交）；恢复 backend/models/kokoro-82m 或运行 scripts/prepare_kokoro_models.py",
         )
 
     file_size = os.path.getsize(path)

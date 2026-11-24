@@ -2,18 +2,21 @@
  * 本地配音（Kokoro）的文本层与引擎测试。  node scripts/test-kokoro.mjs
  *
  * ① 纯逻辑（任何机器都跑）：分句、中文数字读法、中文 G2P、音色排序、语言矩阵与后端一致
- * ② 真模型（backend/models/kokoro 在才跑，否则 SKIP）：用真实 Kokoro 文件在 Node 里合成，
- *    验证文件布局齐全、我们生成的音素能被 tokenizer 接受并出声——尤其是"中文里夹英文词 / 数字"
- *    这类之前会产生乱码音素的句子。
+ * ② 提交进库的资源：manifest 的大小和 sha256、文件名与前端常量一致、音色齐全无多余、体积不超 GitHub 限制
+ * ③ 真模型：经 features/kokoro/engine.ts（与生产同一条装配路径）加载提交进库的 model_int8，在 Node 里合成，
+ *    验证出声、不是静音 / NaN——尤其是"中文里夹英文词 / 数字"这类之前会产生乱码音素的句子。
+ *    （WebGPU 只能在真实浏览器里验证，见 docs/dubbing-modes.md 的实测记录。）
  */
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { loadTs } from './_bundle.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const MODELS = path.resolve(ROOT, '../backend/models/kokoro');
+const MODELS = path.resolve(ROOT, '../backend/models/kokoro-82m');
 
 let failures = 0;
 function check(label, ok, detail) {
@@ -111,25 +114,66 @@ const catalog = await loadTs('features/kokoro/catalog.ts');
   }
 }
 
-// ---------------------------------------------------------------- ② 真模型
-const have = fs.existsSync(path.join(MODELS, 'manifest.json'));
-if (!have) {
-  console.log('SKIP  ② 真模型合成（backend/models/kokoro 不在；运行 backend/scripts/fetch_kokoro_models.py 后再测）');
-} else {
-  const { KokoroTTS } = await import('kokoro-js');
+// ---------------------------------------------------------------- ② 提交进库的资源完整、文件名一致
+{
+  const MANIFEST = path.join(MODELS, 'manifest.json');
+  check('② 资源已随代码库提供：manifest.json 在 backend/models/kokoro-82m/', fs.existsSync(MANIFEST));
+  const files = fs.existsSync(MANIFEST) ? JSON.parse(fs.readFileSync(MANIFEST, 'utf8')).files : {};
+
+  const bad = [];
+  for (const [rel, meta] of Object.entries(files)) {
+    const p = path.join(MODELS, rel);
+    if (!fs.existsSync(p)) { bad.push(`缺失 ${rel}`); continue; }
+    if (fs.statSync(p).size !== meta.size) { bad.push(`大小不符 ${rel}`); continue; }
+    if (createHash('sha256').update(fs.readFileSync(p)).digest('hex') !== meta.sha256) bad.push(`sha256 不符 ${rel}`);
+  }
+  check(`② ${Object.keys(files).length} 个文件的大小和 sha256 都与 manifest 一致（没有损坏、没有被悄悄换掉）`, bad.length === 0, bad.slice(0, 4));
+
+  const onDisk = [];
+  const walk = (d) => { for (const f of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, f.name); f.isDirectory() ? walk(p) : onDisk.push(path.relative(MODELS, p)); } };
+  walk(MODELS);
+  const stray = onDisk.filter((f) => f !== 'manifest.json' && !(f in files));
+  check('② 目录里没有 manifest 之外的文件（没有留下的调试模型 / 临时文件）', stray.length === 0, stray.slice(0, 5));
+
+  const assets = await loadTs('features/kokoro/assets.ts');
+  const prepare = fs.readFileSync(path.resolve(ROOT, '../backend/scripts/prepare_kokoro_models.py'), 'utf8');
+  const pyFile = /^MODEL_FILE = "([^"]+)"/m.exec(prepare)?.[1];
+  check('② 前端 KOKORO_MODEL_FILE 与 prepare_kokoro_models.py 的 MODEL_FILE 一致', pyFile === assets.KOKORO_MODEL_FILE, [pyFile, assets.KOKORO_MODEL_FILE]);
+  check('② 前端要加载的模型文件确实在目录里', fs.existsSync(path.join(MODELS, 'onnx', `${assets.KOKORO_MODEL_FILE}.onnx`)));
+  check('② onnx/ 里只有这一个模型（fp16 / 官方 int8 / q8f16 等备选不进库：体积，且 q8f16 在 WebGPU 上输出错音频）',
+    fs.readdirSync(path.join(MODELS, 'onnx')).join() === `${assets.KOKORO_MODEL_FILE}.onnx`, fs.readdirSync(path.join(MODELS, 'onnx')));
+  const biggest = Math.max(...onDisk.map((f) => fs.statSync(path.join(MODELS, f)).size));
+  check('② 最大文件 < 100MB（GitHub 单文件上限）', biggest < 100 * 1024 * 1024, biggest);
+
+  // 音色：应用里能选到的每个都有文件，目录里的每个文件都能被选到
+  const selectable = Object.keys(catalog.LANGUAGES).flatMap((l) => catalog.voicesFor(l).map((v) => v.key)).sort();
+  const shipped = onDisk.filter((f) => f.startsWith('voices/')).map((f) => path.basename(f, '.bin')).sort();
+  check(`② 音色：可选的 ${selectable.length} 个都随库提供，且没有多余的`, JSON.stringify(selectable) === JSON.stringify(shipped),
+    { missing: selectable.filter((v) => !shipped.includes(v)), extra: shipped.filter((v) => !selectable.includes(v)) });
+  check('② espeak 的许可文本（GPL-3.0）随文件提供', fs.existsSync(path.join(MODELS, 'espeak', 'COPYING')));
+}
+
+// ---------------------------------------------------------------- ③ 真模型：和生产同一条装配路径
+{
+  // transformers.js 按 <localModelPath>/<模型 id>/ 找文件；模型 id 是 'kokoro'，目录叫 kokoro-82m，
+  // 线上由 /api/models/kokoro 路由对应，这里用符号链接模拟同样的对应关系。
+  const assets = await loadTs('features/kokoro/assets.ts');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vvt-kokoro-'));
+  fs.symlinkSync(MODELS, path.join(root, assets.KOKORO_MODEL));
+
   const { env } = await import('@huggingface/transformers');
-  const { phonemize } = await import('phonemizer');
   env.allowRemoteModels = false;
   env.allowLocalModels = true;
-  env.localModelPath = `${MODELS}/`;
+  env.localModelPath = `${root}/`;
 
-  const MODEL = 'onnx-community/Kokoro-82M-v1.0-ONNX';
+  const engine = await loadTs('features/kokoro/engine.ts', { external: ['kokoro-js', '@huggingface/transformers'] });
+  const { phonemize } = await import('phonemizer');
   let tts = null;
   try {
-    tts = await KokoroTTS.from_pretrained(MODEL, { dtype: 'q8', device: 'cpu' });
-    check('② 模型文件布局齐全：只靠 backend/models/kokoro 就能加载（config / tokenizer / 模型）', true);
+    tts = await engine.loadKokoro('cpu');
+    check('③ 真模型：engine.loadKokoro 只靠提交进库的文件就能加载（model_int8 + tokenizer）', true);
   } catch (e) {
-    check('② 模型文件布局齐全：只靠 backend/models/kokoro 就能加载', false, String(e?.message ?? e));
+    check('③ 真模型：engine.loadKokoro 只靠提交进库的文件就能加载', false, String(e?.message ?? e));
   }
 
   if (tts) {
@@ -137,18 +181,16 @@ if (!have) {
     const keep = (p) => [...p].filter((c) => vocab.has(c)).join('');
     const english = async (w) => keep((await phonemize(w, 'en-us')).join(' ').replace(/ʲ/g, 'j').replace(/r/g, 'ɹ').replace(/x/g, 'k').replace(/ɬ/g, 'l'));
     const stats = (audio) => {
-      let max = 0, nan = 0;
-      for (const v of audio) { if (Number.isNaN(v)) nan++; else max = Math.max(max, Math.abs(v)); }
-      return { seconds: audio.length / 24000, max, nan };
+      let max = 0, nan = 0, nz = 0;
+      for (const v of audio) { if (Number.isNaN(v)) nan++; else { max = Math.max(max, Math.abs(v)); if (v !== 0) nz++; } }
+      return { seconds: audio.length / 24000, max, nan, nonzero: nz / audio.length };
     };
 
-    // 英文：kokoro-js 自带路径（数字、缩写归一化）
     {
       const a = await tts.generate('Thirdweb is 3.5 times faster than v2.', { voice: 'af_heart' });
       const s = stats(a.audio);
-      check('② 真模型：英语合成出声（不是静音 / NaN）', s.seconds > 1 && s.max > 0.02 && s.nan === 0, s);
+      check('③ 真模型：英语合成出声（不是静音 / NaN）', s.seconds > 1 && s.max > 0.02 && s.nan === 0 && s.nonzero > 0.5, s);
     }
-    // 中文：我们自己的音素 → generate_from_ids。这是之前最容易出问题的路径。
     for (const [label, sentence] of [
       ['中文夹英文品牌词', '我们打造了 Thirdweb，让开发者更轻松。'],
       ['中文带数字和百分号', '用户增长了 35.5%，一共有 100 个团队。'],
@@ -156,17 +198,18 @@ if (!have) {
     ]) {
       const { phonemes } = await zh.zhG2PWith(sentence, english);
       const ph = keep(phonemes);
-      const ids = tts.tokenizer(ph, { truncation: false }).input_ids;
-      const tokens = ids.dims.at(-1);
       const raw = [...phonemes].filter((c) => !vocab.has(c));
-      check(`② 真模型：${label} → 音素全在词表内（没有会变成未知 token 的字符）`, raw.length === 0, { stray: raw.join(''), phonemes });
-      check(`② 真模型：${label} → token 数在模型窗口内`, tokens > 0 && tokens < 511, tokens);
+      check(`③ 真模型：${label} → 音素全在词表内`, raw.length === 0, { stray: raw.join(''), phonemes });
+      const ids = tts.tokenizer(ph, { truncation: false }).input_ids;
+      check(`③ 真模型：${label} → token 数在模型窗口内`, ids.dims.at(-1) > 0 && ids.dims.at(-1) < 511, ids.dims.at(-1));
       const a = await tts.generate_from_ids(tts.tokenizer(ph, { truncation: true, max_length: 511 }).input_ids, { voice: 'zf_xiaobei', speed: 1 });
       const s = stats(a.audio);
-      check(`② 真模型：${label} → 合成出声`, s.seconds > 1.5 && s.max > 0.02 && s.nan === 0, { ...s, phonemes });
+      check(`③ 真模型：${label} → 合成出声（改过图的 int8 模型在 CPU 上数值正常）`, s.seconds > 1.5 && s.max > 0.02 && s.nan === 0 && s.nonzero > 0.5, { ...s, phonemes });
     }
   }
 }
 
 console.log(failures === 0 ? '\n合计 全部通过' : `\n合计 ${failures} 项失败`);
-process.exit(failures === 0 ? 0 : 1);
+// 不用 process.exit()：onnxruntime-node 的会话还活着时强制退出会在静态析构里崩溃（SIGABRT，退出码 134），
+// 官方 int8 模型和我们的模型一样；让事件循环自然结束就是 0。
+process.exitCode = failures === 0 ? 0 : 1;

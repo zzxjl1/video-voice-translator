@@ -382,9 +382,10 @@ def browser_voice_fits_language(voice: str, language: str) -> bool:
     return bool(voice and info and voice.startswith(info["prefixes"]))
 
 
-# 本地配音引擎的全部文件（模型 / 音色 / espeak），由 scripts/fetch_kokoro_models.py 下载，
-# 经 /api/models/kokoro/* 同源提供：运行时不访问任何第三方站点。
-KOKORO_MODELS_DIR = os.path.join(BASE_DIR, "models", "kokoro")
+# 本地配音引擎的全部文件（模型 / 音色 / espeak）**已提交进代码库**，部署不需要联网或下载；
+# 经 /api/models/kokoro/* 同源提供，运行时不访问任何第三方站点。
+# models/ 下一个模型一个文件夹。要升级或重新生成见 scripts/prepare_kokoro_models.py。
+KOKORO_MODELS_DIR = os.path.join(BASE_DIR, "models", "kokoro-82m")
 
 TTS_TIMEOUT = _env_int("TTS_TIMEOUT", 60)
 
@@ -761,8 +762,9 @@ ENABLE_BGM_SEPARATION_DEFAULT = _env_bool("ENABLE_BGM_SEPARATION_DEFAULT", True)
 # ----- Browser ("client") backend -----
 # The MDX-Net model served to the browser; its DSP parameters are mirrored to
 # the client via GET /api/models/separator so the JS never hardcodes them.
+# models/ 下一个模型一个文件夹；SEPARATOR_MODEL_FILE 是相对 MODELS_DIR 的路径（含文件夹）。
 MODELS_DIR = os.path.join(BASE_DIR, "models")
-SEPARATOR_MODEL_FILE = _env("SEPARATOR_MODEL_FILE", "UVR-MDX-NET-Inst_HQ_3.onnx")
+SEPARATOR_MODEL_FILE = _env("SEPARATOR_MODEL_FILE", "uvr-mdx-net-inst-hq-3/UVR-MDX-NET-Inst_HQ_3.onnx")
 
 # 这里【没有】第三方分离后端：302.AI（"api" 模式）已于 2026-10-08 整体移除，
 # 相关配置（SEPARATION_API_* 与为它折算美元价格而入的 USD_CNY_RATE）一并删除。

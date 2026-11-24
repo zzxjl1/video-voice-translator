@@ -1,6 +1,6 @@
 /**
- * Browser Kokoro TTS. The model runs in a dedicated worker (WebGPU fp16, 163 MB,
- * else WASM q8, 92 MB); every file it needs — model, voices, espeak — is served
+ * Browser Kokoro TTS. The model runs in a dedicated worker (one 92 MB
+ * int8 file, on WebGPU when available, else WASM); every file it needs — model, voices, espeak — is served
  * by our own backend, so the browser contacts no third-party host. Generated WAVs
  * are uploaded to the normal tts/<segment>.mp3 path so mixing/export stay shared.
  *

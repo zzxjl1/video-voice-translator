@@ -1,0 +1,4 @@
+# 仅维护者需要：重新生成 / 转换 backend/models/kokoro-82m（运行与部署都不需要）
+# 见 backend/scripts/prepare_kokoro_models.py
+onnx
+numpy

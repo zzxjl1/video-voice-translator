@@ -87,15 +87,8 @@ const CATALOG: Record<string, BrowserVoice> = {
   zm_yunxi: { key: 'zm_yunxi', name: '云希', gender: '男', grade: 'D' },
   zm_yunxia: { key: 'zm_yunxia', name: '云夏', gender: '男', grade: 'D' },
   zm_yunyang: { key: 'zm_yunyang', name: '云扬', gender: '男', grade: 'D' },
-  // es / hi exist in the model but are not target languages of the app
-  ef_dora: { key: 'ef_dora', name: 'Dora', gender: '女', grade: '' },
-  em_alex: { key: 'em_alex', name: 'Alex', gender: '男', grade: '' },
-  em_santa: { key: 'em_santa', name: 'Santa', gender: '男', grade: '' },
-  hf_alpha: { key: 'hf_alpha', name: 'Alpha', gender: '女', grade: 'C' },
-  hf_beta: { key: 'hf_beta', name: 'Beta', gender: '女', grade: 'C' },
-  hm_omega: { key: 'hm_omega', name: 'Omega', gender: '男', grade: 'C' },
-  hm_psi: { key: 'hm_psi', name: 'Psi', gender: '男', grade: 'C' },
-  // ja voices exist but the browser has no Japanese G2P — excluded
+  // The model also has es / hi / ja voices; they are not app target languages (ja has no browser G2P), so
+  // they are neither listed here nor shipped in backend/models/kokoro-82m/voices.
 };
 
 /**

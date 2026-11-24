@@ -108,12 +108,10 @@ SERVER_URL_BASE=...    # 占位；实际由启动器注入当前隧道地址
 - 隧道只影响 ASR、omni 审听、声音复刻；翻译、TTS、导出不依赖它。
 - 隧道开着时，这三个只读音频接口对公网可达；不用时建议 `stop.py` 停掉。
 - 后端仍然只监听 `127.0.0.1:9100`，局域网其它设备访问不到。
-- 浏览器端人声分离需要 WebGPU/WASM，首次会下载约 64 MB 的 ONNX 模型。
-- 浏览器本地配音（In-browser/Kokoro）的模型、音色、espeak 数据由后端同源提供，首次使用时浏览器下载
-  WebGPU 163 MB / WASM 92 MB（fr/it/pt 另需 espeak 数据 24 MB，之后由浏览器缓存）。部署时先运行一次
-  `python backend/scripts/fetch_kokoro_models.py` 把约 310 MB 资源下到 `backend/models/kokoro/`
-  （需要能访问 HuggingFace 或 hf-mirror、jsDelivr；运行时浏览器不访问它们）。
-  中文/英语不走 espeak；德语/越南语没有本地配音（Kokoro 不支持），只能 Remote 或 Off。
+- 浏览器端人声分离需要 WebGPU/WASM，首次会下载约 64 MB 的 ONNX 模型（`backend/models/uvr-mdx-net-inst-hq-3/`，随代码库提供）。
+- 浏览器本地配音（In-browser/Kokoro）的模型、音色、espeak 数据**随代码库提供**（`backend/models/kokoro-82m/`，约 133 MB），
+  由后端同源提供，不需要联网下载，也不需要跑任何脚本。浏览器首次使用时下载约 92 MB 模型（fr/it/pt 另需 espeak 数据 24 MB），
+  之后由浏览器缓存。中文/英语不走 espeak；德语/越南语没有本地配音（Kokoro 不支持），只能 Remote 或 Off。
 - 仓库除本说明文档外没有其它改动（`git status` 可验证）。
 
 ## 如果不想用 Cloudflare

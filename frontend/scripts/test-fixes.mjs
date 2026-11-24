@@ -79,9 +79,12 @@ const r = (p) => fs.readFileSync(new URL(`../${p}`, import.meta.url), 'utf8');
   check('③b worker：每条消息都带请求 id（缺了的话 client 找不到回调，下载进度永远丢）', posts.length > 0 && posts.every((p) => /\bid\b/.test(p)), posts.filter((p) => !/\bid\b/.test(p)));
   check('③b worker：只有引擎自己出错（EngineError）才重建成 WASM', /instanceof EngineError/.test(worker) && /class EngineError/.test(worker));
   check('③b worker：取不到文件 / 未登录不触发 WASM 降级', /isAssetError\(e\)/.test(worker));
-  check('③b worker：WebGPU 用 dtype fp16（q8f16 在 WebGPU 上输出错音频；model_file_name 会被 from_pretrained 悄悄丢掉）', /device: 'webgpu', dtype: 'fp16'/.test(worker) && !/model_file_name:/.test(worker.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')));
+  const engineSrc = r('features/kokoro/engine.ts');
+  check('③b 引擎：经 engine.ts 装配（model_file_name + AutoTokenizer），不走会丢掉 model_file_name 的 KokoroTTS.from_pretrained',
+    /model_file_name: KOKORO_MODEL_FILE/.test(engineSrc) && /new KokoroTTS\(model, tokenizer\)/.test(engineSrc) && !/KokoroTTS\.from_pretrained\(/.test(worker.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')));
+  check('③b 引擎：WebGPU 和 WASM 用同一个 int8 文件（不再有 fp16 / q8 两套）', /loadKokoro\(device, progress\)/.test(worker) && !/'fp16'|'q8'|model_fp16|model_quantized|q8f16/.test(worker.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')));
   check('③b worker：请求串行处理（队列），不会并发加载模型', /queue = queue\.then\(/.test(worker));
-  check('③b worker：禁用远程模型，本地路径指向自己的服务器', /allowRemoteModels = false/.test(worker) && /localModelPath = `\$\{KOKORO_BASE\}\/`/.test(worker));
+  check('③b worker：禁用远程模型，本地路径指向自己的服务器', /allowRemoteModels = false/.test(worker) && /localModelPath = MODELS_ROOT/.test(worker));
   check('③b worker：ORT 的 wasm 显式指向打包产物（否则 transformers.js 默认去 jsDelivr）', /wasmPaths = \{ mjs: ortMjs, wasm: ortWasm \}/.test(worker));
   check('③b worker：音色请求改写到自己的服务器', /voiceUrl\(/.test(worker));
   check('③b worker：中文里的英文词走英文音素化；音素过滤到词表', /zhG2PWith\(text, englishWord\)/.test(worker) && /keepVocab/.test(worker));
