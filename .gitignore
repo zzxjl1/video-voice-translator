@@ -20,3 +20,6 @@ backend/data/
 
 # playwright-cli session artifacts
 .playwright-cli/
+
+# Kokoro 本地配音资源（模型 + 音色 + espeak，约 250 MB）：部署时由 scripts/fetch_kokoro_models.py 下载
+backend/models/kokoro/

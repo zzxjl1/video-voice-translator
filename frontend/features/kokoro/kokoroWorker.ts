@@ -2,43 +2,63 @@
  * Kokoro TTS worker: the whole engine (model + G2P + espeak) runs here so the
  * UI thread never blocks during synthesis.
  *
- * - Model via transformers.js: WebGPU fp16 when the GPU is usable (163 MB,
- *   ~10x realtime), else WASM q8 (92 MB, ~0.7x). Falls back to WASM on any
- *   WebGPU failure. Model files come from HF (or hf-mirror.com if HF is
- *   unreachable) and are browser-cached.
- * - Voice bins (0.5 MB each) are fetched from jsDelivr — the official
- *   kokoro-js fetches them from HF, which is unreliable here; every kokoro-js
- *   voice id exists in the npm package on jsDelivr, English ones included.
- * - Phonemization: en via kokoro-js's built-in espeak (en-us), zh via zhG2P
- *   (misaki-format tones), fr/it/pt/es/hi via the full espeak-ng WASM build.
+ * - Model via transformers.js, loaded from OUR server (see assets.ts): WebGPU
+ *   `model_fp16` (163 MB, ~8-10x realtime) when the GPU is usable, else WASM `q8`
+ *   (92 MB, ~0.7x). The browser never contacts HuggingFace or a CDN.
+ * - ONNX Runtime's wasm/mjs are bundled by Vite and handed to ORT explicitly.
+ *   Without that, transformers.js points ORT at jsDelivr (a hidden runtime
+ *   dependency that fails behind firewalls).
+ * - Voice bins (0.5 MB each) come from our server too; kokoro-js hardcodes the
+ *   HuggingFace URL, so its fetch is redirected below.
+ * - Phonemization: en via kokoro-js's built-in espeak (en-us, with number
+ *   normalization); zh via zhG2P (misaki-format tones; Latin words go through
+ *   the English phonemizer); fr/it/pt/es/hi via the full espeak-ng WASM build.
  *   The official kokoro-js registry is English-only; other languages go
  *   through generate_from_ids with our own phonemes.
  *
+ * Requests are processed ONE AT A TIME (queue below): the engine is a single
+ * ORT session, so two overlapping requests must not load the model twice or
+ * run the session concurrently.
+ *
  * Protocol (postMessage):
  *   in:  { id, kind: 'synth' | 'warmup', text?, voice? }
- *   out: { id, type: 'progress' | 'device' | 'ok' | 'error', ... }
+ *   out: { id, type: 'progress' | 'device' | 'ok' | 'error', ... }  — every
+ *        message carries the id of the request it belongs to.
  */
 /// <reference lib="webworker" />
 import { KokoroTTS } from 'kokoro-js';
 import { env } from '@huggingface/transformers';
-import { zhG2P } from './zhG2P';
+import { phonemize as englishPhonemize } from 'phonemizer';
+import ortMjs from 'kokoro-ort:ort-wasm-simd-threaded.jsep.mjs?url';
+import ortWasm from 'kokoro-ort:ort-wasm-simd-threaded.jsep.wasm?url';
+import { KOKORO_BASE, KOKORO_MODEL, voiceUrl } from './assets';
+import { KOKORO_VOCAB } from './catalog';
 import { espeakPhonemize } from './espeakFull';
+import { bisect, splitSentences } from './text';
+import { zhG2PWith } from './zhG2P';
 
-const MODEL = 'onnx-community/Kokoro-82M-v1.0-ONNX';
-const VOICE_CDN = 'https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/voices';
+// ---- no third-party hosts at runtime ---------------------------------------
+env.allowRemoteModels = false;
+env.allowLocalModels = true;
+env.localModelPath = `${KOKORO_BASE}/`;
+// transformers.js defaults ORT's wasm location to jsDelivr unless one is set.
+(env.backends.onnx as { wasm: { wasmPaths: unknown } }).wasm.wasmPaths = { mjs: ortMjs, wasm: ortWasm };
 
-// kokoro-js fetches voice bins from HF at runtime; redirect to jsDelivr.
+// kokoro-js fetches voice bins from HuggingFace at runtime; serve them ourselves.
 const rawFetch = self.fetch.bind(self);
 self.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
   const url = typeof input === 'string' ? input : (input as Request)?.url ?? String(input);
   if (/\/voices\/[a-z]{2}_[\w]+\.bin(\?.*)?$/i.test(url)) {
-    return rawFetch(`${VOICE_CDN}/${url.split('/').pop()}`, init);
+    return rawFetch(voiceUrl((url.split('?')[0]).split('/').pop() as string), { ...init, credentials: 'same-origin' });
   }
   return rawFetch(input as RequestInfo, init);
 };
 
 const post = (msg: unknown, transfer?: Transferable[]) =>
   (self as unknown as Worker).postMessage(msg, transfer ?? []);
+
+/** The id of the request being processed: progress / device messages are reported against it. */
+let current = 0;
 
 interface Engine {
   tts: KokoroTTS;
@@ -47,64 +67,85 @@ interface Engine {
 }
 
 let engine: Engine | null = null;
-let preferWasm = false;
+// `new Worker(url, { name: 'kokoro-wasm' })` forces the WASM engine: for diagnosing WebGPU-only problems
+// (compare outputs of the two engines) without a code change.
+let preferWasm = self.name === 'kokoro-wasm';
 
-type EngineChoice = { device: 'webgpu' | 'wasm'; dtype: 'fp32' | 'q8'; model_file_name?: string };
+/** The model session failed to run (as opposed to: bad text, missing file). Only these justify a WASM retry. */
+class EngineError extends Error {}
+
+type EngineChoice = { device: 'webgpu' | 'wasm'; dtype: 'fp16' | 'q8' };
 
 /**
- * WebGPU → `model_q8f16.onnx`（86MB）：int8 权重 + fp16 计算，权重解量化后
- * MatMul 走 GPU，实测与 fp16 同速（~10.8x 实时）且是发布里最小的文件。
- * 不能用 dtype 'q8'：纯 int8 计算的 MatMulInteger 在 ort-web 的 WebGPU EP 没有
- * 实现，会回落 CPU（速度和 WASM 一样，0.7x）。q8f16 也不在 transformers.js 的
- * dtype 映射表里，所以用 dtype:'fp32' + model_file_name 直接指到该文件。
- * 其余 → WASM + q8（92MB，~0.7x）。
+ * WebGPU → `model_fp16.onnx`（163MB），实测约 8-10 倍实时，输出与 fp32 一致。
+ * 其余 → WASM + `model_quantized.onnx`（q8，92MB，~0.7 倍实时）。
+ *
+ * 不要换成 `model_q8f16`（86MB）：它在 ort-web 的 WebGPU 上输出的音频是错的（时长被拉长约 8 倍，
+ * 速度也只有 0.7 倍），实测对比见 docs/dubbing-modes.md。纯 int8 的 `q8` 在 WebGPU 上则没有 GPU
+ * 算子实现，会回落 CPU，同样慢。
+ *
+ * 另一个坑：`KokoroTTS.from_pretrained` 只透传 dtype / device，**不透传 model_file_name**，所以
+ * 想靠 model_file_name 选文件，实际加载的是默认的 `model.onnx`（325MB fp32）而不报错。要选文件，
+ * 只能用 transformers.js 认识的 dtype（fp16 → `_fp16`，q8 → `_quantized`）。
+ * 测试 `test-fixes.mjs` 会断言这里不再出现 model_file_name。
  */
 async function pickDevice(): Promise<EngineChoice> {
   if (!preferWasm) {
     try {
       const gpu = (globalThis as { navigator?: { gpu?: { requestAdapter: () => Promise<unknown> } } }).navigator?.gpu;
       if (gpu && await gpu.requestAdapter()) {
-        return { device: 'webgpu', dtype: 'fp32', model_file_name: 'model_q8f16' };
+        return { device: 'webgpu', dtype: 'fp16' };
       }
     } catch { /* fall through to wasm */ }
   }
   return { device: 'wasm', dtype: 'q8' };
 }
 
-async function pickRemoteHost(): Promise<string> {
-  try {
-    await rawFetch(`https://huggingface.co/api/models/${MODEL}`, { method: 'HEAD', signal: AbortSignal.timeout(4000) });
-    return 'https://huggingface.co';
-  } catch {
-    return 'https://hf-mirror.com';
+/** A failure to GET one of our files (missing, not logged in, offline) — retrying on another device cannot fix it. */
+const isAssetError = (e: unknown) =>
+  /Could not locate|Unauthorized|\b40[134]\b|Failed to fetch|NetworkError|Load failed/i.test(String((e as Error)?.message ?? e));
+
+function explainAssetError(e: unknown): Error {
+  const msg = String((e as Error)?.message ?? e);
+  if (/Unauthorized|\b401\b/i.test(msg)) return new Error('未登录或登录已过期，无法加载本地配音资源');
+  if (/Could not locate|\b404\b/i.test(msg)) {
+    return new Error(`本地配音资源缺失（${msg}）。请在服务器运行 backend/scripts/fetch_kokoro_models.py`);
   }
+  return e instanceof Error ? e : new Error(msg);
 }
 
-async function load(onProgress: (loaded: number, total: number) => void): Promise<Engine> {
-  env.remoteHost = await pickRemoteHost();
+async function load(): Promise<Engine> {
   const choice = await pickDevice();
   const progress = (p: { status?: string; file?: string; loaded?: number; total?: number }) => {
-    if (p.status === 'progress' && p.file?.endsWith('.onnx') && p.loaded && p.total) onProgress(p.loaded, p.total);
+    if (p.status === 'progress' && p.file?.endsWith('.onnx') && p.loaded && p.total) {
+      post({ id: current, type: 'progress', phase: 'model', loaded: p.loaded, total: p.total });
+    }
   };
   try {
-    const tts = await KokoroTTS.from_pretrained(MODEL, { ...choice, progress_callback: progress });
-    return { tts, device: choice.device, dtype: choice.model_file_name ?? choice.dtype };
+    const tts = await KokoroTTS.from_pretrained(KOKORO_MODEL, { ...choice, progress_callback: progress });
+    return { tts, device: choice.device, dtype: choice.dtype };
   } catch (e) {
-    if (choice.device === 'webgpu') {
-      // WebGPU adapter answered but the model failed (driver quirks etc.) — WASM always works.
-      post({ type: 'device', device: 'wasm-fallback', message: String((e as Error)?.message ?? e) });
-      const tts = await KokoroTTS.from_pretrained(MODEL, { device: 'wasm', dtype: 'q8', progress_callback: progress });
+    if (choice.device === 'webgpu' && !isAssetError(e)) {
+      // WebGPU adapter answered but the session could not be created (driver quirks etc.) — WASM always works.
+      post({ id: current, type: 'device', device: 'wasm-fallback', message: String((e as Error)?.message ?? e) });
       preferWasm = true;
-      return { tts, device: 'wasm', dtype: 'q8' };
+      try {
+        const tts = await KokoroTTS.from_pretrained(KOKORO_MODEL, { device: 'wasm', dtype: 'q8', progress_callback: progress });
+        return { tts, device: 'wasm', dtype: 'q8' };
+      } catch (e2) {
+        throw explainAssetError(e2);
+      }
     }
-    throw e;
+    throw explainAssetError(e);
   }
 }
 
 async function getEngine(): Promise<Engine> {
-  if (!engine) engine = await load((loaded, total) => post({ type: 'progress', phase: 'model', loaded, total }));
+  if (!engine) engine = await load();
   return engine;
 }
+
+// ---- phonemization -----------------------------------------------------------
 
 function voiceLanguage(voice: string): 'zh' | 'en' | 'fr' | 'it' | 'pt' | 'es' | 'hi' | 'ja' | '' {
   if (/^(zf|zm)_/.test(voice)) return 'zh';
@@ -120,29 +161,26 @@ function voiceLanguage(voice: string): 'zh' | 'en' | 'fr' | 'it' | 'pt' | 'es' |
 
 const ESPEAK_CODE: Record<string, string> = { fr: 'fr-fr', it: 'it', pt: 'pt-br', es: 'es', hi: 'hi' };
 
-async function phonemize(text: string, voice: string): Promise<string | null> {
+/** Keep only characters the Kokoro tokenizer knows; anything else would become an unknown token. */
+const keepVocab = (phonemes: string) => [...phonemes].filter((c) => KOKORO_VOCAB.has(c)).join('');
+
+/**
+ * An English word inside Chinese text (brand names, acronyms) -> Kokoro phonemes.
+ * Same espeak en-us + the same IPA fix-ups kokoro-js applies to English input.
+ */
+async function englishWord(word: string): Promise<string> {
+  const ipa = (await englishPhonemize(word, 'en-us')).join(' ');
+  return keepVocab(ipa.replace(/ʲ/g, 'j').replace(/r/g, 'ɹ').replace(/x/g, 'k').replace(/ɬ/g, 'l'));
+}
+
+async function phonemize(text: string, voice: string): Promise<string> {
   const lang = voiceLanguage(voice);
-  if (lang === 'zh') return zhG2P(text).phonemes;
-  if (lang === 'en') return null;  // kokoro-js built-in path
+  if (lang === 'zh') return keepVocab((await zhG2PWith(text, englishWord)).phonemes);
   if (ESPEAK_CODE[lang]) return espeakPhonemize(text, ESPEAK_CODE[lang]);
   throw new Error(`音色 ${voice} 不支持浏览器合成（ja 需要 OpenJTalk 级 G2P）`);
 }
 
-/** Sentence splitter; punctuation stays attached to its sentence. */
-function splitSentences(text: string, lang: string): string[] {
-  const finals = lang === 'zh' ? '。！？；…' : '.!?;';
-  const out: string[] = [];
-  let buf = '';
-  for (const ch of text) {
-    buf += ch;
-    if (finals.includes(ch) || ch === '\n') {
-      if (buf.trim()) out.push(buf.trim());
-      buf = '';
-    }
-  }
-  if (buf.trim()) out.push(buf.trim());
-  return out.length ? out : [text];
-}
+// ---- synthesis -----------------------------------------------------------------
 
 function wavEncode(audio: Float32Array, sampleRate = 24000): ArrayBuffer {
   const pcm = new Int16Array(audio.length);
@@ -166,88 +204,106 @@ const PACK_TOKENS = 450;
 const MAX_IDS = 511;
 const GAP = Math.round(24000 * 0.15);
 
-async function synthIds(tts: KokoroTTS, ids: unknown, voice: string): Promise<Float32Array> {
-  const audio = await tts.generate_from_ids(ids as never, { voice: voice as never, speed: 1 });
-  return audio.audio as Float32Array;
+/** Run the model; any failure here is the engine's, and the only kind that justifies a WASM retry. */
+async function runModel<T>(fn: () => Promise<T>): Promise<T> {
+  try { return await fn(); } catch (e) { throw new EngineError(String((e as Error)?.message ?? e)); }
+}
+
+const countTokens = (tts: KokoroTTS, phonemes: string): number =>
+  ((tts.tokenizer(phonemes, { truncation: false }).input_ids as { dims: number[] }).dims.at(-1)) ?? 0;
+
+interface Piece { phonemes: string; tokens: number }
+
+/**
+ * Phonemize one sentence. A sentence whose phonemes would not fit the model's
+ * 511-token window is split in two and retried — the tokenizer's own
+ * `truncation` would otherwise silently cut the end of the sentence off.
+ */
+async function toPieces(tts: KokoroTTS, sentence: string, voice: string): Promise<Piece[]> {
+  const phonemes = (await phonemize(sentence, voice)).trim();
+  if (!phonemes) return [];                                   // nothing speakable (only symbols)
+  const tokens = countTokens(tts, phonemes);
+  if (tokens > MAX_IDS - 2) {
+    if (sentence.length < 8) throw new Error('这一句无法切分到模型能处理的长度');
+    const [a, b] = bisect(sentence);
+    return [...await toPieces(tts, a, voice), ...await toPieces(tts, b, voice)];
+  }
+  return [{ phonemes, tokens }];
 }
 
 async function synthesize(text: string, voice: string): Promise<Float32Array> {
   const { tts } = await getEngine();
   const lang = voiceLanguage(voice);
   const sentences = splitSentences(text, lang);
-  interface Seg { phonemes: string | null; tokens: number }
-  const segs: Seg[] = [];
-  for (const s of sentences) {
-    const phonemes = await phonemize(s, voice);
-    if (phonemes === null) {
-      // English: kokoro-js's own espeak path (with number normalization); it
-      // phonemizes + tokenizes internally, so estimate ~1 token per 2.5 chars.
-      segs.push({ phonemes: null, tokens: Math.ceil(s.length / 2.5) });
-      continue;
-    }
-    const { input_ids } = tts.tokenizer(phonemes, { truncation: true, max_length: MAX_IDS });
-    segs.push({ phonemes, tokens: (input_ids as { dims: number[] }).dims.at(-1) ?? 0 });
-  }
-  // Greedy pack: short sentences bundle together (official: bundling sounds better).
-  const packs: Seg[][] = [];
-  for (const seg of segs) {
-    const last = packs.at(-1);
-    const size = (last ?? []).reduce((n, x) => n + x.tokens, 0);
-    if (last && size + seg.tokens <= PACK_TOKENS) last.push(seg);
-    else packs.push([seg]);
-  }
   const chunks: Float32Array[] = [];
-  for (const pack of packs) {
-    const enPack = pack.some((s) => s.phonemes === null);
-    if (enPack) {
-      // English: one generate() per sentence (its tokenizer truncates at the model max).
-      for (const seg of pack) {
-        const s = sentences[segs.indexOf(seg)] ?? '';
-        const audio = await tts.generate(s, { voice: voice as never, speed: 1 });
-        chunks.push(audio.audio as Float32Array, new Float32Array(GAP));
-      }
-      continue;
+
+  if (lang === 'en') {
+    // kokoro-js phonemizes (and normalizes numbers) internally; one call per sentence.
+    for (const s of sentences) {
+      const audio = await runModel(() => tts.generate(s, { voice: voice as never, speed: 1 }));
+      chunks.push(audio.audio as Float32Array, new Float32Array(GAP));
     }
-    const phonemes = pack.map((s) => s.phonemes).join(' ');
-    const { input_ids } = tts.tokenizer(phonemes, { truncation: true, max_length: MAX_IDS });
-    chunks.push(await synthIds(tts, input_ids, voice), new Float32Array(GAP));
+  } else {
+    const pieces: Piece[] = [];
+    for (const s of sentences) pieces.push(...await toPieces(tts, s, voice));
+    // Greedy pack: short sentences bundle together (official: bundling sounds better).
+    const packs: Piece[][] = [];
+    for (const p of pieces) {
+      const last = packs.at(-1);
+      const size = (last ?? []).reduce((n, x) => n + x.tokens, 0);
+      if (last && size + p.tokens <= PACK_TOKENS) last.push(p); else packs.push([p]);
+    }
+    for (const pack of packs) {
+      const joined = pack.map((p) => p.phonemes).join(' ');
+      const { input_ids } = tts.tokenizer(joined, { truncation: true, max_length: MAX_IDS });
+      const audio = await runModel(() => tts.generate_from_ids(input_ids as never, { voice: voice as never, speed: 1 }));
+      chunks.push(audio.audio as Float32Array, new Float32Array(GAP));
+    }
   }
-  chunks.pop();  // drop trailing gap
-  const total = chunks.reduce((n, c) => n + c.length, 0);
-  const out = new Float32Array(total);
+  if (!chunks.length) throw new Error('没有可念的内容');
+  chunks.pop();                                               // drop trailing gap
+  const out = new Float32Array(chunks.reduce((n, c) => n + c.length, 0));
   let at = 0;
   for (const c of chunks) { out.set(c, at); at += c.length; }
   return out;
 }
 
-self.onmessage = async (ev: MessageEvent) => {
-  const { id, kind, text, voice } = ev.data as { id: number; kind: 'synth' | 'warmup'; text?: string; voice?: string };
+/** Synthesize; if the WebGPU session itself fails mid-run, rebuild on WASM once and retry. */
+async function synthesizeWithFallback(text: string, voice: string): Promise<Float32Array> {
+  try {
+    return await synthesize(text, voice);
+  } catch (e) {
+    // Only a model/session failure justifies a WASM rebuild (another ~90 MB and ~15x slower for the rest of
+    // the session). Bad text, an unsupported voice or an unreachable file would just fail again.
+    if (!(e instanceof EngineError) || engine?.device !== 'webgpu' || preferWasm) throw e;
+    post({ id: current, type: 'device', device: 'wasm-fallback', message: e.message });
+    preferWasm = true;
+    engine = null;
+    return await synthesize(text, voice);
+  }
+}
+
+// ---- request queue ----------------------------------------------------------------
+
+async function handle(msg: { id: number; kind: 'synth' | 'warmup'; text?: string; voice?: string }): Promise<void> {
+  const { id, kind, text, voice } = msg;
+  current = id;
   try {
     const t0 = performance.now();
     const eng = await getEngine();
     post({ id, type: 'device', device: eng.device, dtype: eng.dtype });
-    if (kind === 'warmup') { post({ id, type: 'ok', wav: new ArrayBuffer(0), ms: Math.round(performance.now() - t0) }); return; }
-    const audio = await synthesize(text ?? '', voice ?? '');
-    const wav = wavEncode(audio);
+    if (kind === 'warmup') {
+      post({ id, type: 'ok', wav: new ArrayBuffer(0), ms: Math.round(performance.now() - t0) });
+      return;
+    }
+    const wav = wavEncode(await synthesizeWithFallback(text ?? '', voice ?? ''));
     post({ id, type: 'ok', wav, ms: Math.round(performance.now() - t0) }, [wav]);
   } catch (e) {
-    const message = String((e as Error)?.message ?? e);
-    // A WebGPU engine that loaded but cannot generate: rebuild on WASM once.
-    if (engine?.device === 'webgpu' && !preferWasm) {
-      preferWasm = true;
-      engine = null;
-      try {
-        await getEngine();
-        if (kind === 'synth') {
-          const audio = await synthesize(text ?? '', voice ?? '');
-          const wav = wavEncode(audio);
-          post({ id, type: 'ok', wav, ms: 0 }, [wav]);
-          return;
-        }
-        post({ id, type: 'ok', wav: new ArrayBuffer(0), ms: 0 });
-        return;
-      } catch { /* report the original error below */ }
-    }
-    post({ id, type: 'error', message });
+    post({ id, type: 'error', message: String((e as Error)?.message ?? e) });
   }
+}
+
+let queue: Promise<void> = Promise.resolve();
+self.onmessage = (ev: MessageEvent) => {
+  queue = queue.then(() => handle(ev.data));
 };

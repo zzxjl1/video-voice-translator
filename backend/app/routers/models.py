@@ -7,14 +7,16 @@ them. Serving the file ourselves — rather than shipping it in the frontend
 bundle — keeps a 64 MB binary out of the JS build and out of git.
 """
 import hashlib
+import json
 import logging
 import mimetypes
 import os
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from app import config
+from app.auth.dependencies import require_user
 from app.deps import enforce_separator_token
 from app.http_range import iter_file_range, parse_range
 
@@ -133,4 +135,79 @@ async def download_separator_model(request: Request):
         status_code=206,
         media_type=content_type,
         headers=headers,
+    )
+
+
+# ---------------------------------------------------------------------------
+# 浏览器本地配音（Kokoro）：模型 / 音色 / espeak 数据
+# ---------------------------------------------------------------------------
+#
+# 这些文件原本由浏览器在运行时从 HuggingFace / jsDelivr 取：用户网络到不了就整个失败，也没有
+# 任何完整性校验。现在由 scripts/fetch_kokoro_models.py 在部署时下载到 backend/models/kokoro/，
+# 这里同源提供，运行时不再访问第三方站点。要登录：和工程接口一样，不当开放 CDN 用。
+
+_KOKORO_EXT = {".onnx", ".json", ".bin", ".js", ".data"}
+_KOKORO_EXTRA = {"COPYING"}          # espeak 的 GPL 许可文本，随文件一起提供
+
+
+def _kokoro_manifest() -> dict | None:
+    path = os.path.join(config.KOKORO_MODELS_DIR, "manifest.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)["files"]
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+@router.get("/kokoro", dependencies=[Depends(require_user)])
+def kokoro_info():
+    """本地配音引擎的资源是否齐全。缺了就明说怎么补，而不是让浏览器去撞 404。"""
+    files = _kokoro_manifest()
+    if files is None:
+        return {"available": False, "missing": ["manifest.json"],
+                "hint": "运行 backend/scripts/fetch_kokoro_models.py 下载本地配音资源"}
+    missing = [rel for rel, meta in files.items()
+               if not os.path.exists(os.path.join(config.KOKORO_MODELS_DIR, rel))
+               or os.path.getsize(os.path.join(config.KOKORO_MODELS_DIR, rel)) != meta["size"]]
+    return {"available": not missing, "missing": missing,
+            "size_mb": round(sum(m["size"] for m in files.values()) / 1e6),
+            **({"hint": "运行 backend/scripts/fetch_kokoro_models.py 补齐缺失文件"} if missing else {})}
+
+
+@router.api_route("/kokoro/{rel_path:path}", methods=["GET", "HEAD"], dependencies=[Depends(require_user)])
+async def kokoro_file(rel_path: str, request: Request):
+    """按相对路径提供 kokoro 目录下的文件（支持 Range，下载中断可续）。"""
+    root = os.path.realpath(config.KOKORO_MODELS_DIR)
+    path = os.path.realpath(os.path.join(root, rel_path))
+    name = os.path.basename(path)
+    ext = os.path.splitext(name)[1].lower()
+    # 路径穿越（.. / 符号链接）和非资源文件一律当不存在：不暴露 manifest 之外的东西
+    if os.path.commonpath([root, path]) != root or not (ext in _KOKORO_EXT or name in _KOKORO_EXTRA):
+        raise HTTPException(status_code=404, detail="Not found")
+    if not os.path.isfile(path):
+        raise HTTPException(
+            status_code=404,
+            detail="本地配音资源缺失；运行 backend/scripts/fetch_kokoro_models.py 下载",
+        )
+
+    file_size = os.path.getsize(path)
+    manifest = _kokoro_manifest() or {}
+    sha = (manifest.get(os.path.relpath(path, root)) or {}).get("sha256", "")
+    content_type = mimetypes.guess_type(path)[0] or MODEL_MEDIA_TYPE
+    headers = {
+        "Accept-Ranges": "bytes",
+        "ETag": f'"{sha[:16] or file_size}"',
+        # 文件内容由 sha256 钉死，换文件要换路径或重新部署；private：请求带登录 cookie
+        "Cache-Control": "private, max-age=2592000",
+    }
+    if request.method == "HEAD":
+        return Response(status_code=200, media_type=content_type, headers={**headers, "Content-Length": str(file_size)})
+    byte_range = parse_range(request.headers.get("range", ""), file_size)
+    if byte_range is None:
+        return FileResponse(path, media_type=content_type, headers=headers)
+    start, end = byte_range
+    length = end - start + 1
+    return StreamingResponse(
+        iter_file_range(path, start, length, chunk=1024 * 1024), status_code=206, media_type=content_type,
+        headers={**headers, "Content-Range": f"bytes {start}-{end}/{file_size}", "Content-Length": str(length)},
     )

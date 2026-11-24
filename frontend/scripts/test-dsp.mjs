@@ -1,5 +1,5 @@
 /**
- * Numerical validation of `utils/mdx/mdxDsp.js`.
+ * Numerical validation of `features/separation/mdxDsp.js`.
  *
  * 1. FFT vs a naive DFT (arbitrary lengths, including 3*2^k).
  * 2. STFT vs golden vectors produced by torch (scripts/gen-dsp-golden.py).
@@ -10,7 +10,7 @@
  *   node scripts/test-dsp.mjs
  */
 import fs from 'node:fs';
-import { createFftPlan, fft, stft, istft, hannWindow, reflectPad } from '../utils/mdx/mdxDsp.js';
+import { createFftPlan, fft, stft, istft, hannWindow, reflectPad } from '../features/separation/mdxDsp.js';
 
 const GOLDEN = '/tmp/mdx_golden';
 const CANDIDATES = [

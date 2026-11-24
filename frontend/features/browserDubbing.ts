@@ -7,6 +7,9 @@
  *
  * 一句失败不影响其它句：失败的收集起来返回，其余照常合成。整批因为一句话抛错而中止，会让
  * 初始化页卡死、整个工程进不了编辑器。
+ *
+ * 同一时间只跑一批：初始化页的自动配音和编辑器里的"补配音"可能同时触发，两批并发会重复合成同一
+ * 句、互相覆盖上传。后来的那批排队等前一批结束，进来时重新取工程状态，已经做完的句子自然跳过。
  */
 import * as api from '../net/client';
 import type { Line, ProjectView } from '../net/types';
@@ -27,25 +30,39 @@ export interface BrowserDubbingResult {
   cancelled: boolean;
 }
 
+export interface BrowserDubbingOptions {
+  only?: Set<string>;
+  /** 即使配音是新鲜的也重做（行菜单里的「重新配音」）。 */
+  force?: boolean;
+  /** 点了取消：每句开始前检查，正在合成的这一句做完就停。 */
+  signal?: AbortSignal;
+  onProgress?: (p: BrowserDubbingProgress) => void;
+  /** 模型首次加载进度（92-163MB 下载），避免第一句看起来像卡死。 */
+  onEngineProgress?: (loaded: number, total: number) => void;
+}
+
 export class DubbingCancelled extends Error {
   constructor() { super('cancelled'); }
 }
 
-export async function fillBrowserDubbing(
+let tail: Promise<unknown> = Promise.resolve();
+
+export function fillBrowserDubbing(
   project: ProjectView,
-  opts: {
-    only?: Set<string>;
-    /** 即使配音是新鲜的也重做（行菜单里的「重新配音」）。 */
-    force?: boolean;
-    /** 点了取消：每句开始前检查，正在合成的这一句做完就停。 */
-    signal?: AbortSignal;
-    onProgress?: (p: BrowserDubbingProgress) => void;
-    /** 模型/引擎首次加载进度（92-163MB 下载），避免第一句看起来像卡死。 */
-    onEngineProgress?: (loaded: number, total: number) => void;
-  } = {},
+  opts: BrowserDubbingOptions = {},
+): Promise<BrowserDubbingResult> {
+  const run = tail.then(() => runBrowserDubbing(project, opts));
+  tail = run.catch(() => undefined);           // 一批失败不能卡住后面排队的
+  return run;
+}
+
+async function runBrowserDubbing(
+  project: ProjectView,
+  opts: BrowserDubbingOptions,
 ): Promise<BrowserDubbingResult> {
   const result: BrowserDubbingResult = { done: 0, failed: [], cancelled: false };
   if (project.settings.dubbingMode !== 'browser') return result;
+  if (opts.signal?.aborted) { result.cancelled = true; return result; }      // 排队等待期间就被取消了
   log.info('browser-dub', `start ${shortId(project.id)} lang=${project.settings.targetLanguage} accent=${project.settings.accent ?? '-'}`);
   const voices = await voicesForLanguage(project.settings.targetLanguage);
   if (!voices.length) {
@@ -85,8 +102,7 @@ export async function fillBrowserDubbing(
     log.info('browser-dub', `line ${line.line}/${todo.length} voice=${voice}`);
     opts.onProgress?.({ index: result.done + result.failed.length + 1, total: todo.length, line, voice });
     try {
-      // 整句只有 [laughing] 这类标签时清洗后是空串：Piper 对空文本的行为不确定，不去试。
-      // 这一句没有可念的内容，算失败（保留原因），不拖累其它句。
+      // 整句只有 [laughing] 这类标签时清洗后是空串：没有可念的内容，算失败（保留原因），不拖累其它句。
       if (!cleanTtsText(line.translation)) throw new Error('译文只有语气标签，没有可念的内容');
       const blob = await synthesizeBrowserSpeech(line.translation, voice);
       // 带上合成时用的译文和音色：服务端核对和当前一致才收，期间被改过就拒绝（409）

@@ -251,6 +251,49 @@ url = V._audio_url(VID)
 check("⑦ omni 取音频的地址带签名令牌（没有它会 401，智能挑选必失败）", "?token=" in url and url.split("?token=")[1], url)
 check("⑦ 令牌绑定这个工程且有效", token_service.verify_token(url.split("?token=")[1], VID))
 
+
+# ====================================================================== ⑧ 本地配音资源（同源提供）
+import json as _json
+KDIR = os.path.join(TMP, "kokoro"); config.KOKORO_MODELS_DIR = KDIR
+for rel, data in (("voices/zf_xiaobei.bin", b"v" * 4096), ("onnx-community/Kokoro-82M-v1.0-ONNX/onnx/model_quantized.onnx", b"m" * 8192),
+                  ("espeak/COPYING", b"GPL"), ("espeak/espeak-ng.data", b"d" * 100)):
+    os.makedirs(os.path.dirname(os.path.join(KDIR, rel)), exist_ok=True); open(os.path.join(KDIR, rel), "wb").write(data)
+open(os.path.join(KDIR, "secret.txt"), "w").write("nope")
+open(os.path.join(TMP, "outside.json"), "w").write("{}")
+_json.dump({"files": {r: {"size": os.path.getsize(os.path.join(KDIR, r)), "sha256": "ab" * 32}
+                      for r in ("voices/zf_xiaobei.bin", "espeak/COPYING", "espeak/espeak-ng.data")}}, open(os.path.join(KDIR, "manifest.json"), "w"))
+ka = TestClient(app); kb = TestClient(app); login(kb, "k@example.com")
+check("⑧ 未登录取本地配音资源 → 401（不是开放 CDN）", ka.get("/api/models/kokoro/voices/zf_xiaobei.bin").status_code == 401 and ka.get("/api/models/kokoro").status_code == 401)
+r = kb.get("/api/models/kokoro/voices/zf_xiaobei.bin")
+check("⑧ 登录后取音色 → 200，内容原样", r.status_code == 200 and r.content == b"v" * 4096)
+r = kb.get("/api/models/kokoro/voices/zf_xiaobei.bin", headers={"Range": "bytes=0-9"})
+check("⑧ 支持 Range（下载中断可续）→ 206 + 正确范围", r.status_code == 206 and r.content == b"v" * 10 and r.headers["content-range"] == "bytes 0-9/4096", (r.status_code, r.headers.get("content-range")))
+check("⑧ HEAD 带长度", int(kb.head("/api/models/kokoro/voices/zf_xiaobei.bin").headers["content-length"]) == 4096)
+check("⑧ 缓存头：private（请求带登录 cookie）", "private" in kb.get("/api/models/kokoro/voices/zf_xiaobei.bin").headers["cache-control"])
+check("⑧ 路径穿越（..）→ 404", kb.get("/api/models/kokoro/../outside.json").status_code == 404 and kb.get("/api/models/kokoro/%2e%2e/outside.json").status_code == 404)
+check("⑧ 非资源类型（secret.txt）→ 404", kb.get("/api/models/kokoro/secret.txt").status_code == 404)
+check("⑧ espeak 的许可文本可取（随文件分发）", kb.get("/api/models/kokoro/espeak/COPYING").content == b"GPL")
+r = kb.get("/api/models/kokoro/voices/nope.bin")
+check("⑧ 缺文件 → 404，并说明怎么补", r.status_code == 404 and "fetch_kokoro_models" in r.json()["detail"], r.text[:100])
+info = kb.get("/api/models/kokoro").json()
+check("⑧ 状态接口：齐全时 available=true", info["available"] is True and info["missing"] == [], info)
+os.remove(os.path.join(KDIR, "espeak/espeak-ng.data"))
+info = kb.get("/api/models/kokoro").json()
+check("⑧ 状态接口：缺文件时 available=false，列出缺的，并给补救办法", info["available"] is False and info["missing"] == ["espeak/espeak-ng.data"] and "fetch_kokoro_models" in info["hint"], info)
+open(os.path.join(KDIR, "espeak/espeak-ng.data"), "wb").write(b"d" * 3)
+check("⑧ 状态接口：文件大小对不上（下载不完整）也算缺", kb.get("/api/models/kokoro").json()["missing"] == ["espeak/espeak-ng.data"])
+os.remove(os.path.join(KDIR, "manifest.json"))
+check("⑧ 没有 manifest（还没下载过）→ available=false 并给出命令", kb.get("/api/models/kokoro").json()["available"] is False)
+
+# ====================================================================== ⑨ 语言矩阵只有一张表
+from app.config import BROWSER_LANGUAGES, browser_voice_fits_language, browser_voice_for_language
+check("⑨ 语言矩阵：5 种语言，每种有默认音色和前缀", set(BROWSER_LANGUAGES) == {"Chinese", "English", "French", "Italian", "Portuguese"}
+      and all(v["default"].startswith(v["prefixes"]) for v in BROWSER_LANGUAGES.values()))
+check("⑨ 默认音色查询 / 无音色的语言返回 None", browser_voice_for_language("English") == "af_heart" and browser_voice_for_language("German") is None
+      and browser_voice_for_language("Japanese") is None)
+check("⑨ 音色按前缀归属语言", browser_voice_fits_language("bf_emma", "English") and not browser_voice_fits_language("zf_xiaobei", "English")
+      and not browser_voice_fits_language("af_heart", "German") and not browser_voice_fits_language("", "English"))
+
 print(f"\n合计 {'全部通过' if not fails else str(len(fails)) + ' 项失败: ' + ', '.join(fails)}")
 sys.exit(1 if fails else 0)
 

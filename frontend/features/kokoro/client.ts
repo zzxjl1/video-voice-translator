@@ -1,6 +1,7 @@
 /**
- * Main-thread client for the Kokoro worker. One worker per tab; requests are
- * serialized by the worker itself (its engine is single-instance).
+ * Main-thread client for the Kokoro worker. One worker per tab. The worker queues
+ * requests itself (its engine is a single ORT session), and tags every message —
+ * including download progress — with the id of the request it belongs to.
  */
 import type { EngineDevice } from './types';
 

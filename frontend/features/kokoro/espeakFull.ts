@@ -10,18 +10,17 @@
  * kept in the phoneme string (the vocab has ,.:;?!… — they act as pauses),
  * and everything outside the Kokoro vocab stripped.
  *
- * The module is imported AT RUNTIME from jsDelivr, NOT bundled: the emscripten
- * build overwrites Module.locateFile with its own and derives the espeak-ng.data
- * URL from its own import.meta.url, so bundling it would point the 24 MB data
- * fetch at dist/assets/ where the file does not exist. Loading the factory from
- * jsDelivr makes both the module and the data resolve there (same source as the
- * Kokoro voice bins; browser HTTP-cache persists both). English does NOT come
- * through here (kokoro-js's built-in path handles en, and zh uses zhG2P).
+ * The module is imported AT RUNTIME from our own server (see assets.ts), NOT
+ * bundled: the emscripten build overwrites Module.locateFile with its own and
+ * derives the 24 MB espeak-ng.data URL from its own import.meta.url, so a
+ * bundled copy would look for the data in dist/assets/ where it does not exist.
+ * Served from the same directory, both resolve. (espeak-ng is GPL-3.0; the
+ * license text travels with the files as espeak/COPYING.)
+ * English does NOT come through here (kokoro-js's built-in path handles en,
+ * and zh uses zhG2P).
  */
 import { KOKORO_VOCAB } from './catalog';
-
-const ESPEAK_VERSION = '0.3.5';
-const ESPEAK_CDN = `https://cdn.jsdelivr.net/npm/@echogarden/espeak-ng-emscripten@${ESPEAK_VERSION}`;
+import { espeakModuleUrl } from './assets';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type EspeakModule = any;
@@ -32,8 +31,8 @@ let loading: Promise<EspeakModule> | null = null;
 async function getEspeak(): Promise<EspeakModule> {
   if (!loading) {
     loading = (async () => {
-      // Remote URL import: must stay runtime-resolved (see docstring).
-      const mod = await import(/* @vite-ignore */ `${ESPEAK_CDN}/espeak-ng.js`);
+      // Same-origin URL import: must stay runtime-resolved (see docstring).
+      const mod = await import(/* @vite-ignore */ espeakModuleUrl());
       const factory = mod.default ?? mod;
       return await factory();
     })();

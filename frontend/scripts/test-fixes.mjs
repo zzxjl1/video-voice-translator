@@ -56,17 +56,50 @@ const r = (p) => fs.readFileSync(new URL(`../${p}`, import.meta.url), 'utf8');
   check('② safeUrl：?v=<指纹> 也遮', !safeUrl('/tts/x?v=abcdef').includes('abcdef'));
 }
 
-// ---------------------------------------------------------------- ③ 本地配音：源码级保证（vits-web 只能在浏览器里跑）
+// ---------------------------------------------------------------- ③ 本地配音：源码级保证（真实引擎在 test-kokoro.mjs；浏览器里的 worker 只能源码级检查）
 {
   const dub = r('features/browserDubbing.ts');
   check('③ 一句失败收集起来，不整批中止', /result\.failed\.push/.test(dub) && /catch \(e\)/.test(dub));
   check('③ 每句开始前检查取消信号', /opts\.signal\?\.aborted/.test(dub));
-  check('③ 整句只有语气标签 → 不送给 Piper，记为失败原因', /cleanTtsText\(line\.translation\)/.test(dub));
+  check('③ 整句只有语气标签 → 不送去合成，记为失败原因', /cleanTtsText\(line\.translation\)/.test(dub));
   check('③ 上传带合成时用的译文和音色', /uploadBrowserTts\(project\.id, line\.id, blob, line\.translation, voice\)/.test(dub));
   check('③ 支持 force（行菜单里重做新鲜的一句）', /opts\.force/.test(dub));
   const client = r('net/client.ts');
   check('③ uploadBrowserTts：text / voice 随表单上传（服务端靠它核对）', /form\.append\('text'/.test(client) && /form\.append\('voice'/.test(client));
   check('③ API 层：401 通知会话过期（/auth/ 本身除外）', /notifyUnauthorized\(\)/.test(client) && /startsWith\('\/auth\/'\)/.test(client));
+}
+
+// ---------------------------------------------------------------- ③b 本地配音引擎：worker / 资源 / 排队
+{
+  const worker = r('features/kokoro/kokoroWorker.ts');
+  const client = r('features/kokoro/client.ts');
+  const espeak = r('features/kokoro/espeakFull.ts');
+  const assets = r('features/kokoro/assets.ts');
+  const posts = [...worker.matchAll(/post\(\{([^}]*)\}/g)].map((m) => m[1]);
+  check('③b worker：每条消息都带请求 id（缺了的话 client 找不到回调，下载进度永远丢）', posts.length > 0 && posts.every((p) => /\bid\b/.test(p)), posts.filter((p) => !/\bid\b/.test(p)));
+  check('③b worker：只有引擎自己出错（EngineError）才重建成 WASM', /instanceof EngineError/.test(worker) && /class EngineError/.test(worker));
+  check('③b worker：取不到文件 / 未登录不触发 WASM 降级', /isAssetError\(e\)/.test(worker));
+  check('③b worker：WebGPU 用 dtype fp16（q8f16 在 WebGPU 上输出错音频；model_file_name 会被 from_pretrained 悄悄丢掉）', /device: 'webgpu', dtype: 'fp16'/.test(worker) && !/model_file_name:/.test(worker.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')));
+  check('③b worker：请求串行处理（队列），不会并发加载模型', /queue = queue\.then\(/.test(worker));
+  check('③b worker：禁用远程模型，本地路径指向自己的服务器', /allowRemoteModels = false/.test(worker) && /localModelPath = `\$\{KOKORO_BASE\}\/`/.test(worker));
+  check('③b worker：ORT 的 wasm 显式指向打包产物（否则 transformers.js 默认去 jsDelivr）', /wasmPaths = \{ mjs: ortMjs, wasm: ortWasm \}/.test(worker));
+  check('③b worker：音色请求改写到自己的服务器', /voiceUrl\(/.test(worker));
+  check('③b worker：中文里的英文词走英文音素化；音素过滤到词表', /zhG2PWith\(text, englishWord\)/.test(worker) && /keepVocab/.test(worker));
+  check('③b worker：超出 511 token 的句子二分重试，不靠 tokenizer 截断', /bisect\(sentence\)/.test(worker) && /truncation: false/.test(worker));
+  const src = [worker, espeak, assets, client].join('\n');
+  const hosts = src.match(/https?:\/\/[a-z0-9.-]+\.[a-z]{2,}[^\s'"`)]*/gi) ?? [];
+  check('③b 引擎源码里没有第三方站点地址（HF / jsDelivr / 镜像）', !hosts.some((h) => /huggingface|hf-mirror|jsdelivr|unpkg|cdnjs/i.test(h)), hosts);
+  const dubbing = r('features/browserDubbing.ts');
+  check('③b fillBrowserDubbing：排队执行，一批失败不卡住后面的', /tail\.then\(/.test(dubbing) && /run\.catch\(/.test(dubbing));
+  check('③b fillBrowserDubbing：排队期间已被取消的不再开始', /排队等待期间就被取消/.test(dubbing));
+  const vite = r('vite.config.ts');
+  check('③b vite：ORT 的 wasm 与 JS 取自同一份构建（kokoro-ort 解析器）', /name: 'kokoro-ort'/.test(vite) && /NESTED_ORT/.test(vite));
+}
+
+// ---------------------------------------------------------------- ③c 分离模型已并入 features/
+{
+  check('③c 分离模型在 features/separation/，旧的 utils/mdx 已不存在', fs.existsSync(new URL('../features/separation/separatorClient.js', import.meta.url)) && !fs.existsSync(new URL('../utils/mdx', import.meta.url)));
+  check('③c App 从 features/separation 引入', /from '\.\/features\/separation'/.test(r('App.tsx')));
 }
 
 // ---------------------------------------------------------------- ④ 窗口布局不再带旧版兼容

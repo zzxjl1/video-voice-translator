@@ -23,7 +23,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import * as ort from 'onnxruntime-web';
-import { separateStems } from '../utils/mdx/mdxSeparator.js';
+import { separateStems } from '../features/separation/mdxSeparator.js';
 
 /**
  * Candidate parameters to compare. These live HERE (not in the library) on

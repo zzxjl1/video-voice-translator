@@ -355,43 +355,36 @@ ASR_MAX_WAIT = _env_int("ASR_MAX_WAIT", 600)
 # instead of silently shipping broken audio.
 TTS_MODEL = _env("TTS_MODEL", "qwen-audio-3.1-tts-flash")
 
-# Browser Kokoro defaults. The frontend owns the full voice catalog
-# (frontend/features/kokoro/catalog.ts); these are only the fallback voice ids.
-# Voice ids are Kokoro's own naming ("zf_xiaobei"); grades from the official
-# VOICES.md sheet — the Chinese voices are all D, English af_heart is A.
-BROWSER_TTS_DEFAULT_VOICES = {
-    "English": "af_heart",
-    "Chinese": "zf_xiaobei",
-    "French": "ff_siwis",
-    "Italian": "if_sara",
-    "Portuguese": "pf_dora",
+# ---- 浏览器本地配音（Kokoro）的语言矩阵：**这是后端唯一的一份** ----
+# 前端 features/kokoro/catalog.ts 里的 LANGUAGES 与它必须一致（音色目录本身在前端，因为它在
+# 浏览器 worker 里；后端只需要"默认音色"和"哪些前缀的音色属于哪种语言"来校验）。两边是否一致由
+# frontend/scripts/test-fixes.mjs 比对，改一边忘了另一边会直接测试失败。
+#
+# Kokoro 音色 id 以 `<语言><性别>_` 开头：zf_/zm_ 中文、af_/am_/bf_/bm_ 英语（美/英）、ff_ 法语、
+# if_/im_ 意大利语、pf_/pm_ 葡萄牙语。德语 / 越南语 / 韩语 / 印尼语没有 Kokoro 音色；日语的音色
+# 存在，但浏览器里没有可用的日语 G2P（espeak 的 ja 输出不可用，见 docs/dubbing-modes.md）。
+BROWSER_LANGUAGES = {
+    "Chinese": {"default": "zf_xiaobei", "prefixes": ("zf_", "zm_")},
+    "English": {"default": "af_heart", "prefixes": ("af_", "am_", "bf_", "bm_")},
+    "French": {"default": "ff_siwis", "prefixes": ("ff_",)},
+    "Italian": {"default": "if_sara", "prefixes": ("if_", "im_")},
+    "Portuguese": {"default": "pf_dora", "prefixes": ("pf_", "pm_")},
 }
-# Kokoro speaks 8 languages; the app's target languages that map onto them are
-# the five above. German/Vietnamese (and Korean/Indonesian) have NO Kokoro
-# voice — browser dubbing stays unavailable for them, same as ja/ko/id under
-# Piper. Japanese voices exist in the model but the browser has no Japanese
-# G2P (espeak's ja output is unusable; see docs/dubbing-modes.md).
 
 
 def browser_voice_for_language(language: str) -> Optional[str]:
-    return BROWSER_TTS_DEFAULT_VOICES.get(language)
-
-
-# Kokoro 音色 id 以语言前缀开头（zf_/zm_ 中文、af_/am_/bf_/bm_ 英语……首字母
-# 是语言、次字母是性别）。后端没有完整目录（它在浏览器 worker 里），但能按前缀
-# 拒掉明显错的：别的语言的音色写进来，前端合成时必然失败。
-BROWSER_VOICE_PREFIX = {
-    "Chinese": ("zf_", "zm_"),
-    "English": ("af_", "am_", "bf_", "bm_"),
-    "French": ("ff_",),
-    "Italian": ("if_", "im_"),
-    "Portuguese": ("pf_", "pm_"),
-}
+    info = BROWSER_LANGUAGES.get(language)
+    return info["default"] if info else None
 
 
 def browser_voice_fits_language(voice: str, language: str) -> bool:
-    prefixes = BROWSER_VOICE_PREFIX.get(language)
-    return bool(voice and prefixes and voice.startswith(prefixes))
+    info = BROWSER_LANGUAGES.get(language)
+    return bool(voice and info and voice.startswith(info["prefixes"]))
+
+
+# 本地配音引擎的全部文件（模型 / 音色 / espeak），由 scripts/fetch_kokoro_models.py 下载，
+# 经 /api/models/kokoro/* 同源提供：运行时不访问任何第三方站点。
+KOKORO_MODELS_DIR = os.path.join(BASE_DIR, "models", "kokoro")
 
 TTS_TIMEOUT = _env_int("TTS_TIMEOUT", 60)
 

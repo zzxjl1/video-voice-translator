@@ -7,8 +7,8 @@
  * 失败不是致命的：分离只是让配音时背景音乐保留得更好；做不成就以"没有分离"继续，
  * 导出时会用原声垫底（并按包络压低）。所以这里**不抛**，返回 `{ok:false, reason}`。
  */
-import * as api from '../net/client';
-import { isModelCached, openAudioSource, separateAndUpload } from '../utils/mdx/separatorClient';
+import * as api from '../../net/client';
+import { isModelCached, openAudioSource, separateAndUpload } from './separatorClient';
 
 export interface SeparationCallbacks {
   onLog: (message: string) => void;

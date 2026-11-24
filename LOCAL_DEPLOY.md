@@ -109,8 +109,10 @@ SERVER_URL_BASE=...    # 占位；实际由启动器注入当前隧道地址
 - 隧道开着时，这三个只读音频接口对公网可达；不用时建议 `stop.py` 停掉。
 - 后端仍然只监听 `127.0.0.1:9100`，局域网其它设备访问不到。
 - 浏览器端人声分离需要 WebGPU/WASM，首次会下载约 64 MB 的 ONNX 模型。
-- 浏览器本地配音（In-browser/Kokoro）首次使用时下载模型：WebGPU 86 MB / WASM 92 MB
-  （transformers.js 浏览器缓存）；fr/it/pt 配音另需 espeak 数据 24 MB（jsDelivr）。
+- 浏览器本地配音（In-browser/Kokoro）的模型、音色、espeak 数据由后端同源提供，首次使用时浏览器下载
+  WebGPU 163 MB / WASM 92 MB（fr/it/pt 另需 espeak 数据 24 MB，之后由浏览器缓存）。部署时先运行一次
+  `python backend/scripts/fetch_kokoro_models.py` 把约 310 MB 资源下到 `backend/models/kokoro/`
+  （需要能访问 HuggingFace 或 hf-mirror、jsDelivr；运行时浏览器不访问它们）。
   中文/英语不走 espeak；德语/越南语没有本地配音（Kokoro 不支持），只能 Remote 或 Off。
 - 仓库除本说明文档外没有其它改动（`git status` 可验证）。
 

@@ -1,6 +1,33 @@
+import fs from 'fs';
 import path from 'path';
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
+
+/**
+ * The onnxruntime-web that @huggingface/transformers (Kokoro) runs on. npm nests
+ * it under transformers when its version differs from the top-level one (the
+ * vocal-separation model uses the top-level 1.30; transformers pins a 1.22 dev
+ * build). The Kokoro worker imports that build's wasm through the `kokoro-ort:` resolver below so the
+ * JS and wasm always come from the SAME build — mixing them breaks session
+ * creation — and so nothing is fetched from a CDN at runtime.
+ */
+const NESTED_ORT = path.resolve(__dirname, 'node_modules/@huggingface/transformers/node_modules/onnxruntime-web/dist');
+const KOKORO_ORT = fs.existsSync(NESTED_ORT) ? NESTED_ORT : path.resolve(__dirname, 'node_modules/onnxruntime-web/dist');
+
+/**
+ * `kokoro-ort:<file>?url` -> the ORT file inside KOKORO_ORT (see above). A plugin rather than a
+ * resolve.alias: an alias with a package-like name makes Vite's dev optimizer try to pre-bundle the
+ * file as a dependency (and choke on its top-level await). It is registered twice — in `plugins`
+ * and in `worker.plugins` — because a Worker is bundled by its own plugin pipeline, which does NOT
+ * inherit the main one; without the second registration the production build cannot resolve it.
+ */
+const kokoroOrt = (): Plugin => ({
+  name: 'kokoro-ort',
+  enforce: 'pre',
+  resolveId(id) {
+    return id.startsWith('kokoro-ort:') ? path.join(KOKORO_ORT, id.slice('kokoro-ort:'.length)) : null;
+  },
+});
 
 // Backend port (see backend/start_server.py and backend/nginx.conf).
 const BACKEND_ORIGIN = process.env.VITE_BACKEND_ORIGIN || 'http://localhost:9100';
@@ -71,7 +98,7 @@ export default defineConfig({
       },
     },
   },
-  plugins: [react()],
+  plugins: [react(), kokoroOrt()],
   /**
    * ES worker bundles. The default IIFE format cannot code-split, and the
    * Kokoro worker (features/kokoro/kokoroWorker.ts) pulls in transformers.js
@@ -80,6 +107,7 @@ export default defineConfig({
    */
   worker: {
     format: 'es',
+    plugins: () => [kokoroOrt()],
   },
   /**
    * Do NOT pre-bundle onnxruntime-web. DO NOT remove this.

@@ -14,7 +14,7 @@ import {
   separateTrack,
   separateTrackStreaming,
   sourceFromChannels,
-} from '../utils/mdx/mdxSeparator.js';
+} from '../features/separation/mdxSeparator.js';
 import {
   createPcmBlobWriter,
   encodeWav,
@@ -22,7 +22,7 @@ import {
   parseWavHeader,
   probeMediaDuration,
   sourceFromWav,
-} from '../utils/mdx/separatorClient.js';
+} from '../features/separation/separatorClient.js';
 
 let failures = 0;
 function check(label, ok, detail) {

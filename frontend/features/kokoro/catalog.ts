@@ -18,8 +18,25 @@ export interface BrowserVoice {
   grade: string;
 }
 
-/** Target languages the browser engine can actually speak (Kokoro's matrix). */
-export const KOKORO_LANGUAGES = new Set(['Chinese', 'English', 'French', 'Italian', 'Portuguese']);
+/**
+ * The language matrix — the ONE place on the frontend that says which target
+ * languages browser dubbing supports, which voice prefixes belong to each, and
+ * which voice is the default. The backend keeps the same table in
+ * `config.BROWSER_LANGUAGES` (it validates voice ids by prefix); a test
+ * (frontend/scripts/test-fixes.mjs) compares the two, so changing one side and
+ * forgetting the other fails CI instead of failing a user.
+ *
+ * Kokoro's voice ids start with `<language><gender>_`. German / Vietnamese /
+ * Korean / Indonesian have no Kokoro voice; Japanese voices exist in the model
+ * but the browser has no usable Japanese G2P — those languages are simply absent.
+ */
+export const LANGUAGES: Readonly<Record<string, { default: string; prefixes: readonly string[] }>> = {
+  Chinese: { default: 'zf_xiaobei', prefixes: ['zf_', 'zm_'] },
+  English: { default: 'af_heart', prefixes: ['af_', 'am_', 'bf_', 'bm_'] },
+  French: { default: 'ff_siwis', prefixes: ['ff_'] },
+  Italian: { default: 'if_sara', prefixes: ['if_', 'im_'] },
+  Portuguese: { default: 'pf_dora', prefixes: ['pf_', 'pm_'] },
+};
 
 const CATALOG: Record<string, BrowserVoice> = {
   // en-us
@@ -81,16 +98,30 @@ const CATALOG: Record<string, BrowserVoice> = {
   // ja voices exist but the browser has no Japanese G2P — excluded
 };
 
-/** Voices per app target language, best grade first. */
+/**
+ * Rank of a grade for sorting: A+ < A < A− < B+ … < F−; unrated (empty) last.
+ * Lower = better. (The previous comparator was a descending string compare, which
+ * put F and unrated voices FIRST and the A-grade default LAST — so speaker 2
+ * onwards were assigned the worst voices in the catalog.)
+ */
+export function gradeRank(grade: string): number {
+  const letter = 'ABCDEF'.indexOf((grade || '')[0]);
+  if (letter === -1) return 100;
+  const mod = grade.endsWith('+') ? 0 : /[−-]$/u.test(grade) ? 2 : 1;
+  return letter * 3 + mod;
+}
+
+/** Voices per app target language, best grade first (stable within a grade). */
 export function voicesFor(language: string): BrowserVoice[] {
-  const prefix = { Chinese: ['zf_', 'zm_'], English: ['af_', 'am_', 'bf_', 'bm_'], French: ['ff_'], Italian: ['if_', 'im_'], Portuguese: ['pf_', 'pm_'] }[language];
-  if (!prefix) return [];
-  const list = Object.values(CATALOG).filter((v) => prefix.some((p) => v.key.startsWith(p)));
-  return list.sort((a, b) => (b.grade || 'Z').localeCompare(a.grade || 'Z'));
+  const lang = LANGUAGES[language];
+  if (!lang) return [];
+  return Object.values(CATALOG)
+    .filter((v) => lang.prefixes.some((p) => v.key.startsWith(p)))
+    .sort((a, b) => gradeRank(a.grade) - gradeRank(b.grade));
 }
 
 export function defaultVoiceFor(language: string): string | null {
-  return { Chinese: 'zf_xiaobei', English: 'af_heart', French: 'ff_siwis', Italian: 'if_sara', Portuguese: 'pf_dora' }[language] ?? null;
+  return LANGUAGES[language]?.default ?? null;
 }
 
 export function voiceMeta(key: string): BrowserVoice | undefined {

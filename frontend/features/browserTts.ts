@@ -1,13 +1,13 @@
 /**
- * Browser Kokoro TTS. The model runs in a dedicated worker (WebGPU fp16 when
- * available, else WASM q8); generated WAVs are uploaded to the normal
- * tts/<segment>.mp3 path so mixing/export stay shared.
+ * Browser Kokoro TTS. The model runs in a dedicated worker (WebGPU fp16, 163 MB,
+ * else WASM q8, 92 MB); every file it needs — model, voices, espeak — is served
+ * by our own backend, so the browser contacts no third-party host. Generated WAVs
+ * are uploaded to the normal tts/<segment>.mp3 path so mixing/export stay shared.
  *
  * Phonemization: zh via our misaki-format G2P (zhG2P.ts), en via kokoro-js's
  * built-in espeak, fr/it/pt via the full espeak-ng WASM build. Voice ids are
- * Kokoro's ("zf_xiaobei"); the app's browser dubbing languages are exactly
- * Kokoro's matrix (Chinese/English/French/Italian/Portuguese) — de/vi/ja/ko/id
- * have no usable browser voices and stay greyed out, like ja/ko/id under Piper.
+ * Kokoro's ("zf_xiaobei"); the languages that have browser dubbing are exactly
+ * the matrix in kokoro/catalog.ts (`LANGUAGES`) — the others stay greyed out.
  * Research notes live in docs/dubbing-modes.md (language matrix, G2P, engines).
  */
 import { kokoro } from './kokoro/client';

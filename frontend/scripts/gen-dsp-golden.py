@@ -4,7 +4,7 @@ Generate golden vectors for the browser MDX-Net DSP port.
 Reproduces EXACTLY what audio-separator does in
 `audio_separator/separator/architectures/mdx_separator.py` +
 `uvr_lib_v5/stft.py`, using torch, so the JavaScript implementation
-(`frontend/utils/mdx/mdxDsp.js`) can be validated numerically in Node.
+(`frontend/features/separation/mdxDsp.js`) can be validated numerically in Node.
 
 Run from `frontend/`:
     python3 scripts/gen-dsp-golden.py

@@ -12,6 +12,11 @@
  * Verified 7/9 project lines identical to real Python misaki; the 2 diffs are
  * 一/不 sandhi where the port uses natural speech (pypinyin's dict-driven
  * sandhi is inconsistent anyway).
+ *
+ * On top of the misaki tables this file does the text front-end misaki leaves
+ * to its callers: numbers/percent/money/time/year reading, and handing Latin
+ * words (brand names, acronyms) to an English phonemizer instead of letting raw
+ * letters into the phoneme string.
  */
 import { pinyin } from 'pinyin-pro';
 
@@ -91,66 +96,191 @@ function normalize(base: string): string {
   return base;
 }
 
-const DIGIT_ZH: Record<string, string> = { 0: '零', 1: '一', 2: '二', 3: '三', 4: '四', 5: '五', 6: '六', 7: '七', 8: '八', 9: '九' };
+/** A Latin word, possibly with digits, apostrophes and inner dots/hyphens ("thirdweb.com", "e-mail", "Web3"). */
+const LATIN = "[A-Za-z][A-Za-z0-9'’]*(?:[.\\-][A-Za-z0-9'’]+)*";
+const SPLIT_RE = new RegExp(`([\\u4E00-\\u9FFF]+|${LATIN})`, 'u');
+const IS_LATIN_RE = new RegExp(`^${LATIN}$`, 'u');
+const HANZI_RE = /[\u4E00-\u9FFF]/u;
+const LATIN_SPLIT = new RegExp(`(${LATIN})`, 'u');
+
+// ---------------------------------------------------------------------------
+// Text normalization: what a Chinese TTS front-end has to do BEFORE pinyin.
+//
+// The old port converted every digit to its hanzi ("100" -> 一零零, "35.5%" ->
+// 三五.五%) and let Latin letters straight through into the phoneme string —
+// the Kokoro vocabulary has no capital T, so "Thirdweb" came out as garbage.
+// Both are normal in translated tech text, so both are handled here.
+// ---------------------------------------------------------------------------
+
+const DIGIT_ZH = '零一二三四五六七八九';
+const UNITS = ['', '十', '百', '千'];
+
+/** 0..9999 -> hanzi, zeros collapsed ("1002" -> 一千零二). Leading "一十" is fixed by the caller. */
+function group4(n: number): string {
+  const digits = String(n).padStart(4, '0');
+  let out = '';
+  let pendingZero = false;
+  for (let i = 0; i < 4; i++) {
+    const d = Number(digits[i]);
+    if (d === 0) { if (out) pendingZero = true; continue; }
+    if (pendingZero) { out += '零'; pendingZero = false; }
+    out += DIGIT_ZH[d] + UNITS[3 - i];
+  }
+  return out;
+}
+
+/** Cardinal number (0 <= n < 1e12) the way it is spoken: 200 -> 两百, 12000 -> 一万两千, 10 -> 十. */
+export function cardinalZh(n: number): string {
+  if (n === 0) return '零';
+  const yi = Math.floor(n / 1e8);
+  const wan = Math.floor(n / 1e4) % 1e4;
+  const ge = n % 1e4;
+  let out = '';
+  if (yi) out += group4(yi) + '亿';
+  if (wan) { if (out && wan < 1000) out += '零'; out += group4(wan) + '万'; }
+  if (ge) { if (out && ge < 1000) out += '零'; out += group4(ge); }
+  if (out.startsWith('一十')) out = out.slice(1);                  // 一十二 -> 十二
+  return out.replace(/二(?=[百千万亿])/gu, '两');                   // 二百 -> 两百, 一万二千 -> 一万两千
+}
+
+const digitsZh = (s: string) => [...s].map((d) => DIGIT_ZH[Number(d)] ?? d).join('');
+
+/** An integer string: spoken as a cardinal, or digit by digit when that is how people say it. */
+function integerZh(s: string): string {
+  const spellOut = (s.length > 1 && s.startsWith('0'))               // 007, 0123
+    || s.length > 12                                                  // beyond 万亿
+    || (s.length === 11 && /^1[3-9]/.test(s));                        // phone numbers
+  return spellOut ? digitsZh(s) : cardinalZh(Number(s));
+}
+
+function decimalZh(s: string): string {
+  const [int, frac] = s.split('.');
+  return integerZh(int) + '点' + digitsZh(frac);
+}
+
+const numberZh = (s: string) => (s.includes('.') ? decimalZh(s) : integerZh(s));
+const MONEY: Record<string, string> = { $: '美元', '＄': '美元', '£': '英镑', '€': '欧元', '¥': '元', '￥': '元' };
+// A lone 2 before these reads 两 (两个, 两年), not 二个.
+const TWO_BEFORE = '个只条位名件天年次种家本台块倍人元';
+
+function normalizeSegment(segment: string): string {
+  return segment
+    .replace(/(?<=\d),(?=\d{3}(?!\d))/g, '')                          // 1,000 -> 1000
+    .replace(/(?<!\d)(\d{1,2}):([0-5]\d)(?!\d)/g, (_, h: string, m: string) =>
+      `${integerZh(String(Number(h)))}点${Number(m) === 0 ? '' : (Number(m) < 10 ? '零' : '') + integerZh(String(Number(m))) + '分'}`)
+    .replace(/([$＄£€¥￥])\s?(\d+(?:\.\d+)?)/gu, (_, sym: string, n: string) => numberZh(n) + MONEY[sym])
+    .replace(/(\d+(?:\.\d+)?)\s?[%％]/gu, (_, n: string) => '百分之' + numberZh(n))
+    .replace(/(?<!\d)(1[89]\d\d|20\d\d)\s?[-–~～]\s?(1[89]\d\d|20\d\d)(?!\d)/gu,
+      (_, a: string, b: string) => `${digitsZh(a)}到${digitsZh(b)}`)       // 2020-2024 年份区间逐位读
+    .replace(/(?<!\d)(\d{4})(?=\s?年)/gu, (_, y: string) => digitsZh(y))
+    .replace(/(?<=\d)\s?[-–~～]\s?(?=\d)/gu, '到')                     // 3-5
+    .replace(/\d+\.\d+/g, (n) => decimalZh(n))
+    .replace(/\d+/g, (n, offset: number, whole: string) =>
+      n === '2' && TWO_BEFORE.includes(whole[offset + 1] ?? '') ? '两' : integerZh(n));
+}
+
+/**
+ * Numbers, percentages, money, times and years -> hanzi.
+ *
+ * Latin words are cut out first and left untouched: the digits inside "Web3",
+ * "v2.0" or "H264" belong to the word (the English phonemizer reads them), and
+ * "v2.0" must not turn into "v二点零".
+ */
+export function normalizeZh(input: string): string {
+  const widened = input.replace(/[０-９Ａ-Ｚａ-ｚ]/gu, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+  return widened.split(LATIN_SPLIT).map((part, i) => (i % 2 === 1 ? part : normalizeSegment(part))).join('');
+}
+
+// ---------------------------------------------------------------------------
+// Tokenizing a normalized string: hanzi runs / Latin runs / everything else
+// ---------------------------------------------------------------------------
+
+
 const PUNCT_MAP: Array<[string, string]> = [
   ['、', ', '], ['，', ', '], ['。', '. '], ['．', '. '], ['！', '! '], ['：', ': '],
   ['；', '; '], ['？', '? '], ['«', ' “'], ['»', '” '], ['《', ' “'], ['》', '” '],
   ['「', ' “'], ['」', '” '], ['【', ' “'], ['】', '” '], ['（', ' ('], ['）', ') '],
+  ['……', '…'],
 ];
 
-const segmenter = new Intl.Segmenter('zh', { granularity: 'word' });
+function prepare(input: string): string {
+  let text = normalizeZh(input);
+  for (const [from, to] of PUNCT_MAP) text = text.replaceAll(from, to);
+  return text.trim();
+}
+
+/** The distinct Latin runs `zhG2P` will ask the English phonemizer about. */
+export function latinRunsZh(input: string): string[] {
+  const out = new Set<string>();
+  for (const part of prepare(input).split(SPLIT_RE)) if (part && IS_LATIN_RE.test(part)) out.add(part);
+  return [...out];
+}
 
 export interface ZhG2PResult {
   phonemes: string;
-  /** Chars whose pinyin didn't map to the IPA tables (should be rare). */
+  /** Pieces that could not be phonemized (unmapped pinyin, or Latin with no phonemizer given). */
   skipped: Array<{ char: string; pinyin: string }>;
 }
 
-/** Chinese text -> Kokoro phonemes (misaki zh format). */
-export function zhG2P(input: string): ZhG2PResult {
-  let text = input.replace(/\d/gu, (d) => DIGIT_ZH[d]);
-  for (const [from, to] of PUNCT_MAP) text = text.replaceAll(from, to);
-  text = text.replaceAll('……', '…').trim();
+const segmenter = new Intl.Segmenter('zh', { granularity: 'word' });
+
+/**
+ * Chinese text -> Kokoro phonemes (misaki zh format).
+ *
+ * @param latin  phonemes for a Latin run (see `latinRunsZh`). Without it Latin
+ *               words are skipped rather than passed through as raw letters.
+ */
+export function zhG2P(input: string, latin?: (run: string) => string | undefined): ZhG2PResult {
+  const text = prepare(input);
   const skipped: Array<{ char: string; pinyin: string }> = [];
   let phonemes = '';
-  let inZhRun = false;
 
-  // Contiguous hanzi runs get ONE pinyin-pro call each (sentence context for
-  // 了/地/还 polyphones); Intl.Segmenter only decides word spacing.
-  for (const part of text.split(/([\u4E00-\u9FFF]+)/u)) {
+  for (const part of text.split(SPLIT_RE)) {
     if (!part) continue;
-    if (!/[\u4E00-\u9FFF]/u.test(part)) {
-      phonemes += part;
-      inZhRun = false;
+
+    if (IS_LATIN_RE.test(part)) {
+      const ipa = latin?.(part);
+      if (ipa) phonemes += ` ${ipa} `;
+      else skipped.push({ char: part, pinyin: '' });
       continue;
     }
-    if (phonemes && !inZhRun && !/\s$/u.test(phonemes)) phonemes += ' ';
-    inZhRun = true;
+    if (!HANZI_RE.test(part)) { phonemes += part; continue; }        // punctuation, spaces
 
-    // Whole run in ONE call: 了/地/还 disambiguation uses sentence context.
-    // 一/不 sandhi stays on (natural speech; misaki's dict was inconsistent
-    // there anyway — pypinyin's dictionary-driven sandhi is inconsistent).
+    phonemes += ' ';
+    // The whole run in ONE call so 了/地/还 are disambiguated by sentence context.
     const items = pinyin(part, { type: 'all', toneType: 'num' });
-    const wordIdOf = new Map<string, number>();
+    // Word boundaries by POSITION. (Keying a map by the character itself broke
+    // whenever one character sat in two adjacent words: 学生生活 -> 学 | 生生活.)
+    const wordOf: number[] = [];
     let wid = 0;
     for (const w of segmenter.segment(part)) {
-      for (const ch of w.segment) wordIdOf.set(ch, wid);
+      for (let k = 0; k < w.segment.length; k++) wordOf[w.index + k] = wid;
       wid++;
     }
-    let lastWord = -1;
-    for (const it of items) {
+    let last = -1;
+    items.forEach((it, idx) => {
       const m = /^([^0-5]*)([0-5])?$/u.exec(it.pinyin);
-      if (!m || !m[1]) continue;
-      const w = wordIdOf.get(it.origin);
-      if (w !== undefined && w !== lastWord && lastWord !== -1) phonemes += ' ';
-      lastWord = w ?? -2;
+      if (!m || !m[1]) return;
+      const w = wordOf[idx];
+      if (last !== -1 && w !== last) phonemes += ' ';
+      last = w;
       const base = normalize(m[1]);
       const tone = m[2] ? (m[2] === '0' ? 5 : Number(m[2])) : 5;
       const ipa = syllableIpa(base, tone);
-      if (ipa === null) { skipped.push({ char: it.origin, pinyin: it.pinyin }); continue; }
+      if (ipa === null) { skipped.push({ char: it.origin, pinyin: it.pinyin }); return; }
       phonemes += ipa;
-    }
+    });
     phonemes += ' ';
   }
   return { phonemes: phonemes.replace(/\s+/gu, ' ').trim(), skipped };
+}
+
+/** zhG2P with an async Latin phonemizer (the worker's English espeak is async). */
+export async function zhG2PWith(
+  input: string,
+  latinAsync: (run: string) => Promise<string>,
+): Promise<ZhG2PResult> {
+  const known = new Map<string, string>();
+  for (const run of latinRunsZh(input)) known.set(run, await latinAsync(run));
+  return zhG2P(input, (run) => known.get(run));
 }
