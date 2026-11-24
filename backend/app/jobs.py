@@ -371,13 +371,37 @@ async def clone_speakers(video_id: str, job: Job, server_url: str, only: Optiona
     （重试 3 次后仍失败）都按"跳过"处理，区别只在事件里的 reason，方便排查。
     """
     from app.services import voice_clone_service as vc
+    from app.services import voice_presets as presets
     state = store.require_state(video_id)
     if state.dubbing_mode != "remote":
         return
     if not state.enable_voice_clone:
         return
-    speakers = [sp for sp in state.speakers if only is None or sp.id in only]
-    _emit(video_id, job, {"phase": "voice_clone", "status": "started", "total": len(speakers)})
+    # 整段都在唱 / 没有一句台词的说话人不克隆：参考音频必须是说话，这种克隆不成或者
+    # 克隆出"唱歌音色"，还会白白花一次注册的钱。直接跳过，配音走系统音色。
+    singers = {
+        sp.id: reason
+        for sp in state.speakers
+        if (reason := presets.non_speech_only(state.segments, sp.id))
+    }
+    speakers = [
+        sp for sp in state.speakers
+        if (only is None or sp.id in only) and sp.id not in singers
+    ]
+    if singers:
+        _emit(video_id, job, {"phase": "voice_clone", "status": "started", "total": len(speakers)})
+        for sid, reason in singers.items():
+            sp = state.speaker(sid)
+            logger.info(f"[{video_id}] clone skipped for {sid}: {reason}")
+            _emit(video_id, job, {
+                "phase": "voice_clone", "status": "skipped", "reason": "non_speech",
+                "speaker_id": sid, "speaker_name": sp.name if sp else sid, "error": reason,
+            })
+        if not speakers:
+            _emit(video_id, job, {"phase": "voice_clone", "status": "complete"})
+            return
+    else:
+        _emit(video_id, job, {"phase": "voice_clone", "status": "started", "total": len(speakers)})
 
     for i, sp in enumerate(speakers, 1):
         job.check()

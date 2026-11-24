@@ -93,6 +93,16 @@ check("② 预设清单：做不了的写明原因，能做的给出时长和行
       and opts["continuous"]["available"] and opts["continuous"]["seconds"] == 3.0 and opts["continuous"]["lines"] == [6], opts)
 check("② 预设清单：smart 在有素材时可选", {o["id"]: o for o in vp.preset_options(S, "0")}["smart"]["available"])
 
+# ------------------------------------------------------------------ ②b 只有歌曲 / 非语音的说话人不克隆
+singer = S + [seg("g0", "7", 100.0, 106.0, kind="song"), seg("g1", "7", 107.0, 113.0, kind="song")]
+check("②b 整段都在唱的说话人 → 判定为不克隆，原因说明是歌曲",
+      vp.non_speech_only(singer, "7") is not None and "song" in vp.non_speech_only(singer, "7"))
+mixed = singer + [seg("g2", "7", 120.0, 126.0)]
+check("②b 唱歌里夹着一句台词 → 正常克隆（有一句能当参考）", vp.non_speech_only(mixed, "7") is None)
+check("②b 正常说话的人不受影响", vp.non_speech_only(singer, "0") is None)
+check("②b 没有任何行的人不算（不是这里的职责）", vp.non_speech_only(S, "9") is None)
+check("②b 掌声 + 音乐混合也算非语音", "music" in vp.non_speech_only(S + [seg("n0", "8", 0, 2, kind="noise"), seg("n1", "8", 3, 5, kind="music")], "8"))
+
 # ------------------------------------------------------------------ ③ 固定试听句
 check("③ 十种目标语言都有试听句", set(vp.PREVIEW_SENTENCES) == set(config.TARGET_LANGUAGES), set(config.TARGET_LANGUAGES) ^ set(vp.PREVIEW_SENTENCES))
 check("③ 长度适合朗读（够听出语速和节奏，又不至于让人等太久）",
@@ -203,6 +213,38 @@ cm = R.get("generate_voice_candidates")
 check("⑦ 生成候选会花钱：AI 调用要先确认", R.needs_confirmation("generate_voice_candidates", "ai") == R.CONFIRM_COST)
 check("⑦ 删除候选：AI 调用要先确认", R.needs_confirmation("delete_voice_candidates", "ai") == R.CONFIRM_DESTROY)
 check("⑦ 选用候选不花钱：不需要确认", R.needs_confirmation("use_voice_candidate", "ai") is None)
+
+# ------------------------------------------------------------------ ⑦b 只有歌曲的说话人：初始化不克隆，手动克隆拒绝
+fresh()
+def add_singer(s):
+    s.speakers.append(Speaker("2", "Speaker 2", voice="Emily_v3.1"))
+    s.segments += [Segment("g0", "2", 100.0, 108.0, "歌词被当成台词", translated_text="翻译过的歌词", kind="song"),
+                    Segment("g1", "2", 109.0, 117.0, "第二句歌词", translated_text="第二句", kind="song")]
+store.mutate(VID, add_singer, actor="system", cmd="seed", summary="singer")
+from app import bus, jobs
+FakeEnroll.created.clear(); bus_events = []
+async def clone_all():
+    job = jobs.Job("j1", VID, "clone", "克隆", "system")
+    ch = bus.bus.subscribe(VID, since=0)
+    await jobs.clone_speakers(VID, job, "http://x/")
+    while not ch.empty():
+        e = ch.get_nowait()
+        if e.get("type") == "progress":
+            bus_events.append(e)
+asyncio.run(clone_all())
+skipped = [e for e in bus_events if e.get("phase") == "voice_clone" and e.get("status") == "skipped"]
+enrolled = [e for e in bus_events if e.get("phase") == "voice_clone" and e.get("status") == "done" and not e.get("reused")]
+check("⑦b 初始化：唱歌的说话人 2 没有注册（不花克隆的钱）", all(e["speaker_id"] != "2" for e in enrolled), enrolled)
+check("⑦b 初始化：唱歌的说话人 2 有一条 skipped 事件，reason=non_speech", len(skipped) == 1 and skipped[0]["speaker_id"] == "2" and skipped[0]["reason"] == "non_speech" and "song" in skipped[0]["error"], skipped)
+check("⑦b 初始化：正常说话的 0 / 1 照常克隆", {e["speaker_id"] for e in enrolled} == {"0", "1"}, enrolled)
+check("⑦b 初始化：事件计数 total 只算要克隆的人", bus_events[0].get("status") == "started" and bus_events[0]["total"] == 2, bus_events[0])
+check("⑦b 初始化：唱歌的说话人没有克隆音色，仍是系统音色", store.get_state(VID).speaker("2").clone is None and store.get_state(VID).speaker("2").voice == "Emily_v3.1")
+FakeEnroll.created.clear()
+r = run("clone_voice", {"speaker": "2"})
+check("⑦b 手动克隆唱歌的说话人 → 拒绝、说清原因、不注册", not r["ok"] and "不能克隆" in r["error"] and "song" in r["error"] and not FakeEnroll.created, r)
+check("⑦b 视图里这个人没有可用预设（面板据此禁用按钮）",
+      not [o for o in view.speaker_view(store.get_state(VID), store.get_state(VID).speaker("2"))["presetOptions"] if o["id"] != "smart" and o["available"]])
+fresh()  # 去掉唱歌的人，后面的用例回到原来的夹具
 
 FakeEnroll.created.clear(); synth_calls.clear()
 r = run("generate_voice_candidates", {"speaker": "0"})

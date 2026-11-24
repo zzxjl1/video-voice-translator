@@ -148,6 +148,10 @@ async def clone_voice(ctx: Ctx, speaker: str, reference_lines: Optional[list] = 
     async def body(job):
         job.step = f"克隆 {sp.name}"
         current = store.require_state(ctx.video_id)
+        # 整段都在唱 / 没有台词的说话人：参考必须是说话，克隆不成还会花注册费
+        why = vp.non_speech_only(current.segments, sp.id)
+        if why:
+            raise CommandError(f"{sp.name} {why}，不能克隆；配音会用系统音色")
         if reference_lines:
             segs = resolve_lines(current, reference_lines)
             try:

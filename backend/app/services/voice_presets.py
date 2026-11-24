@@ -104,6 +104,22 @@ def _dur(s: Segment) -> float:
     return s.end_time - s.start_time
 
 
+def non_speech_only(segments: list[Segment], speaker_id: str) -> Optional[str]:
+    """
+    这个说话人是不是"没有一句是人声台词"——只有歌曲 / 掌声 / 音乐这类行。
+
+    克隆参考必须是说话：审听（omni）把唱的行标成 song，ASR 把歌词当台词转写出来了，
+    但它不是可用的音色参考（旋律里的音高不是这个人的音高）。这种说话人整段都在唱，
+    自动克隆注定失败或者克隆出一个"唱歌音色"，不值得花钱：初始化直接跳过，让配音
+    走系统音色。返回给人看的原因；有正常台词就返回 None。
+    """
+    mine = [s for s in segments if s.speaker_id == speaker_id]
+    if mine and all(s.kind != "speech" for s in mine):
+        kinds = sorted({s.kind for s in mine})
+        return "只有歌曲 / 非语音的行（" + "、".join(kinds) + "），没有可用的台词作参考"
+    return None
+
+
 def pool_for(segments: list[Segment], speaker_id: str) -> list[Segment]:
     """
     该说话人可作参考的行：语音、够长、**不与别的说话人重叠**。
