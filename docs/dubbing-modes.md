@@ -41,8 +41,14 @@ GPU 实现，整批回落 CPU。`backend/scripts/kokoro_int8.py` 只改图、不
 - 148 个 `MatMulInteger` → `MatMul`，87 个 `ConvInteger` → `Conv`，权重在图里仍是 int8（文件和官方 int8 一样大）。
 - 反量化用 `Cast → Sub → Mul`，输入全是常量，ORT 建会话时折叠成浮点权重；激活不再量化，所以数值比官方 int8 更接近 fp32。
 - 4 个词嵌入查表后的反量化也同样替换。`DynamicQuantizeLSTM`（6 个）保留，它在 WebGPU 上走 CPU，不影响正确性。
-- **不能用 `DequantizeLinear`**：ORT 的 WebGPU 后端会把它算成全零。同一个文件在 WASM 上音频正常（峰值约 20000），
-  在 WebGPU 上每个采样都是 0；onnxruntime-web 1.31.1 和 1.33 dev 都一样。换成 `Cast/Sub/Mul` 后正常。
+- **不能用 `DequantizeLinear`**：ORT 的 WebGPU 后端对它的一部分变体会算错（最小模型实测：scale 是标量的整类都错，
+  误差可到 5e7；scale 是向量时有的对有的错），onnxruntime-web 1.31.1 和 1.33 dev 都一样，同一个文件在 WASM 上完全正确。
+  Kokoro 里两种都有，整个模型在 WebGPU 上输出垃圾（整段全零是其中一种表现）。`Cast/Sub/Mul` 在所有情形下都对。
+  详细的变体表和上游线索见 `backend/scripts/kokoro_int8.py` 的文件头。
+- 反量化节点的输入全是常量，会被常量折叠：WebGPU profiling 里整个模型的 `Sub` kernel 只有原图自带的 68 个，
+  我们加的 169 个都没执行，推理时没有额外开销。
+- 数值核对（真实模型、同一输入）：WebGPU 与 WASM 的输出长度相同、RMS 相同、包络相关 0.9999；逐点波形相关约 0.93，
+  这是声码器里大相位正弦项在两个后端上浮点累加顺序不同造成的相位差，不是反量化错误。
 
 实测（真实浏览器，同一个 worker，只换模型文件，预热后合成一句英语和一句中文）：
 
@@ -51,7 +57,7 @@ GPU 实现，整批回落 CPU。`backend/scripts/kokoro_int8.py` 只改图、不
 | **`model_int8`（改图版）** | **92 MB** | 2.67 s / 235 ms = **11x**，4.33 s / 314 ms = **14x** | 正常 |
 | `model_fp16` | 163 MB | 2.70 s / 192 ms = 14x，4.97 s / 282 ms = 18x | 正常 |
 | 官方 `model_quantized`（int8） | 92 MB | ~0.8x（算子回落 CPU） | 正常 |
-| 只做 `DequantizeLinear` 替换的版本 | 92 MB | 10x | **全零（静音）** |
+| 只做 `DequantizeLinear` 替换的版本 | 92 MB | 10x | **错误（我们这份是全零静音）** |
 | `model_q8f16` | 86 MB | 31 s 才出 **23 秒**音频（时长被拉长约 8 倍） | **错误** |
 
 为什么只提交这一个：GitHub 单文件上限 100 MB，fp16（163 MB）推不上去；改图 int8 只比 fp16 慢约 20%，却小一半。

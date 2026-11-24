@@ -139,7 +139,7 @@ else:
             print(f"SKIP ⑤ {label} 原图对照（reference evaluator 不支持其中的整数算子：{str(e)[:60]}）")
         check(f"⑤ 转换器 {label}：不再有 WebGPU 不支持的算子", kokoro_int8.check(b) == [], kokoro_int8.check(b))
         check(f"⑤ 转换器 {label}：权重仍是 int8（模型没有变大）", any(i.data_type == TensorProto.INT8 for i in onnx.load(b).graph.initializer))
-        check(f"⑤ 转换器 {label}：不用 DequantizeLinear（ORT WebGPU 上它输出全零）", all(n.op_type != "DequantizeLinear" for n in onnx.load(b).graph.node))
+        check(f"⑤ 转换器 {label}：不用 DequantizeLinear（ORT WebGPU 上它的部分变体算错）", all(n.op_type != "DequantizeLinear" for n in onnx.load(b).graph.node))
 
     shipped = os.path.join(config.KOKORO_MODELS_DIR, "onnx", "model_int8.onnx")
     check("⑤ 随库提供的 model_int8.onnx：没有 WebGPU 不支持的算子", kokoro_int8.check(shipped) == [], kokoro_int8.check(shipped))

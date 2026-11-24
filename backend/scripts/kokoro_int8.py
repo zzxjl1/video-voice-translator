@@ -23,9 +23,23 @@ ORT 的 WebGPU 后端没有 MatMulInteger / ConvInteger / DynamicQuantizeLinear 
 
 为什么反量化不用 `DequantizeLinear`
 ----------------------------------
-这是一个实测出来的坑：ORT 的 WebGPU 后端会把 `DequantizeLinear`（int8 -> float）算成**全零**
-（onnxruntime-web 1.31.1 和 1.33 dev 都一样，同一个文件在 WASM 上正常、在 WebGPU 上全静音）。
-`Cast -> Sub -> Mul` 三个都是普通算子，WebGPU 正常。不要"简化"回 DequantizeLinear。
+这是实测出来的坑：ORT 的 WebGPU 后端对 `DequantizeLinear`（int8/uint8 -> float）有些变体会算错
+（onnxruntime-web 1.31.1 和 1.33 dev 都复现，同一个文件在 WASM 上完全正确）。用最小模型逐项测的结果：
+
+    scale 是标量（per-tensor），权重是常量或运行时输入   错（误差可到 5e7）   <- Kokoro 的 Conv 权重和 4 个词嵌入
+    scale 是向量、int8、axis 在最后一维                    对                  <- Kokoro 的 MatMul 权重
+    scale 是向量、uint8、axis=0（3D 卷积权重）             错
+    Cast -> Sub -> Mul 等价写法                            全部对
+
+哪些变体会错没有完全摸清，而 Kokoro 恰好两种都有，整个模型因此输出垃圾（全零是其中一种表现）。
+`Cast -> Sub -> Mul` 三个都是普通算子，全部情形下正确，所以统一用它，不要"简化"回 DequantizeLinear。
+这些节点的输入全是常量，ORT 建会话时会常量折叠：WebGPU profiling 里整个模型的 `Sub` kernel 只有原图自带的
+68 个，我们加的 169 个一个都没执行，推理时没有额外开销。
+
+上游相关记录（我没能打开 GitHub 页面，只看到搜索摘要，没有核实细节）：
+  - microsoft/onnxruntime PR #33122 "Fix WebGPU DequantizeLinear scalar/vector shader cache collisions"
+  - 另有博客报告 ORT-web 1.27 + int8 + WebGPU 输出分布错误（把问题指向 DequantizeLinear）
+我用最小模型验证了"同一 device 里先后跑两种形状"并没有复现错误，所以我们遇到的不一定是 #33122 那个问题。
 
 用法（维护者，需要 `pip install onnx numpy`）：
     python kokoro_int8.py model_quantized.onnx model_int8.onnx

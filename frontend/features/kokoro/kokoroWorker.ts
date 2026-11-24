@@ -78,9 +78,10 @@ class EngineError extends Error {}
  * One model file for both devices. WebGPU when the browser has a usable adapter, else WASM.
  *
  * It is the official dynamic-int8 graph with its integer operators rewritten (see
- * backend/scripts/kokoro_int8.py): ORT's WebGPU backend has no MatMulInteger / ConvInteger, and its
- * DequantizeLinear returns all zeros, so the stock int8 file ran at CPU speed on WebGPU. The
- * rewritten file runs ~11x realtime on WebGPU (about 20% behind fp16) at 92 MB instead of 163 MB.
+ * backend/scripts/kokoro_int8.py). ORT's WebGPU backend has no MatMulInteger / ConvInteger, so the stock
+ * int8 file ran at CPU speed there; and its DequantizeLinear is wrong for some variants, so the rewrite
+ * dequantizes with Cast/Sub/Mul instead. The rewritten file runs ~11x realtime on WebGPU (about 20%
+ * behind fp16) at 92 MB instead of 163 MB.
  * Do NOT swap in `model_q8f16`: on ort-web WebGPU its audio comes out ~8x too long and wrong.
  */
 async function pickDevice(): Promise<'webgpu' | 'wasm'> {
