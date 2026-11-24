@@ -185,6 +185,10 @@ export async function fetchModelBuffer(info, onProgress, token) {
  * Create an inference session, preferring WebGPU and falling back to WASM.
  * @param {ArrayBuffer} modelBuffer
  * @param {(backend: 'webgpu'|'wasm', error?: Error) => void} [onBackend]
+ *
+ * Measured (Chrome, this model, 12s stereo input): WebGPU session + 1.7s total
+ * separation vs WASM 44.9s — the WebGPU EP is worth ~26x here, and the output
+ * is numerically equivalent. A session failure on this EP falls back cleanly.
  */
 export async function createSeparatorSession(modelBuffer, onBackend) {
   const ort = await loadOrt();

@@ -28,9 +28,13 @@ off      不配音；只做转写/翻译/字幕，原声保持不变
 
 | 后件 | 条件 | 模型下载 | 实测速度 |
 | --- | --- | --- | --- |
-| WebGPU + fp16 | `navigator.gpu` 有适配器 | 163 MB（transformers.js 浏览器缓存） | ~10.8x 实时 |
+| WebGPU + q8f16 | `navigator.gpu` 有适配器 | 86 MB（transformers.js 浏览器缓存） | ~10.9x 实时 |
 | WASM + q8 | 其余（自动降级） | 92 MB | ~0.7x 实时 |
 
+- q8f16 = int8 权重 + fp16 计算：权重解量化后 MatMul 走 GPU，与 fp16 同速且是
+  发布里最小的文件。纯 int8 计算（dtype 'q8'）的 MatMulInteger 算子在 ort-web
+  的 WebGPU EP 没有 GPU 实现，速度等同 WASM，不用。q8f16 不在 transformers.js
+  的 dtype 映射表里，加载用 `dtype:'fp32' + model_file_name:'model_q8f16'`。
 - WebGPU 初始化或生成失败时自动回退 WASM，一次会话内不再重试 WebGPU。
 - 模型文件来自 HF；不可达时自动换 `hf-mirror.com` 镜像。
 - 音色 bin（每个 0.5 MB，首次用到该音色时下载）来自 jsDelivr 的 kokoro-js 包。

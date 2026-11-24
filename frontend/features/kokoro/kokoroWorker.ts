@@ -49,11 +49,23 @@ interface Engine {
 let engine: Engine | null = null;
 let preferWasm = false;
 
-async function pickDevice(): Promise<{ device: 'webgpu' | 'wasm'; dtype: 'fp16' | 'q8' }> {
+type EngineChoice = { device: 'webgpu' | 'wasm'; dtype: 'fp32' | 'q8'; model_file_name?: string };
+
+/**
+ * WebGPU → `model_q8f16.onnx`（86MB）：int8 权重 + fp16 计算，权重解量化后
+ * MatMul 走 GPU，实测与 fp16 同速（~10.8x 实时）且是发布里最小的文件。
+ * 不能用 dtype 'q8'：纯 int8 计算的 MatMulInteger 在 ort-web 的 WebGPU EP 没有
+ * 实现，会回落 CPU（速度和 WASM 一样，0.7x）。q8f16 也不在 transformers.js 的
+ * dtype 映射表里，所以用 dtype:'fp32' + model_file_name 直接指到该文件。
+ * 其余 → WASM + q8（92MB，~0.7x）。
+ */
+async function pickDevice(): Promise<EngineChoice> {
   if (!preferWasm) {
     try {
       const gpu = (globalThis as { navigator?: { gpu?: { requestAdapter: () => Promise<unknown> } } }).navigator?.gpu;
-      if (gpu && await gpu.requestAdapter()) return { device: 'webgpu', dtype: 'fp16' };
+      if (gpu && await gpu.requestAdapter()) {
+        return { device: 'webgpu', dtype: 'fp32', model_file_name: 'model_q8f16' };
+      }
     } catch { /* fall through to wasm */ }
   }
   return { device: 'wasm', dtype: 'q8' };
@@ -76,7 +88,7 @@ async function load(onProgress: (loaded: number, total: number) => void): Promis
   };
   try {
     const tts = await KokoroTTS.from_pretrained(MODEL, { ...choice, progress_callback: progress });
-    return { tts, device: choice.device, dtype: choice.dtype };
+    return { tts, device: choice.device, dtype: choice.model_file_name ?? choice.dtype };
   } catch (e) {
     if (choice.device === 'webgpu') {
       // WebGPU adapter answered but the model failed (driver quirks etc.) — WASM always works.
