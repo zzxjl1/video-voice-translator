@@ -272,11 +272,7 @@ const SpeakerVoices: React.FC<VoicesProps> = ({ speaker, lines, player, run, onN
               {busy === 'gen-default' ? '克隆中，要几十秒…' : '克隆这个人的音色'}
             </button>
             {!hasMaterial && (
-              <p className="text-[11px] text-gray-400">
-                {material.lines === 0 && speaker.lines > 0
-                  ? '这个人只有歌曲 / 非语音的行，没有台词能作参考，不克隆；配音用系统音色。'
-                  : '这个人没有可用的素材，做不了克隆。'}
-              </p>
+              <p className="text-[11px] text-gray-400">这个人没有可用的素材，做不了克隆。</p>
             )}
           </div>
         )}

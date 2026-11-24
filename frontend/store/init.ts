@@ -157,7 +157,6 @@ export function reduceInit(state: InitState, event: ProgressEvent): InitState {
         status === 'retrying' ? `${who}：克隆失败，正在重试 ${event.attempt}/3…` :
         status === 'skipped'
           ? (event.reason === 'no_material' ? `${who}：没有可用素材，已跳过，使用系统音色`
-            : event.reason === 'non_speech' ? `${who}：只有歌曲 / 非语音的行，不克隆，使用系统音色`
             : event.reason === 'enroll_failed' ? `${who}：克隆重试 3 次仍失败，已跳过，使用系统音色（${event.error}）`
             : `${who}：克隆没做成，已跳过，使用系统音色（${event.error}）`)
           : '';
