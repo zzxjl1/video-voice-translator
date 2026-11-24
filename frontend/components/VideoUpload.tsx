@@ -11,8 +11,12 @@ import {
   sortAsrLanguages,
 } from '../utils/languages';
 import { formatRelativeTime } from '../utils/relativeTime';
-import { LanguageSwitch } from '@/i18n';
+import { LanguageSwitch, t } from '@/i18n';
 import { AccountMenu } from '../auth/AccountMenu';
+import CreditsPill, { type CreditsSnapshot } from './billing/CreditsPill';
+import BillingPanel from './billing/BillingPanel';
+import Toast from './ui/Toast';
+import { billing as billingApi } from '../net/client';
 import { AuthErrorToast } from '../auth/AuthErrorToast';
 import { useAuth } from '../auth/AuthProvider';
 
@@ -186,6 +190,25 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
     };
   }, []);
   const inputRef = useRef<HTMLInputElement>(null);
+  // 首页要显示"还剩多少积分"。只取一次：账本变化不频繁，回首页会重新挂载。
+  const [credits, setCredits] = useState<CreditsSnapshot | null>(null);
+  const [showBilling, setShowBilling] = useState(false);
+  const [rechargeNotice, setRechargeNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (!user) { setCredits(null); return; }
+    let alive = true;
+    billingApi.summary()
+      .then((s) => {
+        if (!alive) return;
+        setCredits({
+          balance: s.balance_points,
+          monthPoints: s.month_points,
+          monthCalls: s.month_calls,
+        });
+      })
+      .catch(() => { if (alive) setCredits(null); });
+    return () => { alive = false; };
+  }, [user]);
 
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     if (event.target.files && event.target.files[0]) {
@@ -211,8 +234,15 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
     <div className="relative flex flex-col items-center justify-center min-h-screen overflow-hidden bg-claude-bg">
       <div className="absolute top-5 right-6 z-30 flex items-center gap-2">
         <LanguageSwitch />
+        <CreditsPill
+          credits={credits}
+          onOpenDetail={() => setShowBilling(true)}
+          onRecharge={() => setRechargeNotice(t('在线充值还没开通。需要积分请联系我们，我们会尽快处理。'))}
+        />
         <AccountMenu />
       </div>
+      <BillingPanel open={showBilling} onClose={() => setShowBilling(false)} />
+      <Toast message={rechargeNotice} onClose={() => setRechargeNotice(null)} />
       <AuthErrorToast />
       {/* Animated watermark background */}
       <div className="absolute inset-0 overflow-hidden pointer-events-none select-none" aria-hidden="true">

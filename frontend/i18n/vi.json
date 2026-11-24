@@ -527,5 +527,15 @@
   "积分余额": "Số dư tín dụng",
   "消耗以积分计（1 积分 ≈ 0.01 元，已含服务费）。本地配音、人声分离与导出不消耗积分。": "Mức dùng tính bằng tín dụng (1 tín dụng ≈ ¥0,01, đã gồm phí). Lồng tiếng cục bộ, tách giọng và xuất không tốn tín dụng.",
   "\\n约 {0} 积分（已含服务费）": "\\nKhoảng {0} tín dụng (đã gồm phí).",
-  "\\n约 {0} 积分（已含服务费），从积分余额扣。": "\\nKhoảng {0} tín dụng (đã gồm phí), trừ từ số dư."
+  "\\n约 {0} 积分（已含服务费），从积分余额扣。": "\\nKhoảng {0} tín dụng (đã gồm phí), trừ từ số dư.",
+  "项目": "Mục",
+  "说明": "Chi tiết",
+  "本工程": "Dự án này",
+  "本工程累计": "Tổng dự án",
+  "本工程消耗": "Tiêu thụ dự án",
+  "还没有消耗": "Chưa có tiêu thụ",
+  "还没有消耗记录。本地配音、人声分离与导出不消耗积分。": "Chưa có tiêu thụ. Lồng tiếng cục bộ, tách giọng và xuất không tốn tín dụng.",
+  "可用": "khả dụng",
+  "明细": "Chi tiết",
+  "充值": "Nạp"
 }

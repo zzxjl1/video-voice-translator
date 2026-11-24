@@ -13,7 +13,8 @@
 import React, { useState } from 'react';
 import { ALL_LANGUAGES } from '../../utils/languages';
 import { AccountMenu } from '../../auth/AccountMenu';
-import type { JobInfo, Needs } from '../../net/types';
+import { t } from '@/i18n';
+import type { JobInfo, Needs, ProjectBilling } from '../../net/types';
 
 interface Props {
   filename: string;
@@ -30,8 +31,8 @@ interface Props {
   onExport: () => void;
   onHome: () => void;
   exporting: boolean;
-  /** 这个工程累计用了多少积分。undefined = 还没取到 / 没有记录。 */
-  projectPoints?: number;
+  /** 这个工程累计用了多少积分（含按步骤拆分）。null/undefined = 还没取到 / 没有记录。 */
+  projectBilling?: ProjectBilling | null;
   onOpenBilling: () => void;
 }
 
@@ -39,9 +40,83 @@ const EASE = 'ease-[cubic-bezier(0.175,0.885,0.32,1.275)]';
 
 const GEAR = 'M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z';
 
+/**
+ * 本工程消耗的积分（B2「悬停卡」）：顶栏只有一个胶囊，悬停/点击展开按步骤拆分。
+ * 点「明细」按钮打开费用面板；触屏没有 hover，所以点击也能开关。
+ */
+const ProjectCostHover: React.FC<{ billing: ProjectBilling; onOpenBilling: () => void }> = ({ billing, onOpenBilling }) => {
+  // 悬停即开；点击是「钉住」（触屏没有 hover 时用它，桌面点一下也不该关掉）。
+  const [pinned, setPinned] = React.useState(false);
+  const [hovered, setHovered] = React.useState(false);
+  const open = hovered || pinned;
+  // 顶栏是 overflow-hidden（裁圆角），absolute 浮层会被裁掉——用 fixed 挂在按钮下方。
+  const btnRef = React.useRef<HTMLButtonElement>(null);
+  const [pos, setPos] = React.useState<{ top: number; right: number } | null>(null);
+  React.useEffect(() => {
+    if (!open) { setPos(null); return; }
+    const place = () => {
+      const r = btnRef.current?.getBoundingClientRect();
+      if (r) setPos({ top: r.bottom + 6, right: Math.max(8, window.innerWidth - r.right) });
+    };
+    place();
+    window.addEventListener('resize', place);
+    return () => window.removeEventListener('resize', place);
+  }, [open]);
+  const steps = billing.by_step ?? [];
+  const fmt = (v: number) => v.toFixed(2).replace(/\.?0+$/, '');
+  return (
+    <div
+      className="relative"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
+      <button
+        ref={btnRef}
+        type="button"
+        onClick={() => setPinned((v) => !v)}
+        title="本工程累计消耗的积分（1 积分 ≈ 0.01 元）"
+        className="flex h-7 items-center gap-1 whitespace-nowrap rounded-full border border-[#e5e5e0] bg-white/90 px-2 text-[11px] font-bold text-gray-600 shadow-sm transition-colors hover:border-claude-accent/40 hover:text-claude-accent"
+      >
+        {t('本工程')} {fmt(billing.total_points)} {t('积分')}
+      </button>
+      {open && pos && (
+        <div
+          style={{ position: 'fixed', top: pos.top, right: pos.right }}
+          className="z-[80] w-[190px] rounded-xl border border-claude-border bg-white p-2.5 shadow-lg"
+        >
+          <div className="mb-1 text-[9px] font-bold uppercase tracking-[0.12em] text-gray-400">{t('本工程消耗')}</div>
+          {steps.length === 0 && <div className="text-[10px] text-gray-400">{t('还没有消耗')}</div>}
+          {steps.map((s) => (
+            <div key={s.step} className="flex items-center justify-between text-[10px] text-gray-500">
+              <span>{t(STEP_CN[s.step] ?? s.step)}</span>
+              <span className="tabular-nums font-bold text-claude-text">{fmt(s.points)}</span>
+            </div>
+          ))}
+          {billing.balance_points !== undefined && (
+            <div className="mt-1.5 border-t border-claude-border pt-1 text-[9px] text-gray-400">
+              {t('余额')} {fmt(billing.balance_points)}
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={onOpenBilling}
+            className="mt-1.5 w-full rounded-lg bg-claude-paper py-1 text-[10px] font-bold text-claude-charcoal transition-colors hover:text-claude-accent"
+          >
+            {t('明细')}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+};
+
+const STEP_CN: Record<string, string> = {
+  tts: '配音合成', asr: '语音识别', omni: '审听 / 聊天', llm: '翻译', clone: '声音克隆',
+};
+
 const TopBar: React.FC<Props> = ({
   filename, targetLanguage, onLanguageChange, needs, dubbing, jobs, undoSummary, onUndo, onFill,
-  onCancelJobs, onOpenSettings, onExport, onHome, exporting, projectPoints, onOpenBilling,
+  onCancelJobs, onOpenSettings, onExport, onHome, exporting, projectBilling, onOpenBilling,
 }) => {
   // 悬停展开是桌面习惯；点「Show Tools」可以钉住展开，触屏也能拿到语言/导出。
   const [hovered, setHovered] = useState(false);
@@ -251,16 +326,7 @@ const TopBar: React.FC<Props> = ({
             </>
           )}
 
-          {projectPoints !== undefined && (
-            <button
-              type="button"
-              onClick={onOpenBilling}
-              title="这个工程累计消耗的积分（1 积分 ≈ 0.01 元）"
-              className="flex h-7 items-center rounded-full border border-[#e5e5e0] bg-white/90 px-2 text-[11px] font-bold text-gray-600 shadow-sm transition-colors hover:border-claude-accent/40 hover:text-claude-accent whitespace-nowrap"
-            >
-              {projectPoints.toFixed(2)} 积分
-            </button>
-          )}
+          {projectBilling && <ProjectCostHover billing={projectBilling} onOpenBilling={onOpenBilling} />}
           {!pinned && (
             <button
               onClick={() => setPinned(true)}

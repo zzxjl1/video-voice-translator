@@ -527,5 +527,15 @@
   "积分余额": "Credit balance",
   "消耗以积分计（1 积分 ≈ 0.01 元，已含服务费）。本地配音、人声分离与导出不消耗积分。": "Usage is billed in credits (1 credit ≈ ¥0.01, service fee included). In-browser dubbing, vocal separation and export use no credits.",
   "\\n约 {0} 积分（已含服务费）": "\\nAbout {0} credits (service fee included).",
-  "\\n约 {0} 积分（已含服务费），从积分余额扣。": "\\nAbout {0} credits (fee included), deducted from your credit balance."
+  "\\n约 {0} 积分（已含服务费），从积分余额扣。": "\\nAbout {0} credits (fee included), deducted from your credit balance.",
+  "项目": "Item",
+  "说明": "Detail",
+  "本工程": "This project",
+  "本工程累计": "Project total",
+  "本工程消耗": "Project usage",
+  "还没有消耗": "No usage yet",
+  "还没有消耗记录。本地配音、人声分离与导出不消耗积分。": "No usage yet. In-browser dubbing, vocal separation and export use no credits.",
+  "可用": "available",
+  "明细": "Details",
+  "充值": "Top up"
 }

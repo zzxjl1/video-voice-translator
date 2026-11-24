@@ -412,7 +412,7 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
         onExport={() => setShowExport(true)}
         onHome={onHome}
         exporting={exporting}
-        projectPoints={cost?.total_points}
+        projectBilling={cost}
         onOpenBilling={() => setShowBilling(true)}
       />
       <BillingPanel open={showBilling} onClose={() => setShowBilling(false)} projectId={id} />

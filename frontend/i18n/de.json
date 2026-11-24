@@ -527,5 +527,15 @@
   "积分余额": "Guthabenstand",
   "消耗以积分计（1 积分 ≈ 0.01 元，已含服务费）。本地配音、人声分离与导出不消耗积分。": "Die Nutzung wird in Guthaben abgerechnet (1 Guthaben ≈ 0,01 CNY, inkl. Servicegebühr). Lokale Synchronisation, Stimmseparierung und Export verbrauchen kein Guthaben.",
   "\\n约 {0} 积分（已含服务费）": "\\nEtwa {0} Guthaben (inkl. Servicegebühr).",
-  "\\n约 {0} 积分（已含服务费），从积分余额扣。": "\\nEtwa {0} Guthaben (inkl. Gebühr), vom Guthaben abgebucht."
+  "\\n约 {0} 积分（已含服务费），从积分余额扣。": "\\nEtwa {0} Guthaben (inkl. Gebühr), vom Guthaben abgebucht.",
+  "项目": "Posten",
+  "说明": "Details",
+  "本工程": "Dieses Projekt",
+  "本工程累计": "Projektsumme",
+  "本工程消耗": "Verbrauch dieses Projekts",
+  "还没有消耗": "Noch kein Verbrauch",
+  "还没有消耗记录。本地配音、人声分离与导出不消耗积分。": "Noch keine Nutzung. Lokale Synchronisation, Stimmseparierung und Export verbrauchen kein Guthaben.",
+  "可用": "verfügbar",
+  "明细": "Details",
+  "充值": "Aufladen"
 }

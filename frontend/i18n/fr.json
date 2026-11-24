@@ -527,5 +527,15 @@
   "积分余额": "Solde de crédits",
   "消耗以积分计（1 积分 ≈ 0.01 元，已含服务费）。本地配音、人声分离与导出不消耗积分。": "La consommation est facturée en crédits (1 crédit ≈ 0,01 CNY, frais inclus). Le doublage local, la séparation vocale et l’export ne consomment pas de crédits.",
   "\\n约 {0} 积分（已含服务费）": "\\nEnviron {0} crédits (frais inclus).",
-  "\\n约 {0} 积分（已含服务费），从积分余额扣。": "\\nEnviron {0} crédits (frais inclus), déduits du solde."
+  "\\n约 {0} 积分（已含服务费），从积分余额扣。": "\\nEnviron {0} crédits (frais inclus), déduits du solde.",
+  "项目": "Élément",
+  "说明": "Détail",
+  "本工程": "Ce projet",
+  "本工程累计": "Total du projet",
+  "本工程消耗": "Consommation du projet",
+  "还没有消耗": "Aucune consommation",
+  "还没有消耗记录。本地配音、人声分离与导出不消耗积分。": "Aucune consommation pour l’instant. Le doublage local, la séparation vocale et l’export ne consomment pas de crédits.",
+  "可用": "disponibles",
+  "明细": "Détail",
+  "充值": "Recharger"
 }

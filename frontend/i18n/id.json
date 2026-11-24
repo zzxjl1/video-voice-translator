@@ -527,5 +527,15 @@
   "积分余额": "Saldo kredit",
   "消耗以积分计（1 积分 ≈ 0.01 元，已含服务费）。本地配音、人声分离与导出不消耗积分。": "Pemakaian dihitung dalam kredit (1 kredit ≈ ¥0,01, termasuk biaya layanan). Sulih suara lokal, pemisahan vokal, dan ekspor tidak memakai kredit.",
   "\\n约 {0} 积分（已含服务费）": "\\nSekitar {0} kredit (termasuk biaya layanan).",
-  "\\n约 {0} 积分（已含服务费），从积分余额扣。": "\\nSekitar {0} kredit (termasuk biaya), dipotong dari saldo kredit."
+  "\\n约 {0} 积分（已含服务费），从积分余额扣。": "\\nSekitar {0} kredit (termasuk biaya), dipotong dari saldo kredit.",
+  "项目": "Item",
+  "说明": "Detail",
+  "本工程": "Proyek ini",
+  "本工程累计": "Total proyek",
+  "本工程消耗": "Pemakaian proyek",
+  "还没有消耗": "Belum ada pemakaian",
+  "还没有消耗记录。本地配音、人声分离与导出不消耗积分。": "Belum ada pemakaian. Sulih suara lokal, pemisahan vokal, dan ekspor tidak memakai kredit.",
+  "可用": "tersedia",
+  "明细": "Rincian",
+  "充值": "Isi ulang"
 }
