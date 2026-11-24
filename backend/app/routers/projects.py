@@ -221,7 +221,7 @@ async def setup_and_start(video_id: str, body: SetupBody):
     if body.dubbing_mode not in ("remote", "browser", "off"):
         raise HTTPException(status_code=400, detail="dubbing_mode 必须是 remote / browser / off")
     if body.dubbing_mode == "browser" and not config.browser_voice_for_language(body.target_language):
-        raise HTTPException(status_code=400, detail=f"{body.target_language} 暂无本地 Piper 音色")
+        raise HTTPException(status_code=400, detail=f"{body.target_language} 暂无本地配音音色")
     if body.dubbing_mode == "browser" and body.browser_voice \
             and not config.browser_voice_fits_language(body.browser_voice, body.target_language):
         raise HTTPException(status_code=400, detail=f"音色 {body.browser_voice!r} 不是 {body.target_language} 的")
@@ -633,7 +633,7 @@ async def upload_browser_tts(
     voice: str = Form(...),
 ):
     """
-    Receive one browser-Piper WAV and write it to the normal tts/<seg>.mp3 path.
+    Receive one browser-dubbed WAV and write it to the normal tts/<seg>.mp3 path.
 
     客户端要带上**合成时用的**译文和音色。浏览器合成一句要几秒到几十秒，整批要几分钟，期间用户
     可能改了译文或音色；服务端按"现在"的状态算指纹的话，按旧文本合成的音频会被标成新鲜，
@@ -649,7 +649,7 @@ async def upload_browser_tts(
         raise HTTPException(status_code=400, detail="segment is not dubbable")
     current_voice = status.resolve_voice(state, seg)
     if not current_voice:
-        raise HTTPException(status_code=409, detail="this language has no local Piper voice")
+        raise HTTPException(status_code=409, detail="this language has no local dubbing voice")
     if (seg.translated_text or "").strip() != (text or "").strip() or current_voice != voice:
         raise HTTPException(status_code=409, detail="line changed while it was being synthesized")
 
@@ -685,7 +685,7 @@ async def upload_browser_tts(
         if not duration:
             raise HTTPException(status_code=422, detail="audio duration could not be read")
 
-        # 时间槽适配。远端 TTS 是"估语速 → 合成 → 量时长 → 一次纠偏"；本地 Piper 没有语速参数，
+        # 时间槽适配。远端 TTS 是"估语速 → 合成 → 量时长 → 一次纠偏"；本地 Kokoro 没有语速参数，
         # 合成出来是自然语速。比时间槽长的话，混音器只允许加速到 MIX_RATE_MAX，超出的部分会被
         # 直接截断（句尾被吞）。所以在这里先用 atempo（保持音高）把它压进"混音器能接受"的范围：
         # 压到槽长，但不超过混音器的上限；还超的，混音器照旧裁剪，这是自然语速的物理极限。

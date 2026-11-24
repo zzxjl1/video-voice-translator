@@ -10,7 +10,7 @@
  */
 import * as api from '../net/client';
 import type { Line, ProjectView } from '../net/types';
-import { cleanTtsText, defaultVoiceForLanguage, synthesizeBrowserSpeech, voicesForLanguage } from './browserTts';
+import { cleanTtsText, defaultVoiceForLanguage, ensureBrowserEngine, synthesizeBrowserSpeech, voicesForLanguage } from './browserTts';
 import { log, shortId } from '../utils/log';
 
 export interface BrowserDubbingProgress {
@@ -40,6 +40,8 @@ export async function fillBrowserDubbing(
     /** 点了取消：每句开始前检查，正在合成的这一句做完就停。 */
     signal?: AbortSignal;
     onProgress?: (p: BrowserDubbingProgress) => void;
+    /** 模型/引擎首次加载进度（92-163MB 下载），避免第一句看起来像卡死。 */
+    onEngineProgress?: (loaded: number, total: number) => void;
   } = {},
 ): Promise<BrowserDubbingResult> {
   const result: BrowserDubbingResult = { done: 0, failed: [], cancelled: false };
@@ -69,6 +71,11 @@ export async function fillBrowserDubbing(
     && (opts.force || l.ttsStatus !== 'fresh') && (!opts.only || opts.only.has(l.id)));
   log.info('browser-dub', `todo ${todo.length} lines`);
   if (!todo.length) return result;
+
+  // 引擎（模型 + 音色目录）在第一句之前就绪：下载进度以独立日志行呈现，
+  // 而不是让第一句看起来像卡死。
+  await ensureBrowserEngine(opts.onEngineProgress, (d) =>
+    log.info('browser-dub', `engine ready on ${d}`));
 
   const speakerVoice = new Map(fresh.speakers.map((sp) => [sp.id, sp.browserVoice]));
   const fallbackVoice = fresh.settings.browserVoice ?? fallback ?? voices[0].key;

@@ -39,8 +39,8 @@ def set_dub_style(ctx: Ctx, lines: list, instruction: Optional[str] = None, rate
     if state.dubbing_mode == "off":
         raise CommandError("当前是仅字幕模式，没有配音；先把 dubbing_mode 改成 remote")
     if state.dubbing_mode == "browser":
-        # 本地 Piper 没有语气 / 语速 / 克隆音色这些控制，指纹里也不含它们：改了不会生效，也不会过期
-        raise CommandError("浏览器配音（本地 Piper）不支持调语气 / 语速；单句换音色用 set_line_browser_voice")
+        # 本地 Kokoro 没有语气 / 语速 / 克隆音色这些控制，指纹里也不含它们：改了不会生效，也不会过期
+        raise CommandError("浏览器配音不支持调语气 / 语速；单句换音色用 set_line_browser_voice")
     segs = resolve_lines(state, lines)
     _guard(ctx, segs)
     if instruction is None and rate is None and voice is None and clone_candidate is None:

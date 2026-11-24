@@ -17,3 +17,6 @@ frontend/dist/
 # runtime state
 backend/.numba_cache/
 backend/data/
+
+# playwright-cli session artifacts
+.playwright-cli/

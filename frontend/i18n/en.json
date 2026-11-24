@@ -488,7 +488,7 @@
   "重新初始化失败": "Re-initialization failed",
   "当前": "Current",
   "多说话人视频会自动为每位说话人分配不同的音色；音色少于说话人时会循环复用。生成后可在每一行的菜单里改。": "For multi-speaker videos, each speaker is assigned a different voice automatically; if there are fewer voices than speakers they are reused in turn. You can change it per line from its menu after generating.",
-  "只影响远端配音；本地 Piper 不读方言设置。": "Only affects remote dubbing; local Piper ignores the dialect setting.",
+  "只影响远端配音；本地配音不读方言设置。": "Only affects remote dubbing; in-browser dubbing ignores the dialect setting.",
   "没问题": "All good",
   "一个问题": "1 issue",
   "两个问题": "2 issues",

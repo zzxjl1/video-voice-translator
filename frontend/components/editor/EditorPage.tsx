@@ -29,10 +29,9 @@ import SubtitleStylePanel from '../SubtitleStylePanel';
 import VoicePanel from './VoicePanel';
 import ExportModal, { type SubtitleDelivery } from '../ExportModal';
 import Toast from '../ui/Toast';
-import { browserVoiceLabel, voicesForLanguage } from '../../features/browserTts';
+import { browserVoiceLabel, voicesForLanguage, type Voice } from '../../features/browserTts';
 import { fillBrowserDubbing } from '../../features/browserDubbing';
 import { log, shortId } from '../../utils/log';
-import type { Voice } from '@diffusionstudio/vits-web';
 
 interface Props {
   project: ReturnType<typeof useProject>;
@@ -234,6 +233,8 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
         only: onlyIds,
         force,
         onProgress: (p) => setNotice(`本地配音 ${p.index}/${p.total}：第 ${p.line.line} 句`),
+        onEngineProgress: (loaded, total) =>
+          setNotice(`本地配音引擎：${(loaded / 1e6).toFixed(0)}/${(total / 1e6).toFixed(0)}MB`),
       });
       await reload();
       if (r.failed.length) {

@@ -488,7 +488,7 @@
   "重新初始化失败": "Échec de la réinitialisation",
   "当前": "Actuel",
   "多说话人视频会自动为每位说话人分配不同的音色；音色少于说话人时会循环复用。生成后可在每一行的菜单里改。": "Pour les vidéos à plusieurs locuteurs, une voix différente est attribuée automatiquement à chacun ; s'il y a moins de voix que de locuteurs, elles sont réutilisées à tour de rôle. Vous pouvez la changer ligne par ligne depuis son menu après la génération.",
-  "只影响远端配音；本地 Piper 不读方言设置。": "N'affecte que le doublage distant ; Piper local ignore le réglage du dialecte.",
+  "只影响远端配音；本地配音不读方言设置。": "N'affecte que le doublage distant ; le doublage local ignore le réglage du dialecte.",
   "没问题": "Tout va bien",
   "一个问题": "1 problème",
   "两个问题": "2 problèmes",

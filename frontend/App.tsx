@@ -311,6 +311,11 @@ const App: React.FC = () => {
         put(`本地配音 ${p.index}/${p.total}：第 ${p.line.line} 句`);
         log.info('browser-tts', 'progress', { index: p.index, total: p.total, line: p.line.line, voice: p.voice });
       },
+      onEngineProgress: (loaded, total) => {
+        const mb = (n: number) => (n / 1e6).toFixed(0);
+        put(`本地配音引擎：${mb(loaded)}/${mb(total)}MB`);
+        log.info('browser-tts', 'engine progress', { loaded, total });
+      },
     })
       .then((r) => {
         if (r.cancelled) {

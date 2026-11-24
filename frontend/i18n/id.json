@@ -488,7 +488,7 @@
   "重新初始化失败": "Inisialisasi ulang gagal",
   "当前": "Saat ini",
   "多说话人视频会自动为每位说话人分配不同的音色；音色少于说话人时会循环复用。生成后可在每一行的菜单里改。": "Pada video dengan banyak pembicara, tiap pembicara otomatis diberi suara berbeda; jika suara lebih sedikit daripada pembicara, suara dipakai bergiliran. Setelah dibuat, Anda bisa mengubahnya per baris lewat menunya.",
-  "只影响远端配音；本地 Piper 不读方言设置。": "Hanya memengaruhi sulih suara jarak jauh; Piper lokal mengabaikan pengaturan dialek.",
+  "只影响远端配音；本地配音不读方言设置。": "Hanya memengaruhi sulih suara jarak jauh; sulih suara lokal mengabaikan pengaturan dialek.",
   "没问题": "Tidak ada masalah",
   "一个问题": "1 masalah",
   "两个问题": "2 masalah",

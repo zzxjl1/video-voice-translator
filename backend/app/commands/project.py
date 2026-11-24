@@ -34,8 +34,8 @@ _SETTINGS = {
         "mm_enhance": {"type": "boolean", "description": "omni 审听增强（纠错 + 语气标签）；只影响之后的审听"},
         "enable_voice_clone": {"type": "boolean"},
         "clone_smart_pick": {"type": "boolean"},
-        "dubbing_mode": {"type": "string", "enum": ["remote", "browser", "off"], "description": "remote=远端配音；browser=浏览器 Piper；off=仅字幕"},
-        "browser_voice": {"type": "string", "description": "浏览器 Piper voice id（仅 browser 模式）"},
+        "dubbing_mode": {"type": "string", "enum": ["remote", "browser", "off"], "description": "remote=远端配音；browser=浏览器本地 Kokoro；off=仅字幕"},
+        "browser_voice": {"type": "string", "description": "浏览器 Kokoro voice id（仅 browser 模式）"},
     }},
     confirm=CONFIRM_DESTROY,
 )
@@ -58,7 +58,7 @@ def set_settings(ctx: Ctx, **patch):
     target = changed.get("target_language", state.target_language)
     final_mode = changed.get("dubbing_mode", state.dubbing_mode)
     if final_mode == "browser" and not config.browser_voice_for_language(target):
-        raise CommandError(f"{target} 暂无本地 Piper 音色，请改用 Remote 或 Off")
+        raise CommandError(f"{target} 暂无本地配音音色（Kokoro 不支持），请改用 Remote 或 Off")
     if changed.get("browser_voice") and not config.browser_voice_fits_language(changed["browser_voice"], target):
         raise CommandError(f"音色 {changed['browser_voice']!r} 不是 {target} 的")
     before = status.needs(state)

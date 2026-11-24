@@ -355,37 +355,43 @@ ASR_MAX_WAIT = _env_int("ASR_MAX_WAIT", 600)
 # instead of silently shipping broken audio.
 TTS_MODEL = _env("TTS_MODEL", "qwen-audio-3.1-tts-flash")
 
-# Browser Piper defaults. The frontend discovers the full per-language list
-# from the browser TTS package; these are only the fallback voice IDs.
+# Browser Kokoro defaults. The frontend owns the full voice catalog
+# (frontend/features/kokoro/catalog.ts); these are only the fallback voice ids.
+# Voice ids are Kokoro's own naming ("zf_xiaobei"); grades from the official
+# VOICES.md sheet — the Chinese voices are all D, English af_heart is A.
 BROWSER_TTS_DEFAULT_VOICES = {
-    "English": "en_US-hfc_female-medium",
-    "Chinese": "zh_CN-huayan-medium",
-    "French": "fr_FR-siwis-medium",
-    "German": "de_DE-thorsten-medium",
-    "Portuguese": "pt_BR-faber-medium",
-    "Italian": "it_IT-riccardo-x_low",
-    "Vietnamese": "vi_VN-vais1000-medium",
+    "English": "af_heart",
+    "Chinese": "zf_xiaobei",
+    "French": "ff_siwis",
+    "Italian": "if_sara",
+    "Portuguese": "pf_dora",
 }
-# Japanese/Korean/Indonesian have no standard Piper voice in the current
-# browser catalog; the UI disables In-browser for them.
+# Kokoro speaks 8 languages; the app's target languages that map onto them are
+# the five above. German/Vietnamese (and Korean/Indonesian) have NO Kokoro
+# voice — browser dubbing stays unavailable for them, same as ja/ko/id under
+# Piper. Japanese voices exist in the model but the browser has no Japanese
+# G2P (espeak's ja output is unusable; see docs/dubbing-modes.md).
 
 
 def browser_voice_for_language(language: str) -> Optional[str]:
     return BROWSER_TTS_DEFAULT_VOICES.get(language)
 
 
-# Piper voice id 以语言区域开头（zh_CN-huayan-medium、en_US-…）。后端没有 Piper 的完整目录
-# （它在浏览器里），但能按前缀拒掉明显错的：别的语言的音色写进来，前端合成时必然失败。
+# Kokoro 音色 id 以语言前缀开头（zf_/zm_ 中文、af_/am_/bf_/bm_ 英语……首字母
+# 是语言、次字母是性别）。后端没有完整目录（它在浏览器 worker 里），但能按前缀
+# 拒掉明显错的：别的语言的音色写进来，前端合成时必然失败。
 BROWSER_VOICE_PREFIX = {
-    "Chinese": "zh_CN", "English": "en_", "French": "fr_FR", "German": "de_DE",
-    "Italian": "it_IT", "Portuguese": "pt_", "Vietnamese": "vi_VN",
-    "Japanese": "ja_", "Korean": "ko_", "Indonesian": "id_",
+    "Chinese": ("zf_", "zm_"),
+    "English": ("af_", "am_", "bf_", "bm_"),
+    "French": ("ff_",),
+    "Italian": ("if_", "im_"),
+    "Portuguese": ("pf_", "pm_"),
 }
 
 
 def browser_voice_fits_language(voice: str, language: str) -> bool:
-    prefix = BROWSER_VOICE_PREFIX.get(language)
-    return bool(voice and prefix and voice.startswith(prefix))
+    prefixes = BROWSER_VOICE_PREFIX.get(language)
+    return bool(voice and prefixes and voice.startswith(prefixes))
 
 TTS_TIMEOUT = _env_int("TTS_TIMEOUT", 60)
 

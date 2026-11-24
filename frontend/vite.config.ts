@@ -73,6 +73,15 @@ export default defineConfig({
   },
   plugins: [react()],
   /**
+   * ES worker bundles. The default IIFE format cannot code-split, and the
+   * Kokoro worker (features/kokoro/kokoroWorker.ts) pulls in transformers.js
+   * and espeak-ng, both of which dynamic-import their own chunks. Instantiated
+   * with { type: 'module' } in features/kokoro/client.ts.
+   */
+  worker: {
+    format: 'es',
+  },
+  /**
    * Do NOT pre-bundle onnxruntime-web. DO NOT remove this.
    *
    * ORT resolves its runtime from `new URL('ort-wasm-simd-threaded.jsep.wasm',

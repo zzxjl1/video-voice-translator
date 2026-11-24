@@ -117,11 +117,11 @@ check("③ 被拒的音频不落盘、不写指纹", not os.path.exists(tts_audi
 r = upload("c", tone(1.0), "See you later", voice)
 check("③ 按新译文重传 → 收下", r.status_code == 200, r.text[:80])
 
-check("③ 合成时用的音色和现在不一致 → 409", upload("a", tone(1.0), "Hello there", "zh_CN-huayan-medium").status_code == 409)
+check("③ 合成时用的音色和现在不一致 → 409", upload("a", tone(1.0), "Hello there", "zf_xiaobei").status_code == 409)
 check("③ 缺少 text / voice 字段 → 422", c.post(f"/api/projects/{VID}/browser-tts/a", files={"audio": ("x.wav", tone(1.0), "audio/wav")}).status_code == 422)
 check("③ 空音频 → 413", upload("a", b"", "Hello there", voice).status_code == 413)
 
-# 时间槽适配：Piper 自然语速比槽长时，先压进混音器能接受的范围，不然句尾会被截掉
+# 时间槽适配：本地自然语速比槽长时，先压进混音器能接受的范围，不然句尾会被截掉
 fresh("browser"); c = TestClient(app); login(c, "a@example.com"); own(VID)
 r = upload("b", tone(1.0), "[laughing]", voice)      # b 是 1 秒槽、这里 1 秒：不该变速
 check("③ 刚好在槽内的不变速", r.status_code == 200 and abs(r.json()["duration"] - 1.0) < 0.1, r.text[:80])
@@ -149,7 +149,7 @@ check("③ 不是浏览器配音模式 → 409", upload("a", tone(1.0), "Hello t
 fresh("browser", "English")
 r = run("set_settings", {"target_language": "Japanese"})
 check("④ 浏览器配音下只改目标语言到没有本地音色的语言 → 拒绝（否则前端合成必然失败、把人锁在初始化页）",
-      not r["ok"] and "Piper" in r["error"], r)
+      not r["ok"] and "音色" in r["error"], r)
 check("④ 被拒后工程原样（语言没变、音色没被清）", store.get_state(VID).target_language == "English" and store.get_state(VID).speaker("0").browser_voice)
 r = run("set_settings", {"target_language": "French"})
 check("④ 切到有本地音色的语言 → 通过", r["ok"] and store.get_state(VID).browser_voice == config.browser_voice_for_language("French"), r)
@@ -158,16 +158,16 @@ check("④ 同时切到 remote + 日语 → 通过（remote 不需要本地音�
 r = run("set_settings", {"dubbing_mode": "browser"})
 check("④ 日语下再切 browser → 拒绝", not r["ok"])
 fresh("browser", "English")
-r = run("set_settings", {"browser_voice": "zh_CN-huayan-medium"})
+r = run("set_settings", {"browser_voice": "zf_xiaobei"})
 check("④ 别的语言的音色写进设置 → 拒绝", not r["ok"] and "不是" in r["error"], r)
-r = run("assign_browser_voices", {"voices": ["zh_CN-huayan-medium"]})
+r = run("assign_browser_voices", {"voices": ["zf_xiaobei"]})
 check("④ assign_browser_voices 带别的语言的音色 → 拒绝", not r["ok"], r)
-r = run("set_line_browser_voice", {"lines": [1], "voice": "zh_CN-huayan-medium"})
+r = run("set_line_browser_voice", {"lines": [1], "voice": "zf_xiaobei"})
 check("④ set_line_browser_voice 带别的语言的音色 → 拒绝", not r["ok"], r)
-r = run("set_line_browser_voice", {"lines": [1], "voice": "en_US-amy-medium"})
+r = run("set_line_browser_voice", {"lines": [1], "voice": "af_heart"})
 check("④ 同语言的音色 → 通过", r["ok"], r)
 c = TestClient(app); login(c, "a@example.com"); own(VID)
-r = c.post(f"/api/projects/{VID}/setup", json={"target_language": "English", "dubbing_mode": "browser", "browser_voice": "zh_CN-huayan-medium"})
+r = c.post(f"/api/projects/{VID}/setup", json={"target_language": "English", "dubbing_mode": "browser", "browser_voice": "zf_xiaobei"})
 check("④ setup 带别的语言的音色 → 400", r.status_code == 400, r.status_code)
 
 # ====================================================================== ⑤ 命令的模式守卫
@@ -178,7 +178,7 @@ for name, args in (("clone_voice", {"speaker": "0"}), ("generate_voice_candidate
     r = run(name, args)
     check(f"⑤ 浏览器配音下 {name} 被拒（否则会调 DashScope 花钱）", not r["ok"] and "remote" in r["error"], r)
 r = run("set_dub_style", {"lines": [1], "rate": 1.2})
-check("⑤ 浏览器配音下 set_dub_style 被拒并说清（语速 / 语气对本地 Piper 不生效，指引也不再自相矛盾）", not r["ok"] and "Piper" in r["error"], r)
+check("⑤ 浏览器配音下 set_dub_style 被拒并说清（语速 / 语气对本地配音不生效，指引也不再自相矛盾）", not r["ok"] and "音色" in r["error"], r)
 fresh("off")
 check("⑤ 仅字幕下 set_dub_style 被拒", not run("set_dub_style", {"lines": [1], "rate": 1.2})["ok"])
 

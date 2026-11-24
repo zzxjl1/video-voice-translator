@@ -10,8 +10,7 @@
 import React, { useEffect, useState } from 'react';
 import type { DubbingMode, Settings } from '../../net/types';
 import { CHINESE_ACCENTS, accentLabel } from '../../utils/languages';
-import type { Voice } from '@diffusionstudio/vits-web';
-import { browserVoiceLabel, voicesForLanguage } from '../../features/browserTts';
+import { browserVoiceLabel, voicesForLanguage, type Voice } from '../../features/browserTts';
 
 interface Props {
   open: boolean;
@@ -147,7 +146,7 @@ const SettingsPanel: React.FC<Props> = ({ open, onClose, settings, onChange, onC
                 {CHINESE_ACCENTS.map((a) => <option key={a.value} value={a.value}>{accentLabel(a.value)}</option>)}
               </select>
               <p className="text-[11px] text-gray-400 mt-1.5">
-                {settings.dubbingMode === 'remote' ? '只影响之后合成的配音；已有配音会标为“需更新”。' : '只影响远端配音；本地 Piper 不读方言设置。'}
+                {settings.dubbingMode === 'remote' ? '只影响之后合成的配音；已有配音会标为“需更新”。' : '只影响远端配音；本地配音不读方言设置。'}
               </p>
             </div>
           )}

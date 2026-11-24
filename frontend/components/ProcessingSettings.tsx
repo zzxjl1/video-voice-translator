@@ -1,11 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import SeparationModeSelector from './SeparationModeSelector';
 import type { DubbingMode, SeparationMode, SeparationBackends } from '../net/types';
-import type { Voice } from '@diffusionstudio/vits-web';
 import {
   browserVoiceLabel,
   defaultVoiceForLanguage,
   voicesForLanguage,
+  type Voice,
 } from '../features/browserTts';
 
 /*
@@ -170,7 +170,7 @@ const ProcessingSettings: React.FC<ProcessingSettingsProps> = ({
     return (
         <div className="w-full space-y-4 text-left">
             {/* ───────────────────────── 配音 ─────────────────────────
-                配音方式三选一：远端 / 浏览器 Piper / 关闭。
+                配音方式三选一：远端 / 浏览器本地（Kokoro）/ 关闭。
                 Off = 仅字幕：原声原样保留，不分离、不克隆、不合成。 */}
             <section>
                 <header className="flex items-center justify-between px-3 pb-2">

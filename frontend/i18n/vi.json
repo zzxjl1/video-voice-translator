@@ -488,7 +488,7 @@
   "重新初始化失败": "Khởi tạo lại thất bại",
   "当前": "Hiện tại",
   "多说话人视频会自动为每位说话人分配不同的音色；音色少于说话人时会循环复用。生成后可在每一行的菜单里改。": "Với video nhiều người nói, mỗi người được tự động gán một giọng khác nhau; nếu số giọng ít hơn số người nói thì sẽ dùng lại lần lượt. Sau khi tạo, bạn có thể đổi theo từng dòng trong menu.",
-  "只影响远端配音；本地 Piper 不读方言设置。": "Chỉ ảnh hưởng đến lồng tiếng từ xa; Piper cục bộ bỏ qua cài đặt phương ngữ.",
+  "只影响远端配音；本地配音不读方言设置。": "Chỉ ảnh hưởng đến lồng tiếng từ xa; lồng tiếng cục bộ bỏ qua cài đặt phương ngữ.",
   "没问题": "Không có vấn đề",
   "一个问题": "1 vấn đề",
   "两个问题": "2 vấn đề",

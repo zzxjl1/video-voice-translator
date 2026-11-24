@@ -22,7 +22,7 @@ from app.services import voice_presets as vp
 
 @command(
     "assign_browser_voices",
-    "为浏览器 Piper 配音的每位说话人分配不同音色（只填空着的；已有选择不覆盖）。",
+    "为浏览器配音的每位说话人分配不同音色（只填空着的；已有选择不覆盖）。",
     {"type": "object", "properties": {
         "voices": {"type": "array", "items": {"type": "string"}, "minItems": 1},
     }, "required": ["voices"]},
@@ -30,9 +30,9 @@ from app.services import voice_presets as vp
 def assign_browser_voices(ctx: Ctx, voices: list[str]):
     state = ctx.state
     if state.dubbing_mode != "browser":
-        raise CommandError("只有浏览器配音模式才能分配 Piper 音色")
+        raise CommandError("只有浏览器配音模式才能分配音色")
     if not voices:
-        raise CommandError("至少要有一个 Piper voice")
+        raise CommandError("至少要有一个本地音色")
     bad = [v for v in voices if not config.browser_voice_fits_language(v, state.target_language)]
     if bad:
         raise CommandError(f"这些音色不是 {state.target_language} 的：{bad}")
@@ -40,13 +40,13 @@ def assign_browser_voices(ctx: Ctx, voices: list[str]):
         for i, sp in enumerate(s.speakers):
             if not sp.browser_voice:
                 sp.browser_voice = voices[i % len(voices)]
-    ctx.change(apply, "分配浏览器 Piper 音色")
+    ctx.change(apply, "分配浏览器音色")
     return {"assigned": {sp.id: sp.browser_voice for sp in ctx.state.speakers}}
 
 
 @command(
     "set_line_browser_voice",
-    "单句改用某个 Piper 音色；voice 为空 = 跟随说话人。",
+    "单句改用某个本地音色；voice 为空 = 跟随说话人。",
     {"type": "object", "properties": {
         "lines": {"type": "array", "items": {"type": "integer", "minimum": 1}},
         "voice": {"type": "string"},
@@ -55,7 +55,7 @@ def assign_browser_voices(ctx: Ctx, voices: list[str]):
 def set_line_browser_voice(ctx: Ctx, lines: list[int], voice: str = ""):
     state = ctx.state
     if state.dubbing_mode != "browser":
-        raise CommandError("只有浏览器配音模式才能改 Piper 音色")
+        raise CommandError("只有浏览器配音模式才能改音色")
     segs = resolve_lines(state, lines)
     if not segs:
         raise CommandError("没有找到这些行")
@@ -117,7 +117,7 @@ def _line_numbers(state, ids: list[str]) -> list[int]:
 def _need_remote(state) -> None:
     """克隆音色、候选、试听都走 DashScope（花钱）。浏览器配音 / 仅字幕模式下不该被触发。"""
     if state.dubbing_mode != "remote":
-        raise CommandError("声音克隆和试听只在远端配音（remote）模式下可用；浏览器配音用本地 Piper 音色，仅字幕不配音")
+        raise CommandError("声音克隆和试听只在远端配音（remote）模式下可用；浏览器配音用本地 Kokoro 音色，不克隆")
 
 
 def _audio_url(video_id: str) -> str:
