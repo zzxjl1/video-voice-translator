@@ -28,6 +28,8 @@ config.DATA_DIR = TMP
 config.BILLING_DB_PATH = os.path.join(TMP, "billing.sqlite3")
 config.AUTH_DB_PATH = os.path.join(TMP, "auth.sqlite3")
 config.BILLING_ADMIN_EMAILS = ("admin@example.com",)
+# 前几节测的是"从 0 开始"的账本行为；新用户赠送留到 ⑥ 单独测。
+config.BILLING_SIGNUP_BONUS_POINTS = 0
 
 from app.auth import db as authdb
 from app.billing import pricing, service as billing
@@ -237,10 +239,55 @@ check("⑤ 管理员可以调积分，返回新余额", r.status_code == 200 and
 check("⑤ 调整单位是积分：充 500 积分余额正好 +500",
       after_admin - before_admin == 500 * MICRO, (before_admin, after_admin))
 
-# ------------------------------------------------------------------ ⑥ 其它
-check("⑥ 计费库是独立文件（不和 auth 混）", os.path.exists(config.BILLING_DB_PATH)
+# ------------------------------------------------------------------ ⑥ 新用户赠送积分
+from app.auth import users as auth_users  # noqa: E402
+from app.auth.google import GoogleProfile  # noqa: E402
+
+
+def _signup(email, subject=None):
+    return auth_users.upsert_google(GoogleProfile(
+        subject=subject or f"sub-{email}", email=email, email_verified=True, name="N", picture=None))
+
+
+config.BILLING_SIGNUP_BONUS_POINTS = 500
+nu = _signup("bonus@example.com")
+check("⑥ 新用户首次登录送 500 积分",
+      abs(pts(billing.balance_points_micro(nu["id"])) - 500) < 1e-6,
+      pts(billing.balance_points_micro(nu["id"])))
+
+_same = _signup("bonus@example.com")           # 同一 Google subject 再登录
+check("⑥ 再次登录不再送（总额仍是 500）",
+      abs(pts(billing.balance_points_micro(nu["id"])) - 500) < 1e-6,
+      pts(billing.balance_points_micro(nu["id"])))
+check("⑥ 同一个账号对象", _same["id"] == nu["id"])
+
+other = _signup("bonus2@example.com")
+check("⑥ 另一个新用户各自送一次", abs(pts(billing.balance_points_micro(other["id"])) - 500) < 1e-6)
+
+check("⑥ 重复调用赠送接口是幂等的（发过了就返回 None）",
+      billing.grant_signup_bonus(nu["id"]) is None
+      and abs(pts(billing.balance_points_micro(nu["id"])) - 500) < 1e-6)
+
+# 并发首次登录：不能发两次（固定主键 + INSERT OR IGNORE）
+import concurrent.futures as _cf  # noqa: E402
+race = _signup("race@example.com")
+with _cf.ThreadPoolExecutor(8) as ex:
+    list(ex.map(lambda _: billing.grant_signup_bonus(race["id"]), range(8)))
+check("⑥ 并发重复赠送只成功一次",
+      abs(pts(billing.balance_points_micro(race["id"])) - 500) < 1e-6,
+      pts(billing.balance_points_micro(race["id"])))
+
+# 关掉赠送时不影响已有用户
+config.BILLING_SIGNUP_BONUS_POINTS = 0
+zero = _signup("nobonus@example.com")
+check("⑥ 赠送设为 0 时新用户余额为 0", pts(billing.balance_points_micro(zero["id"])) == 0,
+      pts(billing.balance_points_micro(zero["id"])))
+config.BILLING_SIGNUP_BONUS_POINTS = 500
+
+# ------------------------------------------------------------------ ⑦ 其它
+check("⑦ 计费库是独立文件（不和 auth 混）", os.path.exists(config.BILLING_DB_PATH)
       and config.BILLING_DB_PATH != config.AUTH_DB_PATH)
-check("⑥ 确认卡预估：克隆按 2 积分/个",
+check("⑦ 确认卡预估：克隆按 2 积分/个",
       abs((billing.price_of("clone", pricing.ENROLLMENT_MODEL) or {}).get("points", 0) - 2) < 1e-6)
 
 print()

@@ -95,6 +95,44 @@ def adjust(user_id: str, delta_points_micro: int, *, note: str, actor: str) -> d
         raise
 
 
+def grant_signup_bonus(user_id: str) -> Optional[dict]:
+    """
+    新账号的一次性赠送。幂等：并发/重复调用只发一次。
+
+    实现要点：`adjustment.id` 用固定的 `signup:<user_id>` 作主键，INSERT OR IGNORE
+    撞主键就说明发过了——这样不需要额外查一遍，也不会因为两个标签页同时首次登录
+    而发两次。余额只在真正插入成功时才加。
+    """
+    points = int(config.BILLING_SIGNUP_BONUS_POINTS or 0)
+    if not user_id or points <= 0:
+        return None
+    delta = points * MICRO
+    at = db.now()
+    conn = db.conn()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        _ensure_account(conn, user_id, at)
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO adjustment(id, user_id, delta_points_micro, note, actor, created_at)"
+            " VALUES (?,?,?,?,?,?)",
+            (f"signup:{user_id}", user_id, delta, "新用户赠送", "system", at),
+        )
+        if cur.rowcount == 0:
+            conn.execute("COMMIT")
+            return None                     # 已经赠送过
+        conn.execute(
+            "UPDATE account SET balance_points_micro = balance_points_micro + ?, updated_at = ?"
+            " WHERE user_id = ?",
+            (delta, at, user_id),
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    logger.info("[billing] signup bonus %s points → user %s", points, user_id)
+    return {"user_id": user_id, "points": points, "points_micro": delta, "note": "新用户赠送"}
+
+
 # ---------------------------------------------------------------------------
 # 记账（唯一入口）
 # ---------------------------------------------------------------------------

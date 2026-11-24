@@ -28,6 +28,7 @@ def upsert_google(profile: GoogleProfile) -> dict:
     """Create or refresh the local user for one Google subject."""
     now = db.now()
     with db.db() as conn:
+        new_user = False
         identity = conn.execute(
             "SELECT user_id FROM identities WHERE provider = ? AND issuer = ? AND subject = ?",
             (PROVIDER, ISSUER, profile.subject),
@@ -55,11 +56,22 @@ def upsert_google(profile: GoogleProfile) -> dict:
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (uuid.uuid4().hex, user_id, PROVIDER, ISSUER, profile.subject, profile.email, now),
             )
+            new_user = True
         row = conn.execute(
             "SELECT id, email, email_verified, name, picture FROM users WHERE id = ?",
             (user_id,),
         ).fetchone()
-        return _user_dict(row)
+
+    # 赠送放在 auth 事务之外：账本是另一个库，跨库不能共用事务；用固定主键保证只发一次。
+    # 失败也不能让登录失败——送积分是附加动作。
+    if new_user:
+        try:
+            from app.billing import service as billing
+            billing.grant_signup_bonus(user_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("signup bonus failed for %s", user_id, exc_info=True)
+
+    return _user_dict(row)
 
 
 def owner_of(project_id: str) -> str | None:

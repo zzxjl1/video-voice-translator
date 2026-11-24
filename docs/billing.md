@@ -51,6 +51,16 @@ BILLING_MARKUP_CLONE=2.0
 
 每笔账都存下当时的 `markup` 与金额快照，**改倍率不改历史**。倍率只影响之后的价格。
 
+## 新用户赠送
+
+首次创建账号（不是每次登录）送 `BILLING_SIGNUP_BONUS_POINTS`，默认 **500 积分**
+（≈ ¥5）。设为 0 即关闭。
+
+- 幂等靠 `adjustment.id = "signup:<user_id>"` 固定主键 + `INSERT OR IGNORE`：
+  并发首次登录也只会发一次；不需要额外查重。
+- 只发给**之后新注册**的账号；上线前已存在的账号不补发。
+- 发放失败不影响登录（送积分是附加动作，只记日志）。
+
 ## 余额与拦截
 
 - 预付费积分，管理员/线下充值到账后调用 `POST /api/billing/adjust`（入参 `amount_points`）。
