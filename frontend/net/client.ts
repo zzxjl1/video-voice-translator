@@ -207,3 +207,19 @@ export async function uploadStems(id: string, vocals: Blob, background: Blob, to
     body: form,
   });
 }
+
+/* ---------------------------------------------------------------- 计费
+ * 用户看到的是含服务费的价格；成本不在任何接口里出现。
+ */
+export const billing = {
+  summary: () => request<import('./types').BillingSummary>('/billing/summary'),
+  prices: () => request<import('./types').BillingPrices>('/billing/prices'),
+  project: (id: string) => request<import('./types').ProjectBilling>(`/billing/projects/${id}`),
+  entries: (opts: { limit?: number; project?: string } = {}) => {
+    const q = new URLSearchParams();
+    if (opts.limit) q.set('limit', String(opts.limit));
+    if (opts.project) q.set('project', opts.project);
+    const qs = q.toString();
+    return request<{ entries: import('./types').BillingEntry[]; currency: 'CNY' }>(`/billing/entries${qs ? `?${qs}` : ''}`);
+  },
+};

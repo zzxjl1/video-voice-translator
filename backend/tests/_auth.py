@@ -40,6 +40,11 @@ def login(client, email: str = "tester@example.com"):
         from app.auth.google import GoogleProfile
         profile = GoogleProfile(subject=f"sub-{email}", email=email, email_verified=True, name="Tester", picture=None)
     user = users.upsert_google(profile)
+    # 测试用户预存一点余额：会花钱的命令有余额守卫，账本是空的就全被拦住了。
+    # 想测"余额不足"的用例自己把余额扣到 0（见 test_billing.py）。
+    from app.billing import service as _billing
+    if _billing.balance_micro(user["id"]) == 0:
+        _billing.adjust(user["id"], 100_000_000, note="test seed", actor="test")   # ¥100
     token = sessions.create_session(user_id=user["id"], user_agent="test", ip="127.0.0.1")
     client.cookies.set(config.SESSION_COOKIE_NAME, token)
     _last_user = user

@@ -15,6 +15,7 @@ from app.commands.registry import (
     CONFIRM_COST, CONFIRM_DESTROY, CommandError, Ctx, command, resolve_line, resolve_lines,
 )
 from app.commands.transcript import _guard
+from app.commands.guards import _need_balance
 
 
 @command(
@@ -58,6 +59,7 @@ def set_translation(ctx: Ctx, line: int, text: str):
 )
 async def retranslate(ctx: Ctx, lines: Optional[list] = None, length: Optional[str] = None,
                       instruction: str = ""):
+    _need_balance(ctx, "重新翻译")
     state = ctx.state
     ids = [s.id for s in resolve_lines(state, lines)] if lines else None
     skipped: list[str] = []

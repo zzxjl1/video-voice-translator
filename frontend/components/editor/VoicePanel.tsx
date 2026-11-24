@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { t, tBackend } from '@/i18n';
 import type { CloneVoiceView, CommandResult, Line, SpeakerView, VoicePresetOption } from '../../net/types';
 import type { HeaderProps } from '../../hooks/useWindows';
+import { billing as billingApi } from '../../net/client';
 
 /**
  * 音色面板：一次只看一个说话人，听几个克隆音色念同一段固定的话，挑一个用。
@@ -35,8 +36,19 @@ const CARD_FLOATING = 'flex-grow flex flex-col h-full bg-[#fbfbf9] overflow-hidd
 const CARD_HEAD = 'px-6 py-5 border-b border-[#e5e5e0] flex items-center justify-between bg-white/60 backdrop-blur-md';
 const CARD_TITLE = 'text-xs font-serif font-bold text-gray-700 flex items-center gap-2 tracking-wide';
 
-/** 每个新建音色的参考价（元）。只出现在确认框里。 */
-const PRICE_PER_VOICE = 0.01;
+/**
+ * 每个新建音色的价格（元，含服务费）。**从接口取**：写死在代码里会和后台调价脱节。
+ * 取不到时用 null，确认框就不显示金额（宁可不说，也不报错价）。
+ */
+let clonePricePromise: Promise<number | null> | null = null;
+function clonePrice(): Promise<number | null> {
+  if (!clonePricePromise) {
+    clonePricePromise = billingApi.prices()
+      .then((p) => p.per_unit.find((x) => x.step === 'clone')?.price_yuan ?? null)
+      .catch((): number | null => { clonePricePromise = null; return null; });
+  }
+  return clonePricePromise;
+}
 
 /** 面板共用一个播放器：点另一个就停掉上一个，不会几个音色叠在一起响。 */
 function useSharedPlayer() {
@@ -209,7 +221,9 @@ const SpeakerVoices: React.FC<VoicesProps> = ({ speaker, lines, player, run, onN
   // 克隆这一种取材方式：花钱，所以点了才问；费用只写在确认框里
   const clone = async (row: Row) => {
     if (!row.preset) return;
-    if (!window.confirm(t("用「{0}」克隆 {1} 的音色？\n约 {2} 元，要几十秒，做好后可以直接试听。", [t(row.name), speaker.name, PRICE_PER_VOICE.toFixed(2)]))) return;
+    const price = await clonePrice();
+    const money = price == null ? '' : t("\n约 {0} 元（含服务费）", [price.toFixed(2)]);
+    if (!window.confirm(t("用「{0}」克隆 {1} 的音色？要几十秒，做好后可以直接试听。", [t(row.name), speaker.name]) + money)) return;
     await act(`gen-${row.key}`, () => run('generate_voice_candidates', { speaker: speaker.id, presets: [row.preset] }), '克隆失败');
   };
 
@@ -217,7 +231,9 @@ const SpeakerVoices: React.FC<VoicesProps> = ({ speaker, lines, player, run, onN
   // 开了智能选材就先让 AI 挑。做完直接成为这个人当前的音色。
   const hasMaterial = presetOptions.some((o) => o.id !== 'smart' && o.available);
   const cloneDefault = async () => {
-    if (!window.confirm(t("克隆 {0} 的音色？\n约 {1} 元，要几十秒。", [speaker.name, PRICE_PER_VOICE.toFixed(2)]))) return;
+    const price = await clonePrice();
+    const money = price == null ? '' : t("\n约 {0} 元（含服务费），从余额扣。", [price.toFixed(2)]);
+    if (!window.confirm(t("克隆 {0} 的音色？要几十秒。", [speaker.name]) + money)) return;
     const r = await act('gen-default', () => run('clone_voice', { speaker: speaker.id }), '克隆失败');
     if (!r.ok) return;
     const todo = translated.filter((l) => !l.muted).map((l) => l.line);

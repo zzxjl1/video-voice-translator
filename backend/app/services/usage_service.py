@@ -126,6 +126,7 @@ def record(
     detail: str = "",
     usage: dict | None = None,
     api_cost: dict | None = None,
+    idempotency_key: str | None = None,
 ) -> None:
     """
     Add one billable call to the video's ledger.
@@ -233,6 +234,18 @@ def record(
         else "cost unknown [no_price]"
     )
     logger.info(f"[usage] {video_id} {step}({model}): {cost_str}, video total ¥{total_cost:.6f}")
+
+    # 用户账本（成本 × 倍率，从余额扣）。和上面这份"成本台账"是两件事：
+    # 上面这份给运营看，这份才是用户看到的钱。写失败同样不能影响已经在跑的活。
+    try:
+        from app.billing import service as billing
+        billing.charge(
+            user_id=billing.user_for_project(video_id),
+            project_id=video_id, step=step, model=model, usage=usage,
+            detail=detail, api_cost=api_cost, idempotency_key=idempotency_key,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"Billing ledger write failed for {video_id} ({step}/{model}): {e}")
 
 
 def summary(video_id: str) -> dict:

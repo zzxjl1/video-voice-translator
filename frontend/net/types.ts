@@ -302,6 +302,9 @@ export interface ChatMessage {
   args?: Record<string, unknown>;
   level?: 'cost' | 'destroy';
   status?: 'pending' | 'approved' | 'rejected';
+  /** 确认卡上的预估金额（元，含服务费）；null/缺省 = 按用量计费或算不准。 */
+  estimateYuan?: number | null;
+  estimateNote?: string;
 }
 
 /** `conv` 是事件所属会话；前端据此过滤掉"切换会话前那一轮"的迟到事件。 */
@@ -411,3 +414,52 @@ export const DEFAULT_SUBTITLE_STYLE: SubtitleStyle = {
 };
 
 export const srtFilename = (videoId: string, track: SubtitleTrack): string => `${track}_${videoId.slice(0, 8)}.srt`;
+
+/** 钱一律是人民币（含服务费）。金额用 micro 元整数传，避免浮点累加漂移。 */
+export interface BillingStep {
+  step: string;
+  calls: number;
+  spent_micro: number;
+  spent_yuan: number;
+}
+
+export interface BillingSummary {
+  balance_micro: number;
+  balance_yuan: number;
+  month_spent_micro: number;
+  month_spent_yuan: number;
+  month_calls: number;
+  by_step: BillingStep[];
+  currency: 'CNY';
+}
+
+export interface ProjectBilling {
+  project_id: string;
+  total_micro: number;
+  total_yuan: number;
+  calls: number;
+  by_step: BillingStep[];
+  /** 账户余额（工程页顺带展示，省一次请求）。 */
+  balance_yuan?: number;
+  currency: 'CNY';
+}
+
+export interface BillingEntry {
+  id: string;
+  project_id: string | null;
+  step: string;
+  model: string;
+  detail: string;
+  input_tokens: number;
+  output_tokens: number;
+  price_micro: number;
+  price_yuan: number;
+  cost_source: 'computed' | 'api' | 'no_price' | 'free';
+  at: number;
+}
+
+export interface BillingPrices {
+  currency: 'CNY';
+  /** 按次计费的价目（目前只有克隆音色）；按用量计费的不给单价。 */
+  per_unit: { step: string; model: string; price_micro: number; price_yuan: number }[];
+}

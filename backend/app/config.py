@@ -961,3 +961,21 @@ OAUTH_BROWSER_COOKIE = _env("OAUTH_BROWSER_COOKIE", "vvt_oauth")
 
 
 API_GENERAL_TIMEOUT = _env_int("API_GENERAL_TIMEOUT", 120)
+
+# ----- 计费（用户侧） -----
+# 成本记在工程级的 usage.json（只给运营看），用户价记在 billing.sqlite3 并从余额扣。
+# 用户价 = 成本 × 倍率；倍率按步骤配，**任何面向用户的接口都不返回成本**。
+BILLING_DB_PATH = _env("BILLING_DB_PATH", os.path.join(DATA_DIR, "billing.sqlite3"))
+BILLING_MARKUP = {
+    "tts": _env_float("BILLING_MARKUP_TTS", 2.0),
+    "asr": _env_float("BILLING_MARKUP_ASR", 2.0),
+    "omni": _env_float("BILLING_MARKUP_OMNI", 2.0),
+    "llm": _env_float("BILLING_MARKUP_LLM", 2.0),
+    "clone": _env_float("BILLING_MARKUP_CLONE", 2.0),
+}
+# 开始一件按用量计费的任务前，余额至少要够这个数（精确预估做不到，只做起跑线）。
+BILLING_MIN_START_MICRO = _env_int("BILLING_MIN_START_MICRO", 1_000_000)   # ¥1
+# 能调用人工充值接口的账号（逗号分隔）。空 = 没人能调。
+BILLING_ADMIN_EMAILS = tuple(
+    e.strip().lower() for e in _env("BILLING_ADMIN_EMAILS", "").split(",") if e.strip()
+)

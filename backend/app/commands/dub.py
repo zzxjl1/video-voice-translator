@@ -19,6 +19,7 @@ from app.commands.registry import (
 )
 from app.bus import bus
 from app.commands.transcript import _guard
+from app.commands.guards import _need_balance
 
 
 @command(
@@ -126,6 +127,8 @@ def _request_browser_dub(ctx: Ctx, state, ids: Optional[list], force: bool) -> d
 )
 async def redub(ctx: Ctx, lines: Optional[list] = None, force: bool = False):
     state = ctx.state
+    if state.dubbing_mode == "remote":
+        _need_balance(ctx, "重新配音")
     if state.dubbing_mode == "off":
         raise CommandError("当前是仅字幕模式，没有配音；先把 dubbing_mode 改成 remote")
     ids = [s.id for s in resolve_lines(state, lines)] if lines else None

@@ -17,11 +17,12 @@ import { useWindows } from '../../hooks/useWindows';
 import { speakerColor } from '../../store/project';
 import type { TimelineSegment } from '../../store/timeline';
 import { DEFAULT_SUBTITLE_STYLE } from '../../net/types';
-import type { Line, SubtitleCapabilities, SubtitleCue, SubtitleStyle } from '../../net/types';
+import type { Line, SubtitleCapabilities, SubtitleCue, SubtitleStyle, ProjectBilling } from '../../net/types';
 import { containRect, overlayContainerStyle, overlayLineStyle, stripSubtitleTags, type Rect } from '../../utils/subtitleStyle';
 import ChatPanel from '../chat/ChatPanel';
 import ScriptPanel, { type ScriptActions } from './ScriptPanel';
 import TopBar from '../shell/TopBar';
+import BillingPanel from '../billing/BillingPanel';
 import { DockSlot, WindowLayer, WindowPortals, type PanelRenderers } from '../windows/WindowSystem';
 import SettingsPanel from './SettingsPanel';
 import Timeline from '../Timeline';
@@ -60,6 +61,14 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
   // 从脚本点某个说话人的"音色"进来时，音色面板滚到这个说话人
   const [voiceFocus, setVoiceFocus] = useState<string | null>(null);
   const [browserVoices, setBrowserVoices] = useState<Voice[]>([]);
+  // 这个工程累计花了多少（用户价）。跟着 project 重新取——配音/翻译跑完金额会变。
+  const [cost, setCost] = useState<ProjectBilling | null>(null);
+  const [showBilling, setShowBilling] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    api.billing.project(id).then((c) => { if (alive) setCost(c); }).catch(() => { /* 没有计费记录是正常的 */ });
+    return () => { alive = false; };
+  }, [id, project?.needs.dub, project?.needs.translate]);
   useEffect(() => {
     if (project!.settings.dubbingMode !== 'browser') { setBrowserVoices([]); return; }
     let alive = true;
@@ -403,7 +412,10 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
         onExport={() => setShowExport(true)}
         onHome={onHome}
         exporting={exporting}
+        projectCostYuan={cost?.total_yuan}
+        onOpenBilling={() => setShowBilling(true)}
       />
+      <BillingPanel open={showBilling} onClose={() => setShowBilling(false)} projectId={id} />
 
       {/* 顶栏是 fixed 的（悬停展开时浮在画面上方），内容要给它让出顶部空间。
           右栏是「停靠位」：切换条只在 hover 顶部横杠时浮在上方居中、不占高度；译文 / 助手常驻，

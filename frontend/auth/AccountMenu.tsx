@@ -1,6 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { t } from '@/i18n';
 import { useAuth } from './AuthProvider';
+import { billing as billingApi } from '../net/client';
+import type { BillingSummary } from '../net/types';
+import BillingPanel from '../components/billing/BillingPanel';
 
 const GoogleMark: React.FC<{ className?: string }> = ({ className = 'h-4 w-4' }) => (
   <svg className={className} viewBox="0 0 48 48" aria-hidden="true">
@@ -14,7 +17,17 @@ const GoogleMark: React.FC<{ className?: string }> = ({ className = 'h-4 w-4' })
 export const AccountMenu: React.FC<{ className?: string }> = ({ className = '' }) => {
   const { user, login, logout } = useAuth();
   const [open, setOpen] = useState(false);
+  const [money, setMoney] = useState<BillingSummary | null>(null);
+  const [showBilling, setShowBilling] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+
+  // 余额只在打开菜单时取一次：账本变化不频繁，没必要轮询。
+  useEffect(() => {
+    if (!open || !user) return;
+    let alive = true;
+    billingApi.summary().then((s) => { if (alive) setMoney(s); }).catch(() => { /* 没登录/接口不可用时不打扰 */ });
+    return () => { alive = false; };
+  }, [open, user]);
 
   useEffect(() => {
     if (!open) return;
@@ -75,6 +88,19 @@ export const AccountMenu: React.FC<{ className?: string }> = ({ className = '' }
           <div data-i18n-skip className="border-b border-[#f0f0eb] px-4 py-3">
             <div className="truncate text-[13px] font-bold text-claude-text">{user.name || user.email || t('账号')}</div>
             {user.email && <div className="mt-0.5 truncate text-[11px] text-gray-400">{user.email}</div>}
+            <div className="mt-2 flex items-baseline gap-3 text-[11px]">
+              <span className="text-gray-400">{t('余额')}</span>
+              <span data-i18n-skip className="font-bold text-claude-text">
+                {money ? `¥${money.balance_yuan.toFixed(2)}` : '—'}
+              </span>
+              <button
+                type="button"
+                onClick={() => { setOpen(false); setShowBilling(true); }}
+                className="ml-auto font-bold text-claude-accent hover:underline"
+              >
+                {t('费用明细')}
+              </button>
+            </div>
           </div>
           <button
             type="button"
@@ -90,6 +116,7 @@ export const AccountMenu: React.FC<{ className?: string }> = ({ className = '' }
           </div>
         </div>
       )}
+      <BillingPanel open={showBilling} onClose={() => setShowBilling(false)} />
     </div>
   );
 };

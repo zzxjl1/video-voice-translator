@@ -381,10 +381,14 @@ def get_recent_changes(ctx: Ctx, limit: int = 15):
     return {"changes": out}
 
 
-@command("get_cost", "这个工程到目前为止的 API 花费。", readonly=True, group="read")
+@command("get_cost", "这个工程到目前为止花了多少钱（人民币，含服务费）。", readonly=True, group="read")
 def get_cost(ctx: Ctx):
-    from app.services import usage_service
-    return usage_service.summary(ctx.video_id) or {"note": "还没有记录"}
+    from app.billing import service as billing
+    data = billing.project_summary(ctx.video_id)
+    if not data["calls"]:
+        return {"note": "这个工程还没有计费记录（本地配音 / 分离 / 导出不收费）"}
+    data.pop("unpriced_calls", None)      # 内部口径，不对外
+    return data
 
 
 def audio_exists(video_id: str) -> bool:

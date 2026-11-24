@@ -14,6 +14,7 @@ import uuid
 from typing import Optional
 
 from app import config, jobs, status, store
+from app.commands.guards import _need_balance
 from app.commands.registry import (
     CONFIRM_COST, CONFIRM_DESTROY, CommandError, Ctx, command, resolve_lines, resolve_speaker,
 )
@@ -140,6 +141,7 @@ def _audio_url(video_id: str) -> str:
     confirm=CONFIRM_COST, group="job",
 )
 async def clone_voice(ctx: Ctx, speaker: str, reference_lines: Optional[list] = None, preset: Optional[str] = None):
+    _need_balance(ctx, "克隆音色")
     from app.services import voice_clone_service as vc
     state = ctx.state
     _need_remote(state)
@@ -228,6 +230,7 @@ async def _synth_previews(ctx: Ctx, sp, voices: list[tuple[str, str]]) -> int:
 )
 async def generate_voice_candidates(ctx: Ctx, speaker: str, presets: Optional[list] = None,
                                     reference_lines: Optional[list] = None):
+    _need_balance(ctx, "生成候选音色")
     from app.services import voice_clone_service as vc
     state = ctx.state
     _need_remote(state)

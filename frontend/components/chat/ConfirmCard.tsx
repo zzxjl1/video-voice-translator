@@ -41,6 +41,15 @@ export const ConfirmCard: React.FC<{ message: ChatMessage; onResolve: (id: strin
             <span className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-md border ${level.tone}`}>{level.tag}</span>
           </div>
           <p className="text-[11px] text-gray-500 mt-1">{message.description?.split('。')[0]}。{level.hint}</p>
+          {(message.estimateYuan != null || message.estimateNote) && (
+            <p className="mt-1 text-[11px] text-gray-600">
+              {message.estimateYuan != null
+                ? <>预估 <span className="font-bold">¥{Number(message.estimateYuan).toFixed(2)}</span></>
+                : <>{message.estimateNote}</>}
+              {message.estimateYuan != null && message.estimateNote ? `（${message.estimateNote}）` : ''}
+              <span className="text-gray-400"> · 从余额扣</span>
+            </p>
+          )}
           {details.length > 0 && (
             <ul className="mt-2 text-[11px] text-gray-600 space-y-0.5">
               {details.map((d) => <li key={d}>· {d}</li>)}

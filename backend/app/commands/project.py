@@ -8,6 +8,7 @@
 from typing import Optional
 
 from app import config, jobs, status, store
+from app.commands.guards import _need_balance
 from app.commands.registry import (
     CONFIRM_COST, CONFIRM_DESTROY, CommandError, Ctx, command, resolve_line,
 )
@@ -120,6 +121,7 @@ async def start_initialize(ctx: Ctx):
     confirm=CONFIRM_COST, group="job",
 )
 async def run_initialize(ctx: Ctx):
+    _need_balance(ctx, "初始化")
     if jobs.find(ctx.video_id, kind="init"):
         raise CommandError("初始化已经在进行了")
     job = await start_initialize(ctx)

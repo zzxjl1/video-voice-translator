@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app import commands  # noqa: F401  - 导入即注册全部命令
 from app import config
 from app.auth import router as auth_router
+from app.billing import router as billing_router
 from app.auth.db import cleanup_expired, init_db
 from app.bus import bus
 from app.routers import meta, models, projects, subtitles
@@ -89,6 +90,7 @@ async def health():
 api.include_router(projects.upload_router)
 api.include_router(projects.router)
 api.include_router(auth_router.router)
+api.include_router(billing_router.router)
 api.include_router(meta.router)
 api.include_router(models.router)
 api.include_router(subtitles.router)
