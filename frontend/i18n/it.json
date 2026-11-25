@@ -537,5 +537,10 @@
   "还没有消耗记录。本地配音、人声分离与导出不消耗积分。": "Nessun consumo per ora. Doppiaggio locale, separazione vocale ed export non consumano crediti.",
   "可用": "disponibili",
   "明细": "Dettagli",
-  "充值": "Ricarica"
+  "充值": "Ricarica",
+  "视频太长：最长 {0} 分钟": "Video troppo lungo: max {0} min",
+  "积分不够：预估需要约 {0} 积分，当前余额 {1}": "Crediti insufficienti: circa {0} necessari, saldo {1}",
+  "视频 {0} 分钟，超过上限 {1} 分钟": "Il video dura {0} min, il limite è {1} min",
+  "约": "ca.",
+  "估算中…": "Stima…"
 }

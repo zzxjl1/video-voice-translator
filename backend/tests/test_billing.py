@@ -284,10 +284,62 @@ check("⑥ 赠送设为 0 时新用户余额为 0", pts(billing.balance_points_m
       pts(billing.balance_points_micro(zero["id"])))
 config.BILLING_SIGNUP_BONUS_POINTS = 500
 
-# ------------------------------------------------------------------ ⑦ 其它
-check("⑦ 计费库是独立文件（不和 auth 混）", os.path.exists(config.BILLING_DB_PATH)
+# ------------------------------------------------------------------ ⑦ 初始化费用估算
+from app.billing import estimate as est  # noqa: E402
+
+e = est.estimate_init_points(34, speakers=3)
+check("⑦ 34 秒视频估算 ≥ 真实账本（40.4 积分）且不过分高估（< 1.5×）",
+      40.4 <= e["points"] <= 40.4 * 1.5, e["points"])
+e_off = est.estimate_init_points(34, dubbing_mode="off")
+check("⑦ off 模式不估克隆与 TTS", "clone" not in e_off["breakdown"] and "tts" not in e_off["breakdown"], e_off["breakdown"])
+e_br = est.estimate_init_points(34, dubbing_mode="browser")
+check("⑦ browser 模式不估远端 TTS/克隆（本地免费）", "tts" not in e_br["breakdown"] and "clone" not in e_br["breakdown"], e_br["breakdown"])
+e_nomm = est.estimate_init_points(34, mm_enhance=False)
+check("⑦ 关掉审听不估 omni", "omni" not in e_nomm["breakdown"], e_nomm["breakdown"])
+check("⑦ 估算随时长单调递增",
+      est.estimate_init_points(600)["points_micro"] > est.estimate_init_points(60)["points_micro"] > est.estimate_init_points(34)["points_micro"])
+check("⑦ 时长为 0 不炸", est.estimate_init_points(0)["points_micro"] >= 0)
+check("⑦ 10 分钟视频远超固定 100 积分门槛（说明固定门槛确实不够用）",
+      est.estimate_init_points(600)["points_micro"] > 100 * MICRO, est.estimate_init_points(600)["points"])
+
+# 上传超长被拒 + 时长写进工程
+from app import store as _store2  # noqa: E402
+from app.models import video_dir_path as _vdp2  # noqa: E402
+_LONG = "longvideo0000000000000000000000aa"
+_SHORT = "shortvideo0000000000000000000000aa"
+import subprocess as _sp  # noqa: E402
+_old_max = config.MAX_DURATION_SECONDS
+try:
+    config.MAX_DURATION_SECONDS = 5
+    _sp.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "color=c=black:s=16x16:d=8",
+             "-f", "lavfi", "-i", "sine=f=440:d=8", "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+             "-c:a", "aac", f"{TMP}/long.mp4"], check=True)
+    _sp.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "color=c=black:s=16x16:d=3",
+             "-f", "lavfi", "-i", "sine=f=440:d=3", "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+             "-c:a", "aac", f"{TMP}/short.mp4"], check=True)
+    tlogin(c, "uploader@example.com")
+    with open(f"{TMP}/long.mp4", "rb") as f:
+        r = c.post("/api/projects", files={"file": ("long.mp4", f, "video/mp4")})
+    check("⑦ 超过时长上限的视频 → 413", r.status_code == 413 and "too long" in r.text, (r.status_code, r.text[:80]))
+    with open(f"{TMP}/short.mp4", "rb") as f:
+        r = c.post("/api/projects", files={"file": ("short.mp4", f, "video/mp4")})
+    body = r.json() if r.status_code == 200 else {}
+    check("⑦ 正常视频上传成功，返回时长与预估积分",
+          r.status_code == 200 and body.get("duration") and body.get("estimatedPoints", {}).get("points", 0) > 0, body)
+    vid = body.get("id")
+    if vid:
+        st = _store2.get_state(vid)
+        check("⑦ 时长写进了工程文档", st.duration is not None and 2.5 < st.duration < 3.5, st.duration)
+        r2 = c.post("/api/billing/estimate", json={"duration_seconds": st.duration, "dubbing_mode": "remote"})
+        check("⑦ 估算接口：按设置返回积分与当前余额",
+              r2.status_code == 200 and "points" in r2.json() and "balance_points" in r2.json(), r2.text[:120])
+finally:
+    config.MAX_DURATION_SECONDS = _old_max
+
+# ------------------------------------------------------------------ ⑧ 其它
+check("⑧ 计费库是独立文件（不和 auth 混）", os.path.exists(config.BILLING_DB_PATH)
       and config.BILLING_DB_PATH != config.AUTH_DB_PATH)
-check("⑦ 确认卡预估：克隆按 2 积分/个",
+check("⑧ 确认卡预估：克隆按 2 积分/个",
       abs((billing.price_of("clone", pricing.ENROLLMENT_MODEL) or {}).get("points", 0) - 2) < 1e-6)
 
 print()

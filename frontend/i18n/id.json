@@ -537,5 +537,10 @@
   "还没有消耗记录。本地配音、人声分离与导出不消耗积分。": "Belum ada pemakaian. Sulih suara lokal, pemisahan vokal, dan ekspor tidak memakai kredit.",
   "可用": "tersedia",
   "明细": "Rincian",
-  "充值": "Isi ulang"
+  "充值": "Isi ulang",
+  "视频太长：最长 {0} 分钟": "Video terlalu panjang: maks {0} mnt",
+  "积分不够：预估需要约 {0} 积分，当前余额 {1}": "Kredit kurang: butuh sekitar {0}, saldo {1}",
+  "视频 {0} 分钟，超过上限 {1} 分钟": "Video {0} mnt, batas {1} mnt",
+  "约": "±",
+  "估算中…": "Menghitung…"
 }

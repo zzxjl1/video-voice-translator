@@ -14,6 +14,9 @@ import { formatRelativeTime } from '../utils/relativeTime';
 import { LanguageSwitch, t } from '@/i18n';
 import { AccountMenu } from '../auth/AccountMenu';
 import CreditsPill, { type CreditsSnapshot } from './billing/CreditsPill';
+import { probeMediaDuration } from '../features/separation/separatorClient';
+import type { CostEstimate } from '../net/types';
+import { locale } from '@/i18n';
 import BillingPanel from './billing/BillingPanel';
 import Toast from './ui/Toast';
 import { billing as billingApi } from '../net/client';
@@ -109,6 +112,9 @@ const FEATURES: { label: string; sub: string; icon: React.ReactNode }[] = [
   },
 ];
 
+// 与后端 config.MAX_DURATION_SECONDS 一致；后端是权威，这里只是提前告知，不等上传完才拒。
+const MAX_DURATION_SECONDS = 30 * 60;
+
 const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName, onStart, isLoading, targetLanguage, onLanguageChange, targetAccent, onAccentChange, enableVoiceClone, onVoiceCloneChange, mmEnhance, onMmEnhanceChange, dubbingMode, onDubbingModeChange, browserVoice, onBrowserVoiceChange, cloneSmartPick, onCloneSmartPickChange, customPrompt, onCustomPromptChange, separationMode, onSeparationModeChange, separationBackends, bgmSeparationLocked, recentProjects, onOpenProject, onDeleteProject }) => {
   const { user, login } = useAuth();
 
@@ -129,6 +135,39 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
    */
   /** Which language's accent menu is open, if any. */
   const [accentMenuFor, setAccentMenuFor] = useState<string | null>(null);
+  /** 刚选的文件：上传前在本地探一次时长（不花服务器资源），用来估费用、限制时长。 */
+  const pickedFile = useRef<File | null>(null);
+  const [pickedDuration, setPickedDuration] = useState<number | null>(null);
+  const [estimate, setEstimate] = useState<(CostEstimate & { balance_points: number }) | null>(null);
+  const [estimateError, setEstimateError] = useState<string | null>(null);
+
+  const tooLong = pickedDuration != null && pickedDuration > MAX_DURATION_SECONDS;
+
+  // 选完文件：本地探时长
+  useEffect(() => {
+    if (!pickedFile.current) { setPickedDuration(null); return; }
+    let alive = true;
+    probeMediaDuration(pickedFile.current).then((d) => { if (alive) setPickedDuration(d); });
+    return () => { alive = false; };
+  }, [pendingFileName]);
+
+  // 时长或设置变了：按当前设置重新估（服务端算，口径和真实扣费一致）
+  useEffect(() => {
+    if (!pickedDuration || tooLong) { setEstimate(null); return; }
+    let alive = true;
+    setEstimateError(null);
+    billingApi.estimate({
+      duration_seconds: pickedDuration,
+      dubbing_mode: dubbingMode,
+      mm_enhance: mmEnhance,
+      enable_voice_clone: dubbingMode === 'remote' && enableVoiceClone,
+    }).then((e) => { if (alive) setEstimate(e); })
+      .catch((err) => { if (alive) setEstimateError(err instanceof Error ? err.message : String(err)); });
+    return () => { alive = false; };
+  }, [pickedDuration, tooLong, dubbingMode, mmEnhance, enableVoiceClone]);
+
+  // 账户积分不够预估 → 开始按钮禁用（服务端 setup 时也会按同一口径拦，这里是提前告知）
+  const insufficient = estimate != null && estimate.balance_points < estimate.points;
   /**
    * 全部语言直接展开，不再折叠。
    *
@@ -213,6 +252,7 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
   const handleFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     if (event.target.files && event.target.files[0]) {
       // Reports the choice upward; the upload itself waits for `onStart`.
+      pickedFile.current = event.target.files[0];
       onFilePicked(event.target.files[0]);
       // Reset so picking the SAME file again still fires a change event.
       event.target.value = '';
@@ -531,7 +571,8 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
             <div className="grid grid-cols-4 gap-2 mb-1">
               {visibleLanguages.map(lang => {
                 const selected = targetLanguage === lang.value;
-                const withAccent = hasAccents(lang.value);
+                // 方言设置只对中文界面的用户有意义（选项和说明都是中文，且是中文母语者的需求）
+                const withAccent = hasAccents(lang.value) && locale === 'zh';
                 return (
                   <div key={lang.value} className="relative">
                     <button
@@ -855,9 +896,30 @@ const VideoUpload: React.FC<VideoUploadProps> = ({ onFilePicked, pendingFileName
             </p>
             <button
               onClick={user ? onStart : () => login()}
-              disabled={isLoading}
+              disabled={isLoading || tooLong || (user ? insufficient : false)}
+              title={tooLong ? t('视频太长：最长 {0} 分钟', [Math.round(MAX_DURATION_SECONDS / 60)])
+                : insufficient ? t('积分不够：预估需要约 {0} 积分，当前余额 {1}', [estimate!.points.toFixed(0), estimate!.balance_points.toFixed(0)])
+                : undefined}
               className={`shrink-0 px-5 py-3 bg-claude-accent text-white text-sm font-semibold rounded-xl hover:bg-claude-accentHover disabled:bg-gray-300 disabled:cursor-not-allowed transition-all duration-300 shadow-lg shadow-claude-accent/20 hover:shadow-xl hover:shadow-claude-accent/30 active:scale-[0.98] ${isLoading ? '' : 'start-cta start-cta-live'}`}
             >
+              {/* 预估放在按钮左上方：它是"点这个按钮要花多少"的直接回答 */}
+              {user && pickedDuration != null && (
+                tooLong ? (
+                  <span className="mb-1 block text-[10px] font-normal text-red-100">
+                    {t('视频 {0} 分钟，超过上限 {1} 分钟', [(pickedDuration / 60).toFixed(1), Math.round(MAX_DURATION_SECONDS / 60)])}
+                  </span>
+                ) : estimate && insufficient ? (
+                  <span className="mb-1 block text-[10px] font-bold text-red-100" data-i18n-skip>
+                    {t('积分不够：预估需要约 {0} 积分，当前余额 {1}', [estimate.points.toFixed(0), estimate.balance_points.toFixed(0)])}
+                  </span>
+                ) : estimate ? (
+                  <span className="mb-1 block text-[10px] font-normal text-white/85" data-i18n-skip>
+                    {t('约')} {estimate.points.toFixed(0)} {t('积分')} · {t('余额')} {estimate.balance_points.toFixed(0)}
+                  </span>
+                ) : estimateError ? null : (
+                  <span className="mb-1 block text-[10px] font-normal text-white/70">{t('估算中…')}</span>
+                )
+              )}
               {isLoading ? (
                 <span className="flex items-center gap-2">
                   <svg className="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>

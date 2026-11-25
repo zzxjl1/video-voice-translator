@@ -133,6 +133,9 @@ class VideoState:
     # 初始化时已经扫描过"ASR 没转写的非语言声"并自动标记了。用户撤销/删掉之后再跑初始化
     # （补齐、改设置）不能把他否掉的又加回来。新转写进来时重置（见 jobs.step_transcribe）。
     sounds_scanned: bool = False
+    # 视频时长（秒）。上传时探测一次写进来；估费用、限制时长、前端展示都读它，
+    # 不必各自 ffprobe。None = 还没探到（老工程 / 探测失败）。
+    duration: Optional[float] = None
 
     # —— 工程设置 ——
     separation_mode: str = ""            # "client"（浏览器分离）| "off"；初始化时定下

@@ -62,6 +62,24 @@ def prices(user: dict = Depends(require_user)):  # noqa: ARG001 - 只是要登�
     }
 
 
+class EstimateBody(BaseModel):
+    duration_seconds: float
+    dubbing_mode: str = "remote"
+    mm_enhance: bool = True
+    enable_voice_clone: bool = True
+
+
+@router.post("/estimate")
+def estimate(body: EstimateBody, user: dict = Depends(require_user)):  # noqa: ARG001
+    """按时长 + 设置估一次初始化要花多少积分（上界）。前端落地页选设置时实时算。"""
+    from app.billing import estimate as _est
+    e = _est.estimate_init_points(
+        body.duration_seconds, dubbing_mode=body.dubbing_mode, mm_enhance=body.mm_enhance,
+        voice_clone=body.enable_voice_clone and body.dubbing_mode == "remote",
+    )
+    return {**e, "balance_points": pricing.as_points(billing.balance_points_micro(user["id"]))}
+
+
 class AdjustBody(BaseModel):
     user_id: str
     amount_points: float

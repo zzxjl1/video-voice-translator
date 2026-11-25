@@ -61,6 +61,9 @@ export interface UploadResult {
   exists: boolean;
   stage: string;
   hasLines: boolean;
+  duration?: number | null;
+  /** 上传时按默认设置估的；用户改设置后前端用 billing.estimate 重算。 */
+  estimatedPoints?: import('./types').CostEstimate | null;
 }
 
 export function upload(file: File): Promise<UploadResult> {
@@ -212,6 +215,8 @@ export async function uploadStems(id: string, vocals: Blob, background: Blob, to
  * 用户看到的是含服务费的价格；成本不在任何接口里出现。
  */
 export const billing = {
+  estimate: (body: { duration_seconds: number; dubbing_mode: string; mm_enhance: boolean; enable_voice_clone: boolean }) =>
+    request<import('./types').CostEstimate & { balance_points: number }>('/billing/estimate', json(body)),
   summary: () => request<import('./types').BillingSummary>('/billing/summary'),
   prices: () => request<import('./types').BillingPrices>('/billing/prices'),
   project: (id: string) => request<import('./types').ProjectBilling>(`/billing/projects/${id}`),

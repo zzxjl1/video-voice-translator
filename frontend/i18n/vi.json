@@ -537,5 +537,10 @@
   "还没有消耗记录。本地配音、人声分离与导出不消耗积分。": "Chưa có tiêu thụ. Lồng tiếng cục bộ, tách giọng và xuất không tốn tín dụng.",
   "可用": "khả dụng",
   "明细": "Chi tiết",
-  "充值": "Nạp"
+  "充值": "Nạp",
+  "视频太长：最长 {0} 分钟": "Video quá dài: tối đa {0} phút",
+  "积分不够：预估需要约 {0} 积分，当前余额 {1}": "Không đủ tín dụng: cần khoảng {0}, số dư {1}",
+  "视频 {0} 分钟，超过上限 {1} 分钟": "Video dài {0} phút, giới hạn {1} phút",
+  "约": "khoảng",
+  "估算中…": "Đang ước lượng…"
 }

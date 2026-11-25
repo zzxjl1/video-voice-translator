@@ -924,6 +924,9 @@ os.makedirs(DATA_DIR, exist_ok=True)
 # 以前上传既不限大小也不查类型：任意客户端可以写满磁盘，或塞非视频文件让
 # ffmpeg 去啃。白名单按扩展名判定，拷贝时按字节数实时中止。
 UPLOAD_MAX_BYTES = _env_int("UPLOAD_MAX_BYTES", 2 * 1024 * 1024 * 1024)  # 2 GiB
+# 视频时长上限（秒）。计费是预付费的，但 ASR/翻译/审听这些步骤在跑的时候积分是"先花后扣"，
+# 一个几小时的视频能把余额花穿再被拦——太晚。上传时就按时长拒掉。默认 30 分钟。
+MAX_DURATION_SECONDS = _env_int("MAX_DURATION_SECONDS", 30 * 60)
 UPLOAD_ALLOWED_EXTENSIONS = {
     e.strip().lower()
     for e in _env(

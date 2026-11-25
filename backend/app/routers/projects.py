@@ -93,6 +93,17 @@ def list_projects(user: dict = Depends(require_user)):
 
 
 
+def _estimate_points_for(state) -> Optional[dict]:
+    """按工程时长 + 设置估初始化费用；没有时长就返回 None（前端不显示预估）。"""
+    from app.billing import estimate
+    if not state.duration:
+        return None
+    return estimate.estimate_init_points(
+        state.duration, dubbing_mode=state.dubbing_mode or "remote",
+        mm_enhance=bool(state.mm_enhance), voice_clone=bool(state.enable_voice_clone),
+    )
+
+
 @upload_router.post("")
 def upload(file: UploadFile = File(...), user: dict = Depends(require_user)):
     """
@@ -121,6 +132,15 @@ def upload(file: UploadFile = File(...), user: dict = Depends(require_user)):
                     raise HTTPException(status_code=413, detail=f"file too large (>{config.UPLOAD_MAX_BYTES >> 20} MB)")
                 out.write(chunk)
 
+        # 时长限制要在建工程之前查：建了再删会留下一堆半成品（归属、目录、撤销栈）。
+        # 探不出时长的不在这里拒（损坏文件在 ASR 阶段会报清楚），只拒"明确超长"的。
+        duration = subtitle_service.probe_duration(temp_path)
+        if duration is not None and duration > config.MAX_DURATION_SECONDS:
+            raise HTTPException(
+                status_code=413,
+                detail=f"video too long: {duration / 60:.1f} min (max {config.MAX_DURATION_SECONDS / 60:.0f} min)",
+            )
+
         video_id = _md5(temp_path)
         owner = auth_users.owner_of(video_id)
         if owner is not None and owner != user["id"]:
@@ -146,12 +166,17 @@ def upload(file: UploadFile = File(...), user: dict = Depends(require_user)):
             else:
                 os.rename(temp_path, final_path)
             state = store.create(video_id, file.filename or f"video{ext}", final_path)
+            if duration is not None and state.duration is None:
+                store.mutate(video_id, lambda s: setattr(s, "duration", round(duration, 3)),
+                             actor="system", cmd="probe", summary="探测时长", undoable=False)
+                state = store.get_state(video_id)
         except Exception:
             if claimed_here:                      # 工程没建成，别留着一个指向空目录的归属
                 auth_users.release_project(video_id, user["id"])
             raise
         return {"id": video_id, "filename": state.filename, "exists": existed, "stage": state.stage,
-                "hasLines": bool(state.segments)}
+                "hasLines": bool(state.segments), "duration": state.duration,
+                "estimatedPoints": _estimate_points_for(state)}
     except HTTPException:
         if os.path.exists(temp_path):
             os.remove(temp_path)
@@ -230,6 +255,21 @@ async def setup_and_start(video_id: str, body: SetupBody):
     if body.target_language not in config.TARGET_LANGUAGES:
         raise HTTPException(status_code=400,
                             detail=f"不支持的目标语言；可选：{'、'.join(sorted(config.TARGET_LANGUAGES))}")
+
+    # 开跑前按**这次**的设置估一次费用，余额不够就在这里拒——不要让 ASR/翻译跑完才被拦。
+    # 老工程没有 duration 时退回固定起步门槛。
+    from app.billing import estimate as _estimate, service as _billing
+    from app.commands.guards import _need_balance
+    _state = store.get_state(video_id)
+    if _state and _state.duration:
+        est = _estimate.estimate_init_points(
+            _state.duration, dubbing_mode=body.dubbing_mode, mm_enhance=body.mm_enhance,
+            voice_clone=bool(body.enable_voice_clone) and body.dubbing_mode == "remote",
+        )
+        try:
+            _billing.require_balance(_billing.user_for_project(video_id), est["points_micro"], "初始化这个视频")
+        except _billing.BillingError as e:
+            raise HTTPException(status_code=402, detail=str(e)) from e
 
     def apply(s):
         s.target_language = body.target_language

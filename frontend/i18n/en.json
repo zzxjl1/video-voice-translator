@@ -537,5 +537,10 @@
   "还没有消耗记录。本地配音、人声分离与导出不消耗积分。": "No usage yet. In-browser dubbing, vocal separation and export use no credits.",
   "可用": "available",
   "明细": "Details",
-  "充值": "Top up"
+  "充值": "Top up",
+  "视频太长：最长 {0} 分钟": "Video too long: max {0} min",
+  "积分不够：预估需要约 {0} 积分，当前余额 {1}": "Not enough credits: about {0} needed, balance {1}",
+  "视频 {0} 分钟，超过上限 {1} 分钟": "Video is {0} min, limit is {1} min",
+  "约": "≈",
+  "估算中…": "Estimating…"
 }

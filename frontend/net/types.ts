@@ -22,6 +22,17 @@ export interface ProjectSummary {
   filename: string;
   stage: Stage;
   updatedAt: number;
+  /** 视频时长（秒）；老工程没有。 */
+  duration?: number | null;
+}
+
+/** 一次初始化的预估费用（上界）。按真实账本校准，见 backend/app/billing/estimate.py。 */
+export interface CostEstimate {
+  points_micro: number;
+  points: number;
+  duration_seconds: number;
+  sentences: number;
+  breakdown: Record<string, number>;
 }
 
 /**

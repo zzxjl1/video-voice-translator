@@ -200,11 +200,17 @@ def _need_balance(ctx, what: str, need_micro: int = 0) -> None:
     """
     from app import config
     from app.billing import service as billing
+    if need_micro <= 0:
+        # 有时长的工程按时长估（上限），没有的退回固定起步门槛
+        need_micro = config.BILLING_MIN_START_POINTS_MICRO
+        st = ctx.state
+        if getattr(st, "duration", None):
+            from app.billing import estimate
+            need_micro = estimate.estimate_init_points(
+                st.duration, dubbing_mode=st.dubbing_mode or "remote",
+                mm_enhance=bool(st.mm_enhance), voice_clone=bool(st.enable_voice_clone),
+            )["points_micro"]
     try:
-        billing.require_balance(
-            billing.user_for_project(ctx.video_id),
-            need_micro or config.BILLING_MIN_START_POINTS_MICRO,
-            what,
-        )
+        billing.require_balance(billing.user_for_project(ctx.video_id), need_micro, what)
     except billing.BillingError as e:
         raise CommandError(str(e), hint="在账户菜单里查看积分余额；充值后重试") from e
