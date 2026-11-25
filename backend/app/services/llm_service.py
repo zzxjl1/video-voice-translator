@@ -462,16 +462,36 @@ def _build_chunk_prompt(
         "",
         "Translate every entry in 'Segments to translate' into "
         f"{target_language}, following these rules:",
-        "1. Read the whole batch first so the dialogue flows naturally.",
-        "2. Match the register of the original (casual stays casual, formal stays formal).",
+        "1. Read the whole batch first so the dialogue flows naturally and each "
+        "speaker stays in character.",
+        # 2. 语域先行。35 题 A/B（见 scripts/ab_translate_bench.py）里 none 的 △ 多数是
+        #    "书面词用在口语里"（身体不适 / 临阵退缩 / 说出秘密）。但正式演讲、新闻、
+        #    法庭必须保持正式——所以规则不是"要口语"，而是"先判断，再选词"。
+        "2. FIRST decide the register of each line from its own wording — casual "
+        "conversation, or formal speech / news / court / lecture? Then write the "
+        "translation in THAT register. Casual speech uses everyday spoken words "
+        "(不舒服, not 身体不适; 又怂了, not 临阵退缩); formal speech keeps formal "
+        "wording and sentence structure. Never upgrade casual lines into written "
+        "style, never dumb formal lines down.",
         "3. Keep each speaker's personality consistent across the script.",
-        "4. Write idiomatic lines a native speaker would actually say — avoid translationese.",
-        "5. Adapt cultural references so they land for the target audience.",
+        # 4. 去翻译腔 + 文化梗本地化：couch potato 直译成"沙发土豆"中文没人这么说。
+        "4. Write what a native speaker would actually say in that situation — "
+        "avoid translationese (word-for-word order, calques, over-long "
+        "sentences). For culture-specific expressions use the equivalent "
+        "expression native speakers use for the same idea (couch potato -> "
+        "资深宅), not a literal rendering (沙发土豆).",
+        # 5. 口语清理：ASR 原样录下结巴和重复。译文是给配音演员念的，念"这就是——这就是"
+        #    很怪；但填充词有语气作用，保留一个即可。
+        "5. The transcript is machine speech recognition of spontaneous speech: "
+        "stutters and immediate repetitions (here's—here's) are artifacts — "
+        "collapse them into one clean phrase. Keep a filler only when it carries "
+        "tone (well, you know -> 那个/你懂的), at most one per line.",
+        "6. Adapt cultural references so they land for the target audience.",
         # 机器识别必然会出同音错字；这里明确"按听到的意思翻"。
         # 与 omni 那段的目的相同，但生效时机不同：omni 没开（或多模态增强模型漏掉
         # 了某一句）时，翻译模型是唯一还能兜住的人 —— 它手上有 asr_original 与
         # 上下文，足以判断一个词是不是同音误听。
-        "6. The transcript comes from machine speech recognition and can contain "
+        "7. The transcript comes from machine speech recognition and can contain "
         "obvious slips: near-homophones that make no sense in context (e.g. "
         "字体一致 heard as 字体移植, 'at six' heard as 'at sex'), a name or a "
         "number that contradicts the rest of the line, a word that breaks the "
@@ -482,7 +502,7 @@ def _build_chunk_prompt(
         # 7. 标签。以前 prompt 里一个字没提，模型把 [curious] 当正文丢掉是必然的；
         #    A/B 实测 none/low 两种模式都丢。标签是 TTS 的情绪/音效控制指令，丢了
         #    = 那一句在成片里没了情绪，而且事后只能靠人工听出来。
-        "7. Square-bracket tags such as [excited], [sarcastic], [laughing] are "
+        "8. Square-bracket tags such as [excited], [sarcastic], [laughing] are "
         "delivery instructions for the speech synthesizer, NOT text. Copy every "
         "tag from the source into the translation UNCHANGED (same spelling, "
         "half-width brackets) and in the same position: a tag at the start of "
@@ -496,6 +516,27 @@ def _build_chunk_prompt(
         f"{unit} that comfortably fit its time slot. Stay at or below it whenever",
         "the meaning allows. Prefer a shorter, punchier line over a literal long one.",
         "Never pad a line just to reach the limit.",
+        "",
+        # Few-shot。规则（上面第 2–4 条）只修好了 2/8 的 △——不带推理的模型知道
+        # "要口语"，但需要**例子**才知道"口语长什么样"。例子按"口语行"和"正式行"
+        # 各给几个，并明确它们展示的是**差距**而不是模板：泛化验证里没见过的习语
+        # （cut corners / piece of cake / purchase）全部译对，正式题零回归。
+        "## Style reference (register decides wording — these show the gap, not a "
+        "template to copy)",
+        "Casual line, written-style output is WRONG; the right column is what a "
+        "native speaker says:",
+        "- I'm feeling a bit under the weather.  ✗ 我有点身体不适  ✓ 我有点不舒服",
+        "- Don't tell me you chickened out.  ✗ 你又临阵退缩了  ✓ 你又怂了",
+        "- Come on, spill the beans.  ✗ 快说，说出秘密  ✓ 别卖关子了，快说",
+        "- I'm basically a professional couch potato.  ✗ 专业沙发土豆  ✓ 基本就是个资深宅",
+        "- Time flies like an arrow; fruit flies like a banana.  ✗ 果蝇飞得像香蕉  "
+        "✓ 光阴似箭，香蕉招果蝇（a pun may be re-cast as a pun; never translated "
+        "literally）",
+        "Formal line, casual output is WRONG:",
+        "- The company announced a recall affecting roughly two million vehicles.  "
+        "✗ 公司说召回两百万辆车  ✓ 公司宣布召回约两百万辆汽车",
+        "- Objection, Your Honor, the witness is speculating.  ✗ 法官，他在瞎猜  "
+        "✓ 反对，法官大人，证人在推测",
     ]
 
     if glossary:
