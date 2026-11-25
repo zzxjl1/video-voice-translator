@@ -53,10 +53,22 @@ def _display_width(text: str) -> float:
     与 Netflix TTSG 一致（CJK 字符占拉丁的两倍宽度）。
     `max_chars` 的语义是**拉丁字符数**：42 → 拉丁 42 字符，中文 21 个字。
     """
-    return sum(2.0 if _is_wide(ch) else 1.0 for ch in text)
+    return sum(0.0 if _COMBINING_RE.match(ch) else (2.0 if _is_wide(ch) else 1.0) for ch in text)
+
+
+# 组合标记（元音符号、声调、鼻音化…）：不占显示宽度，且必须和前面的基字符留在同一行
+_COMBINING_RE = re.compile(r"[\u0300-\u036F\u0591-\u05BD\u0610-\u061A\u064B-\u065F\u0670\u06D6-\u06DC"
+                           r"\u0900-\u0903\u093A-\u094F\u0951-\u0957\u0962-\u0963\u0981-\u0983\u09BC-\u09CD"
+                           r"\u0A01-\u0A03\u0A3C-\u0A51\u0A81-\u0A83\u0ABC-\u0ACD\u0B01-\u0B03\u0B3C-\u0B4D"
+                           r"\u0C00-\u0C04\u0C3E-\u0C56\u0CBF-\u0CD6\u0D41-\u0D44\u0DCA\u0E31\u0E34-\u0E3A"
+                           r"\u0E47-\u0E4E\u0EB1\u0EB4-\u0EBC\u0F71-\u0F84\u102B-\u103E\u1712-\u1714"
+                           r"\u17B4-\u17D3\u1A17-\u1A1B\u1AB0-\u1AFF\u1DC0-\u1DFF\u20D0-\u20F0]")
+# 逐字书写（无空格）的字母文字：泰/老挝/高棉/缅甸/柬埔寨——按"基字符 + 组合符号"为一个音节单位
+_SYLLABIC_RANGES = ((0x0E00, 0x0E7F), (0x0E80, 0x0EFF), (0x1000, 0x109F), (0x1000, 0x109F), (0xA000, 0xA48F))
 
 
 def _is_wide(ch: str) -> bool:
+    """占一个 CJK 格（= 2 个拉丁字符宽）的字符：CJK、日文假名、韩文、泰/老挝/高棉/缅甸。"""
     code = ord(ch)
     return (
         0x1100 <= code <= 0x115F
@@ -67,11 +79,22 @@ def _is_wide(ch: str) -> bool:
         or 0xFF00 <= code <= 0xFF60
         or 0xFFE0 <= code <= 0xFFE6
         or 0x20000 <= code <= 0x3FFFD
+        or 0x3040 <= code <= 0x30FF          # 平假名 / 片假名
+        or 0x0E00 <= code <= 0x0E7F          # 泰语
+        or 0x0E80 <= code <= 0x0EFF          # 老挝
+        or 0x1000 <= code <= 0x109F          # 高棉
+        or 0xA000 <= code <= 0xA48F          # 彝文（少见，顺带）
     )
 
 
-# 一个"原子"：拉丁词（含内部 ' - ）、一段连续标点/空格、一个 CJK 字符
-_ATOM_RE = re.compile(r"[A-Za-z0-9'’\-]+|\s+|.", re.S)
+# 一个"原子"：一个"词"（任意 Unicode 字母/数字，含内部 ' ’ - ）、一段连续空格、单个其它字符。
+# 必须是 \w 而不是 [A-Za-z]：越南语（ô ả ụ）、西里尔、希腊、天城文、阿拉伯文都是字母，
+# 用 ASCII 类会把它们当成逐字符切（khô|ng、м|огу）。CJK 不在此列：\w 虽然匹配汉字，
+# 但 CJK 要逐字成原子（再由 jieba 合并成词），所以单独排除——否则一个汉字串会变成一个原子。
+_ATOM_RE = re.compile(
+    r"(?:(?![\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7a3\uf900-\ufaff])[\w'’\-])+|\s+|.",
+    re.UNICODE,
+)
 
 _jieba_ready = False
 
@@ -179,6 +202,14 @@ def _zh_boundary_cost(prev_word: str, prev_pos: str, next_word: str, next_pos: s
 
 def _atoms(text: str) -> list[str]:
     atoms = _ATOM_RE.findall(text)
+    # 组合标记并入前一个原子：天城文/泰语的元音符号和声调必须跟着基字符（म + ै = मै）
+    merged: list[str] = []
+    for a in atoms:
+        if merged and a and _COMBINING_RE.match(a[0]):
+            merged[-1] += a
+        else:
+            merged.append(a)
+    atoms = merged
     # 中文：把 jieba 切出的多字词合并成一个原子，断行就不会落在词中间
     words = _zh_words(text)
     if not words:
@@ -291,12 +322,17 @@ def _atom_break_cost(atoms: list[str], i: int) -> float:
     elif nxt and _is_punct(nxt):
         # 标点前不断（把标点留到下一行开头是错的，上面已禁止；这里处理"标点紧跟前一个词"）
         cost += 2.0
-    else:
-        # 词与词之间：连词/介词之前断好
-        word_low = nxt.lower()
+    elif atoms[i - 1].isspace() or atoms[i].isspace():
+        # 用空格分词的语言（拉丁/西里尔/希腊/天城文/阿拉伯…）：词间断永远优于词内，
+        # 和具体语言无关。连词/介词之前断更好（英文有词表；其它语言退化为普通词间）
+        word_low = nxt.lower().strip()
         if word_low in _BREAK_BEFORE_EN:
             cost += 0.2
-        elif nxt in _BREAK_BEFORE_ZH:
+        else:
+            cost += 0.5
+    else:
+        # 词与词之间（无空格的语言）：连词之前断好
+        if nxt in _BREAK_BEFORE_ZH:
             cost += 0.2
         elif _is_wide(nxt[0]) and len(nxt) == 1:
             # CJK 逐字断：默认可接受

@@ -368,7 +368,7 @@ const StyleThumbnail: React.FC<{ style: SubtitleStyle }> = ({ style }) => {
         <div
           key={index}
           style={{
-            ...overlayLineStyle(style, rect, line.secondary),
+            ...overlayLineStyle(style, rect, line.secondary, line.text),
             // 缩略图整体缩到 55%；原文行在此基础上再 82%（和 overlayLineStyle 的比例一致）
             fontSize: Math.max(7, (line.secondary ? metrics.secondaryFontSize : metrics.fontSize) * 0.55),
           }}

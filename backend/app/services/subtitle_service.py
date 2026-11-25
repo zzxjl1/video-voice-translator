@@ -1156,16 +1156,16 @@ def to_ass(cues: list[Cue], style: SubtitleStyle, width: int, height: int) -> st
                 primary_lines, secondary_lines = cue.forced_lines, []
             pieces = []
             for t in primary_lines:
-                pieces.append("{\\rDefault}" + inline + _ass_escape(t))
+                pieces.append("{\\rDefault}" + inline + _ass_line_tags(t) + _ass_escape(t))
             for t in secondary_lines:
-                pieces.append("{\\rOriginal}" + _ass_escape(t))
+                pieces.append("{\\rOriginal}" + _ass_line_tags(t) + _ass_escape(t))
             text = "\\N".join(pieces)
         else:
             body = cue.lines(style)
             if not body:
                 continue
             # \N is an explicit break, \n would be a soft one.
-            text = "\\N".join(_ass_escape(l) for l in body)
+            text = "\\N".join(_ass_line_tags(l) + _ass_escape(l) for l in body)
             if inline:
                 text = inline + text
         start, end = _ass_time(cue.start), _ass_time(cue.end)
@@ -1176,9 +1176,25 @@ def to_ass(cues: list[Cue], style: SubtitleStyle, width: int, height: int) -> st
     return "\n".join(lines) + "\n"
 
 
+# 阿拉伯文、希伯来文、叙利亚文、塔纳文：从右向左
+_RTL_RE = re.compile(r"[\u0590-\u08FF\uFB1D-\uFB4F\uFB50-\uFDFF\uFE70-\uFEFF]")
+
+
+def _is_rtl(text: str) -> bool:
+    """一行里 RTL 字母多于拉丁/CJK 字母，就按 RTL 排（阿拉伯语句尾的数字/英文不算）。"""
+    rtl = len(_RTL_RE.findall(text or ""))
+    return rtl > 0 and rtl >= sum(1 for ch in (text or "") if ch.isalpha()) / 2
+
+
 def _ass_escape(text: str) -> str:
     """ASS 正文里 { } 是覆盖标签的边界，正文中出现要转义成全角括号。"""
     return text.replace("{", "(").replace("}", ")")
+
+
+
+def _ass_line_tags(text: str) -> str:
+    """行内覆盖标签：RTL 文本要显式声明方向，否则句尾标点会跑到错的一边。"""
+    return "{\\rtl}" if _is_rtl(text) else ""
 
 
 # --------------------------------------------------------------------------

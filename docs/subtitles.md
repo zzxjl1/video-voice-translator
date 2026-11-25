@@ -17,6 +17,12 @@
 - **中文词边界 + 词性**：`jieba.posseg`，按需加载（0.25s，41MB 词典）。分错的词只用来**惩罚**在词中间断，不是禁止。
 - **专有名词**：`build_cues` 从工程术语表 + 译文里反复出现的 2–5 字串喂给 jieba 当自定义词典，
   否则 `斯普利特河高中` 会被拆成 `斯普利特|河高中`。
+- **31 种语言**（`tests/test_subtitles_langs.py`，189 项）：断行逻辑里不能有 `[A-Za-z]`——越南语 `ô ả ụ`、
+  西里尔、天城文、阿拉伯文都是"字母"，用 ASCII 类会把它们逐字切（`khô|ng`、`м|огу`）。
+  原子用 Unicode `\w`；天城文/泰语的元音符号和声调是组合标记，并入前一个基字符（`म + ै = मै`），宽度为 0。
+  用空格分词的语言，**词间断永远优于词内**，和具体语言无关（连词词表只有英文，其它语言退化为普通词间）。
+  日文假名、泰/老挝/高棉算宽字符（1 格 = 1 假名）。**RTL**（阿拉伯语）：ASS 行加 `{\rtl}`，预览 `direction: rtl`，
+  烧录 `ctx.direction`，否则句尾标点跑到错的一边。泰语没有分词器，按音节切（有空格时在空格断）。
 - **`max_chars_per_line` 的单位没变**：仍是 CJK 格（1 格 = 1 汉字 = 2 拉丁字符）。18 格 = 18 汉字 = 36 字母。
   老工程的设置不受影响。
 
@@ -98,6 +104,7 @@
 ```bash
 cd backend && ./.venv/bin/python tests/test_subtitles.py         # 43 项 golden
 cd backend && ./.venv/bin/python tests/test_subtitles_corpus.py  # 31 项，真实字幕语料
+cd backend && ./.venv/bin/python tests/test_subtitles_langs.py    # 189 项，31 种语言 + RTL
 ```
 
 语料不进 git（版权）：把任意 `.srt` 放到 `~/Downloads/School.Spirits*.srt`（中文专业字幕）和

@@ -471,7 +471,7 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
                 {activeCue.lines.map((line, i) => {
                   const secCount = activeCue.secondary_count ?? 0;
                   const isSecondary = secCount > 0 && i >= activeCue.lines.length - secCount;
-                  return <div key={i} style={overlayLineStyle(style, videoRect, isSecondary)}>{line}</div>;
+                  return <div key={i} style={overlayLineStyle(style, videoRect, isSecondary, line)}>{line}</div>;
                 })}
               </div>
             )}

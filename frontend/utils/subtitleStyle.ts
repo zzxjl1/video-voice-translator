@@ -123,6 +123,16 @@ export const fontStack = (family: string): string =>
     .filter((f, i, a) => a.indexOf(f) === i)
     .join(', ');
 
+// 阿拉伯文、希伯来文等：从右向左。和后端 _is_rtl 同一规则。
+const RTL_RE = /[\u0590-\u08FF\uFB1D-\uFB4F\uFB50-\uFDFF\uFE70-\uFEFF]/;
+
+/** 一行是否按 RTL 排：RTL 字母占多数时为真（句尾的数字/英文不算）。 */
+export function isRtl(text: string): boolean {
+  const rtl = (text.match(RTL_RE) ?? []).length;
+  const letters = [...text].filter((c) => /[\p{L}]/u.test(c)).length;
+  return rtl > 0 && rtl >= letters / 2;
+}
+
 /** Percentage-derived pixel sizes for a frame of the given size. */
 export function resolveMetrics(style: SubtitleStyle, width: number, height: number) {
   return {
@@ -175,7 +185,7 @@ export function overlayContainerStyle(style: SubtitleStyle, rect: Rect): CSSProp
 }
 
 /** CSS for one line of subtitle text. `secondary=true` 为双语里的原文行。 */
-export function overlayLineStyle(style: SubtitleStyle, rect: Rect, secondary = false): CSSProperties {
+export function overlayLineStyle(style: SubtitleStyle, rect: Rect, secondary = false, text?: string): CSSProperties {
   const metrics = resolveMetrics(style, rect.width, rect.height);
   const px = (v: number) => `${v.toFixed(1)}px`;
   return {
@@ -198,6 +208,8 @@ export function overlayLineStyle(style: SubtitleStyle, rect: Rect, secondary = f
     fontFamily: fontStack(style.font_family),
     color: secondary ? secondaryColor(style) : style.primary_color,
     textAlign: 'center',
+    // RTL 行：标点和数字的位置靠 direction 决定，不设的话句号会跑到左边
+    ...(text && isRtl(text) ? { direction: 'rtl' as const, unicodeBidi: 'plaintext' as const } : null),
     lineHeight: 1.35,
     maxWidth: '100%',
     // The outline is drawn with text-shadow rather than -webkit-text-stroke so
@@ -272,6 +284,7 @@ export function drawCueOnCanvas(
   let y = blockTop;
   lines.forEach((line, index) => {
     const sec = secFlags[index];
+    (ctx as CanvasRenderingContext2D & { direction?: string }).direction = isRtl(line) ? 'rtl' : 'ltr';
     const fs = sec ? metrics.secondaryFontSize : metrics.fontSize;
     ctx.font = `${style.bold && !sec ? 'bold ' : ''}${style.italic ? 'italic ' : ''}${fs.toFixed(1)}px ${fontStack(style.font_family)}`;
     // 字间距：Canvas2D 用 letterSpacing（Chrome 99+）
