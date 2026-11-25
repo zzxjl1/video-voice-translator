@@ -4,19 +4,20 @@
 为什么要估而不是固定门槛：一个 30 秒的短片和一小时的讲座差两个数量级，固定门槛要么
 拦住短片用户、要么放行长片把余额花穿。
 
-成本模型（按真实账本**一次干净初始化**校准：34 秒 / 9 句 / 3 克隆 ≈ 23 积分，
-见 backend/data/44767c2a…/usage.json 里去掉 chat / pick_samples / 重跑之后的部分）：
+成本模型（按真实账本的计费口径校准，backend/data/44767c2a…/usage.json）：
 
   · ASR   按 token，≈ 时长成正比（34 秒 ≈ 371 入 / 120 出）
-  · omni  审听按句，每句 ≈ 1000 入 / 300 出（音频 token 占大头）
-  · LLM   翻译按**分块**，每块 ≈ 1470 入 / 1400 出（输出含推理内容，和输入一样多）；
-          块数 = 句数 / 每块句数 + 一次术语表抽取
+  · omni  审听**整段音频一次调用**：音频 ≈ 6 token/秒，prompt ≈ 1000，输出 ≈ 35/句
+          —— 很便宜，30 分钟也只要 ~11 积分
+  · LLM   翻译按分块（每块 ≈ 1500 入）+ 一次术语表；输出按**关掉 thinking** 估（300/块）。
+          开 thinking 输出会翻 4 倍，是 LLM 成本的大头，见 config.LLM_REASONING_EFFORT
   · clone 按说话人数（每音色一次），保守估 3
-  · TTS   按句，每句 ≈ 15 入 + 音频 token（约 50/秒）
+  · TTS   按调用：每次输出 ≈ 45 token，每句 ≈ 1.4 次调用（含时长拟合重合成）。
+          实测很便宜：30 分钟 ≈ 58 积分（官方实测 ¥0.0095/分钟音频）
   · 句数 ≈ 时长 × 16 句/分钟（该工程 34 秒 9 句）
 
-上一版把"这个工程总共花了多少（含多轮 chat、克隆选材、重跑）"当成了"一次初始化要多少"，
-估高了 2 倍。这里只算初始化本身。
+历史上错过两次：先是把"工程总共花了多少"（含多轮 chat、克隆选材、重跑）当成"一次初始化"，
+高估 2 倍；然后又把 omni 按句算，高估 10 倍。两处都已按账本修正。
 """
 from __future__ import annotations
 
@@ -31,16 +32,25 @@ SPEAKERS_ASSUME = 3
 ASR_INPUT_TOKENS_PER_SECOND = 11
 ASR_OUTPUT_TOKENS_PER_SECOND = 3.5
 
-OMNI_INPUT_TOKENS_PER_SENTENCE = 1_000
-OMNI_OUTPUT_TOKENS_PER_SENTENCE = 300
+# omni 审听是**整段音频一次调用**（不分批，所以音频不重复发）：
+# 音频 ≈ 6 token/秒（34 秒 = 205），prompt ≈ 1000，输出 ≈ 35 token/句。
+OMNI_AUDIO_TOKENS_PER_SECOND = 6
+OMNI_PROMPT_TOKENS = 1_000
+OMNI_OUTPUT_TOKENS_PER_SENTENCE = 35
 
+# LLM 翻译按分块（每块 ≈ 1500 入），输出**关掉 thinking 后** ≈ 译文长度（300/块）；
+# 开 thinking 输出会翻到 1400/块，这是 LLM 成本的大头，见 config.LLM_REASONING_EFFORT。
 LLM_CHUNK_INPUT_TOKENS = 1_500
-LLM_CHUNK_OUTPUT_TOKENS = 1_400
+LLM_CHUNK_OUTPUT_TOKENS = 300
 LLM_GLOSSARY_INPUT_TOKENS = 350
 LLM_GLOSSARY_OUTPUT_TOKENS = 450
 
-TTS_INPUT_TOKENS_PER_SENTENCE = 20
-TTS_OUTPUT_TOKENS_PER_SECOND = 55
+# TTS 按调用计：账本实测每次调用输出 ≈ 45 token（不是按"1 秒=50 token"——那个换算
+# 对 3.1 flash 不成立，实测 47 次调用才 2121 token）。每句 1 次成功 + 时长拟合重合成
+# 的概率 ≈ 1.4 次；另有官方实测 ¥0.0095/分钟音频 ≈ 30 分钟 58 积分，与此处一致。
+TTS_INPUT_TOKENS_PER_CALL = 20
+TTS_OUTPUT_TOKENS_PER_CALL = 45
+TTS_CALLS_PER_SENTENCE = 1.4
 
 
 def _points(step: str, model: str, usage: dict) -> int:
@@ -69,7 +79,7 @@ def estimate_init_points(duration_seconds: float, *, dubbing_mode: str = "remote
 
     if mm_enhance:
         parts["omni"] = _points("omni", config.OMNI_MODEL, {
-            "input_tokens": sentences * OMNI_INPUT_TOKENS_PER_SENTENCE,
+            "input_tokens": int(dur * OMNI_AUDIO_TOKENS_PER_SECOND) + OMNI_PROMPT_TOKENS,
             "output_tokens": sentences * OMNI_OUTPUT_TOKENS_PER_SENTENCE,
         })
 
@@ -82,9 +92,10 @@ def estimate_init_points(duration_seconds: float, *, dubbing_mode: str = "remote
     if dubbing_mode == "remote":
         if voice_clone:
             parts["clone"] = _points("clone", pricing.ENROLLMENT_MODEL, {}) * max(1, speakers)
+        calls = max(1, int(round(sentences * TTS_CALLS_PER_SENTENCE)))
         parts["tts"] = _points("tts", config.TTS_MODEL, {
-            "input_tokens": sentences * TTS_INPUT_TOKENS_PER_SENTENCE,
-            "output_tokens": int(dur * TTS_OUTPUT_TOKENS_PER_SECOND),
+            "input_tokens": calls * TTS_INPUT_TOKENS_PER_CALL,
+            "output_tokens": calls * TTS_OUTPUT_TOKENS_PER_CALL,
         })
 
     total = sum(parts.values())

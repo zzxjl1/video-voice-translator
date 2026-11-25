@@ -288,9 +288,16 @@ config.BILLING_SIGNUP_BONUS_POINTS = 500
 from app.billing import estimate as est  # noqa: E402
 
 e = est.estimate_init_points(34, speakers=3)
-# 校准基准：真实账本里**一次干净初始化**（34 秒 / 9 句 / 3 克隆，去掉 chat、克隆选材、重跑）≈ 23.4 积分
-check("⑦ 34 秒视频估算贴近真实（23.4 的 0.9–1.3×）",
-      23.4 * 0.9 <= e["points"] <= 23.4 * 1.3, e["points"])
+# 校准基准（三个独立来源）：
+#  · 账本一次干净初始化（34 秒 / 9 句 / 3 克隆，去掉 chat/选材/重跑）：LLM 关 thinking 后 ≈ 12
+#  · omni 音频 6 token/秒（账本 prompt_tokens_details），30 分钟 ≈ 11
+#  · TTS 官方实测 ¥0.0095/分钟音频 → 30 分钟 ≈ 58 积分；账本每次调用输出 ≈ 45 token
+check("⑦ 34 秒视频估算贴近真实（≈12，允许 0.8–1.5×）", 12 * 0.8 <= e["points"] <= 12 * 1.5, e["points"])
+e30 = est.estimate_init_points(1800, speakers=3)
+check("⑦ 30 分钟 ≈ 230 积分（¥2.3）；LLM 是最大头，TTS 不是", 180 <= e30["points"] <= 300, e30["points"])
+check("⑦ omni 30 分钟 ≈ 11（按音频秒，不是按句）", 8 <= e30["breakdown"]["omni"] <= 16, e30["breakdown"]["omni"])
+check("⑦ TTS 30 分钟 ≈ 77（与官方 ¥0.0095/分钟一致）", 55 <= e30["breakdown"]["tts"] <= 100, e30["breakdown"]["tts"])
+check("⑦ LLM 30 分钟 ≈ 130（已按关 thinking 估）", 110 <= e30["breakdown"]["llm"] <= 160, e30["breakdown"]["llm"])
 e_off = est.estimate_init_points(34, dubbing_mode="off")
 check("⑦ off 模式不估克隆与 TTS", "clone" not in e_off["breakdown"] and "tts" not in e_off["breakdown"], e_off["breakdown"])
 e_br = est.estimate_init_points(34, dubbing_mode="browser")
@@ -300,10 +307,11 @@ check("⑦ 关掉审听不估 omni", "omni" not in e_nomm["breakdown"], e_nomm["
 check("⑦ 估算随时长单调递增",
       est.estimate_init_points(600)["points_micro"] > est.estimate_init_points(60)["points_micro"] > est.estimate_init_points(34)["points_micro"])
 check("⑦ 时长为 0 不炸", est.estimate_init_points(0)["points_micro"] >= 0)
-check("⑦ 10 分钟视频超过固定 100 积分门槛（固定门槛对长视频不够用）",
-      est.estimate_init_points(600)["points_micro"] > 100 * MICRO, est.estimate_init_points(600)["points"])
-check("⑦ 30 分钟视频 ≈ ¥7.5（749 积分）——不能比这更离谱",
-      600 <= est.estimate_init_points(1800)["points"] <= 900, est.estimate_init_points(1800)["points"])
+# 固定 100 积分门槛对短片够用，但长视频会把它跑穿——按时长估才有意义
+check("⑦ 10 分钟 ≈ 82（固定 100 够用）；30 分钟 ≈ 231（固定 100 不够）",
+      est.estimate_init_points(600)["points_micro"] < 100 * MICRO < est.estimate_init_points(1800)["points_micro"],
+      (est.estimate_init_points(600)["points"], est.estimate_init_points(1800)["points"]))
+
 
 # 上传超长被拒 + 时长写进工程
 from app import store as _store2  # noqa: E402

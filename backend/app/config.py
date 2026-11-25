@@ -149,12 +149,14 @@ LLM_MAX_TOKENS = _env_int("LLM_MAX_TOKENS", 8192)
 # OpenAI-compatible gateways (verified on DeepSeek).
 LLM_JSON_MODE = _env_bool("LLM_JSON_MODE", True)
 
-# Optional reasoning control. A reasoning model emits `reasoning_content` before
-# the answer; translation does not need it, and it costs tokens and latency.
+# Reasoning control. A reasoning model emits `reasoning_content` before the
+# answer; translation does not need it, and it costs tokens and latency.
 # Verified on deepseek-flash: "none" removes the reasoning block entirely.
+# Default "none"：实测翻译一个 10 分钟视频，推理 token 占 LLM 输出的 2/3
+# （114 → 44 积分）。翻译是"看懂再写出来"的任务，不需要显式推理链。
 # Blank = send nothing and accept the provider default. Common values: none /
 # minimal / low / medium / high.
-LLM_REASONING_EFFORT = _env("LLM_REASONING_EFFORT", "")
+LLM_REASONING_EFFORT = _env("LLM_REASONING_EFFORT", "none")
 
 # Chunking is DERIVED from the model's own limits rather than hand-tuned. The
 # old pair (25 segments / 4000 chars) was sized for a small window and cut long
