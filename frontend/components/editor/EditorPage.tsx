@@ -153,15 +153,16 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
   // 否则画面断行和导出的 ASS 会对不上。滑块拖动期间做一点防抖。
   const cueKey = useMemo(() => lines.map((l) =>
     `${l.id}:${l.translation}:${l.hidden}:${l.kind}:${l.audioDuration}`).join('|')
-    + JSON.stringify([style.track, style.font_size_percent, style.max_chars_per_line,
-                      style.max_lines, style.min_duration]), [lines, style]);
+    // 影响断行/时间轴的字段都要进 key，否则调"阅读速度""帧对齐"时预览不会刷新
+    + JSON.stringify([style.track, style.max_chars_per_line, style.max_lines,
+                      style.min_duration, style.max_duration, style.max_cps,
+                      style.min_gap, style.extend_into_silence, style.fps]), [lines, style]);
   useEffect(() => {
     let cancelled = false;
     const timer = setTimeout(() => {
-      api.previewSubtitleCues(id, { track: style.track, style: {
-        font_size_percent: style.font_size_percent, max_chars_per_line: style.max_chars_per_line,
-        max_lines: style.max_lines, min_duration: style.min_duration, font_family: style.font_family,
-      } }).then((r) => { if (!cancelled) setCues(r.cues); }).catch(() => { if (!cancelled) setCues([]); });
+      // 整份 style 传过去：服务端 from_dict 会归一化；以前只挑了 5 个字段，新加的
+      // 时间轴字段（max_cps / fps …）漏了，预览和导出会对不上
+      api.previewSubtitleCues(id, { track: style.track, style }).then((r) => { if (!cancelled) setCues(r.cues); }).catch(() => { if (!cancelled) setCues([]); });
     }, 180);
     return () => { cancelled = true; clearTimeout(timer); };
   }, [id, cueKey, style]);

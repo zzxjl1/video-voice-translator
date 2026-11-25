@@ -323,20 +323,18 @@ const SAMPLE_ORIGINAL = 'Hello, welcome back';
  * one line, so the one place built to answer "what will this look like?" was
  * the one place that answered wrong.
  */
-function sampleLines(style: SubtitleStyle): string[] {
-  const parts =
-    style.track === 'original'
-      ? [SAMPLE_ORIGINAL]
-      : style.track === 'bilingual'
-        ? [SAMPLE_TRANSLATED, SAMPLE_ORIGINAL]
-        : [SAMPLE_TRANSLATED];
-
-  const max = Math.max(1, style.max_lines);
-  // No elision marker any more: the server never cuts text — a cue that needs
-  // more lines than `max_lines` is split in TIME instead — so the miniature
-  // shows the lines of ONE instant (the first `max`) and must not imply that
-  // the rest is dropped.
-  return parts.slice(0, max);
+/** 缩略图里的行：文案 + 是不是双语里的原文行（原文行用小一号、灰色）。 */
+function sampleLines(style: SubtitleStyle): { text: string; secondary: boolean }[] {
+  // 译文、原文**各自**最多 max_lines 行（和服务端 _split_oversized 一致）；
+  // 缩略图每种只放一行样本，够看出样式就行。
+  if (style.track === 'original') return [{ text: SAMPLE_ORIGINAL, secondary: false }];
+  if (style.track === 'bilingual') {
+    return [
+      { text: SAMPLE_TRANSLATED, secondary: false },
+      { text: SAMPLE_ORIGINAL, secondary: true },
+    ];
+  }
+  return [{ text: SAMPLE_TRANSLATED, secondary: false }];
 }
 
 /**
@@ -370,11 +368,12 @@ const StyleThumbnail: React.FC<{ style: SubtitleStyle }> = ({ style }) => {
         <div
           key={index}
           style={{
-            ...overlayLineStyle(style, rect),
-            fontSize: Math.max(7, metrics.fontSize * 0.55),
+            ...overlayLineStyle(style, rect, line.secondary),
+            // 缩略图整体缩到 55%；原文行在此基础上再 82%（和 overlayLineStyle 的比例一致）
+            fontSize: Math.max(7, (line.secondary ? metrics.secondaryFontSize : metrics.fontSize) * 0.55),
           }}
         >
-          {line}
+          {line.text}
         </div>
       ))}
     </div>
