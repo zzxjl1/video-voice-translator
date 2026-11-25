@@ -53,6 +53,8 @@ def _display_width(text: str) -> float:
     与 Netflix TTSG 一致（CJK 字符占拉丁的两倍宽度）。
     `max_chars` 的语义是**拉丁字符数**：42 → 拉丁 42 字符，中文 21 个字。
     """
+    if text.isascii():
+        return float(len(text))          # ASCII 没有宽字符/组合标记，C 速取长度
     return sum(0.0 if _COMBINING_RE.match(ch) else (2.0 if _is_wide(ch) else 1.0) for ch in text)
 
 
@@ -133,7 +135,7 @@ def _zh_cut(text: str) -> list[tuple[str, str]]:
     jieba 分错的词没有严重影响：它只是用来**惩罚**在词中间断，不是禁止。
     """
     global _jieba_ready
-    if not any(_is_wide(c) for c in text):
+    if text.isascii() or not any(_is_wide(c) for c in text):
         return []
     hit = _zh_pos_cache.get(text)
     if hit is not None:
@@ -202,14 +204,16 @@ def _zh_boundary_cost(prev_word: str, prev_pos: str, next_word: str, next_pos: s
 
 def _atoms(text: str) -> list[str]:
     atoms = _ATOM_RE.findall(text)
-    # 组合标记并入前一个原子：天城文/泰语的元音符号和声调必须跟着基字符（म + ै = मै）
-    merged: list[str] = []
-    for a in atoms:
-        if merged and a and _COMBINING_RE.match(a[0]):
-            merged[-1] += a
-        else:
-            merged.append(a)
-    atoms = merged
+    # 组合标记并入前一个原子：天城文/泰语的元音符号和声调必须跟着基字符（म + ै = मै）。
+    # ASCII 文本没有组合标记，跳过整个循环（预览热路径，每次拖滑块都跑）。
+    if not text.isascii():
+        merged: list[str] = []
+        for a in atoms:
+            if merged and a and _COMBINING_RE.match(a[0]):
+                merged[-1] += a
+            else:
+                merged.append(a)
+        atoms = merged
     # 中文：把 jieba 切出的多字词合并成一个原子，断行就不会落在词中间
     words = _zh_words(text)
     if not words:
