@@ -23,6 +23,11 @@ _NO_LINE_START = set("，。！？；：、）》」』】〉”’…,.;:!?)]}"
 _NO_LINE_END = set("（《「『【〈“‘([{")
 # 高质量断点：在这些之后断最自然（句末 > 从句 > 短暂停顿）
 _BREAK_AFTER_STRONG = set("。！？；…!?;")
+# 括号类：内部不断（《创：战纪》里的冒号不是断点）
+# 括号类：内部不断（《创：战纪》里的冒号不是断点）。只收**成对**的中英文括号/引号；
+# 英文撇号（crane's）不成对，不能算——否则 depth 永远回不到 0，整段断不开。
+_OPEN_BRACKETS = set("《「『【〈（(“‘")
+_CLOSE_BRACKETS = set("》」』】〉）)”’")
 _BREAK_AFTER_WEAK = set("，、：,:")
 # 连词/介词：在这些**之前**断（英文），避免把 "of the" 拆到两行
 _BREAK_BEFORE_EN = {
@@ -32,7 +37,8 @@ _BREAK_BEFORE_EN = {
 # 中文连词/介词：在这些**之前**断
 _BREAK_BEFORE_ZH = {"但是", "因为", "所以", "如果", "而且", "然后", "不过", "还是", "或者"}
 # 中文：这些字不能出现在行首（必须紧跟前一个字/词）
-_ZH_NO_LINE_START = set("了的着过吗呢吧啊呀嘛把被地将就已而或但在")
+# 只禁真正的"后缀虚词"（必须紧跟前面的动词/名词）；副词/连词（就、也、而、但、或、在、把、被）可以行首
+_ZH_NO_LINE_START = set("了的着过吗呢吧啊呀嘛咧啦")
 # 中文：这些字后面断最自然（句读）
 _ZH_BREAK_AFTER = set("，。！？；：、）」』】”’…")
 # 中文：这些字后面尽量不断（动词+补语、数词+量词）
@@ -70,24 +76,105 @@ _ATOM_RE = re.compile(r"[A-Za-z0-9'’\-]+|\s+|.", re.S)
 _jieba_ready = False
 
 
-def _zh_words(text: str) -> set[str]:
-    """
-    中文分词（jieba），返回文本里出现过的多字词集合。按需初始化（0.25s，41MB 词典）——
-    只在真正有 CJK 文本要断行时才加载，纯英文字幕不碰它。
-    jieba 分错的词没有严重影响：它只是用来**惩罚**在词中间断，不是禁止。
-    """
+_zh_pos_cache: dict[str, list[tuple[str, str]]] = {}
+# 自定义词典（人名/地名/剧名——jieba 不认识的生造词，比如"斯普利特河"）。
+# 由 build_cues 从术语表喂进来；同一进程只注册一次。
+_custom_words: set[str] = set()
+
+
+def add_custom_words(words) -> None:
+    """登记专有名词，避免断行把它们拆开（"斯普利特|河高中"）。幂等。"""
     global _jieba_ready
-    if not _is_wide(text[0]) and not any(_is_wide(c) for c in text):
-        return set()
+    new = {str(w).strip() for w in words if w and len(str(w).strip()) >= 2}
+    new -= _custom_words
+    if not new:
+        return
+    _custom_words.update(new)
     try:
         import jieba  # type: ignore
         if not _jieba_ready:
             jieba.setLogLevel(60)
             jieba.initialize()
             _jieba_ready = True
-        return {w for w in jieba.lcut(text) if len(w) >= 2 and not _is_punct(w)}
+        for w in new:
+            jieba.add_word(w, freq=1_000_000, tag="n")   # 高频 + 名词：整词成原子、词性为 n
+        _zh_pos_cache.clear()   # 词典变了，缓存失效
     except ImportError:
-        return set()
+        pass
+
+
+def _zh_cut(text: str) -> list[tuple[str, str]]:
+    """
+    中文分词 + 词性（jieba.posseg），返回 [(词, 词性)]；非中文文本返回 []。
+    按需初始化（0.25s，41MB 词典）——只在真正有 CJK 文本要断行时才加载。
+    jieba 分错的词没有严重影响：它只是用来**惩罚**在词中间断，不是禁止。
+    """
+    global _jieba_ready
+    if not any(_is_wide(c) for c in text):
+        return []
+    hit = _zh_pos_cache.get(text)
+    if hit is not None:
+        return hit
+    try:
+        import jieba  # type: ignore
+        import jieba.posseg as pseg  # type: ignore
+        if not _jieba_ready:
+            jieba.setLogLevel(60)
+            jieba.initialize()
+            _jieba_ready = True
+        cut = [(w, f) for w, f in pseg.lcut(text)]
+    except ImportError:
+        cut = [(ch, "") for ch in text]
+    if len(_zh_pos_cache) > 4096:
+        _zh_pos_cache.clear()
+    _zh_pos_cache[text] = cut
+    return cut
+
+
+def _zh_words(text: str) -> set[str]:
+    """文本里出现过的多字中文词（用来避免在词中间断）。"""
+    return {w for w, _ in _zh_cut(text) if len(w) >= 2 and not _is_punct(w)}
+
+
+# 词性分组（jieba posseg 标记）
+_POS_NOUN = set("n nr ns nt nz s nrt nw an".split())   # 名词：人名/地名/处所/工作/方位…
+_POS_PRON = {"r"}                              # 代词
+_POS_TIME = set("t tg".split())               # 时间词（正在、刚刚、今天）
+_POS_ADJ = set("a ad an b".split())            # 形容词/区别词（作定语时）
+_POS_ADV = set("d")                            # 副词
+_PREP = set("p")                               # 介词
+_POS_VERB = set("v vn vd vg")                  # 动词
+_PARTICLE_DE = {"uj"}                          # 的
+_POS_FUNC = set("c u ul y x e o".split())      # 连词/助词/语气/标点
+
+
+def _zh_boundary_cost(prev_word: str, prev_pos: str, next_word: str, next_pos: str) -> float | None:
+    """
+    中文词性边界代价（None = 不适用，交给通用规则）。对照专业字幕的断点习惯：
+      · 名词/代词 后、副词/时间词/介词/动词 前 → 主谓边界，**最好**的断点
+      · 动词 后、名词 前 → 述宾边界，次好
+      · 「的」后：前面是动词（找到另一半的）可断；前面是名词（乐队的排练）不断
+      · 助词/量词 后不断（了、着、个）
+    """
+    if prev_pos in _POS_FUNC or next_pos in _POS_FUNC and next_pos not in {"c"}:
+        return None
+    if prev_pos in (_POS_NOUN | _POS_PRON) and (next_pos in _POS_TIME or next_pos in _POS_ADV or next_pos in _PREP):
+        return 0.0          # 主谓
+    if prev_pos in (_POS_NOUN | _POS_PRON) and next_pos in _POS_VERB:
+        return 0.1          # 主谓（名词+动词）
+    if prev_pos in _POS_VERB and next_pos in _POS_NOUN:
+        return 0.25         # 述宾
+    if prev_pos in _PARTICLE_DE:
+        return 0.3          # 的（后面再按前面是不是名词细化——见调用处）
+    if prev_pos in _POS_VERB and next_pos in (_POS_PRON | _POS_NOUN):
+        return 0.3
+    if prev_pos in _POS_ADV and next_pos in _POS_VERB:
+        return 0.5          # 副词+动词：可以断但不优先
+    if prev_pos in _POS_NOUN and next_pos in _PARTICLE_DE:
+        return 0.6          # 名词+的：定语还没完
+    if prev_pos in _POS_VERB and next_pos in _POS_VERB:
+        return 0.7          # 连动
+    return None
 
 
 def _atoms(text: str) -> list[str]:
@@ -145,6 +232,16 @@ def _atom_break_cost(atoms: list[str], i: int) -> float:
         return float("inf")
     if prev and prev[-1] in _NO_LINE_END:
         return float("inf")
+    # 书名号/引号/括号内部不断：《创：战纪》里的冒号不是断点
+    depth = 0
+    for a in atoms[:j + 1]:
+        for ch in a:
+            if ch in _OPEN_BRACKETS:
+                depth += 1
+            elif ch in _CLOSE_BRACKETS:
+                depth -= 1
+    if depth > 0:
+        return float("inf")
     # 中文硬规则：虚词不能行首，数词/第 后面不断
     if nxt and nxt[0] in _ZH_NO_LINE_START:
         return float("inf")
@@ -155,9 +252,33 @@ def _atom_break_cost(atoms: list[str], i: int) -> float:
     if prev and nxt and prev[-1].isdigit() and nxt[0] in "%‰°":
         return float("inf")
 
+    # 中文：有词性信息时，用词性边界代价（覆盖默认的逐字代价）
+    zh_cost = None
+    if prev and nxt and _is_wide(prev[-1]) and _is_wide(nxt[0]) and len(atoms) > 2:
+        cut = _zh_cut("".join(atoms))
+        # 找 prev 这个原子在 cut 里对应的词性：按字符位置对齐
+        left_text = "".join(atoms[:j + 1])
+        pos_i = 0
+        pw = pf = nw = nf = None
+        for w, f in cut:
+            if left_text.endswith(w):
+                pw, pf = w, f
+                break
+            pos_i += len(w)
+        # 下一个原子开头的词
+        right_text = "".join(atoms[k:])
+        for w, f in cut:
+            if right_text.startswith(w):
+                nw, nf = w, f
+                break
+        if pw and nw:
+            zh_cost = _zh_boundary_cost(pw, pf or "", nw, nf or "")
     cost = 0.0
+    # 标点后是最强的断点信号（专业字幕 32% 断在 ，。？后），要明显优于词性边界
     if prev and prev[-1] in _ZH_BREAK_AFTER:
-        cost += 0.1
+        cost += 0.0
+    elif zh_cost is not None:
+        cost += zh_cost
     elif prev and prev[-1] in _ZH_WEAK_AFTER and nxt and _is_wide(nxt[0]):
         cost += 0.8
     elif _is_punct(prev):
@@ -190,9 +311,12 @@ def _line_cost(line: str, max_chars: float) -> float:
     w = _display_width(line)
     if w > max_chars + 1e-9:
         return float("inf")
-    # 离满行的距离：用二次惩罚，让短线只在必要时出现
+    # 离满行的距离：二次惩罚，但权重**低于**断点代价——专业字幕宁可在标点后断、
+    # 第二行短一点，也不为了填满宽度断在语法中间（"我很高兴你找到了另一半，| 真的，"）。
+    # 中文尤其如此：拉丁文宽度权重 1.0，中文 0.5（词性边界更可靠）。
     shortfall = max_chars - w
-    return (shortfall / max(max_chars, 1.0)) ** 2 * 2.0
+    weight = 0.25 if any(_is_wide(c) for c in line) else 1.0
+    return (shortfall / max(max_chars, 1.0)) ** 2 * weight
 
 
 @lru_cache(maxsize=512)
@@ -226,6 +350,18 @@ def _best_breaks(text: str, max_chars: float) -> tuple[int, ...]:
             step = lc + 0.4
             if j < n:
                 step += _atom_break_cost(atoms, j)
+                # "跨过强断点"惩罚：这一行里有一个强断点（，。？！：）后面还有 ≥2 个原子，
+                # 却没在那断——专业字幕几乎总在标点后断（语料：第一行占 28% 也在逗号后断）。
+                # 按跨过的强断点数累加；行很短（< 35% cap）时不罚，短句开头例外。
+                # 只罚"跨过了标点、而且行已经不短"：一句话常有 2–3 个逗号，不能每个都断。
+                # 55% 是语料里"专业字幕选择跨过逗号"的典型上限，再长就该在标点后断。
+                if _display_width(line) >= max_chars * 0.55:
+                    skipped = 0
+                    for k in range(i + 1, j):
+                        a_prev = "".join(atoms[:k]).rstrip()[-1:]
+                        if a_prev in "，。？！：,?!:":
+                            skipped += 1
+                    step += skipped * 0.5
             if best[i] + step < best[j]:
                 best[j] = best[i] + step
                 back[j] = i
@@ -304,6 +440,8 @@ def wrap_text(text: str, max_cells: float, *, balance: bool = True) -> list[str]
         line = "".join(atoms[s:e]).strip()
         if line:
             lines.append(line)
-    if balance:
+    # 中文不做"金字塔平衡"：专业字幕断在语法边界（主谓/述宾），不是按长度平衡；
+    # _balance_pair 不懂词性，会把 DP 选好的断点挪坏。拉丁文仍平衡。
+    if balance and not any(_is_wide(c) for c in text):
         lines = _balance_pair(lines, float(max_chars))
     return lines if lines else [text]

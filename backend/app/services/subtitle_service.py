@@ -340,7 +340,7 @@ def _normalise_color(value: str, fallback: str) -> str:
 # --------------------------------------------------------------------------
 
 
-from app.services.subtitle_wrap import _display_width as _dw, wrap_text  # noqa: E402
+from app.services.subtitle_wrap import _display_width as _dw, add_custom_words, wrap_text  # noqa: E402
 
 
 @dataclass
@@ -507,11 +507,43 @@ def probe_video_size(path: str) -> tuple[int, int]:
 # --------------------------------------------------------------------------
 
 
+def _feed_custom_words(segments: Iterable, video_dir: str | None = None) -> None:
+    """
+    把专有名词登记给断行器：① 工程术语表的目标侧词；② 译文里反复出现的多字中文串
+    （同一段文本里出现 ≥2 次、jieba 会切碎的）。否则"斯普利特河高中"会被拆成
+    "斯普利特|河高中"。
+    """
+    words: set[str] = set()
+    if video_dir:
+        try:
+            import json
+            with open(os.path.join(video_dir, "llm", "glossary_extracted.json"), encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                words |= {str(v) for v in data.values() if v and "?" not in str(v)}
+                words |= {str(k) for k in data.keys() if len(str(k)) >= 2}
+        except (OSError, ValueError):
+            pass
+    # 译文里出现 ≥2 次的 2–5 字中文串（粗筛：没有标点/空格）
+    from collections import Counter
+    seen = Counter()
+    for seg in segments:
+        t = getattr(seg, "translated_text", "") or ""
+        for m in re.finditer(r"[\u4e00-\u9fff]{2,5}", t):
+            seen[m.group()] += 1
+    # 只收"完整出现 ≥2 次"且不是另一个更长词的子串的
+    cands = {w for w, c in seen.items() if c >= 2}
+    words |= {w for w in cands if not any(w != o and w in o for o in cands)}
+    if words:
+        add_custom_words(words)
+
+
 def build_cues(
     segments: Iterable,
     style: SubtitleStyle,
     *,
     probe_audio: bool = True,
+    video_dir: str | None = None,
 ) -> list[Cue]:
     """
     Turn pipeline segments into display cues with adapted timing.
@@ -529,6 +561,8 @@ def build_cues(
     # 隐藏的行不进字幕：预览叠加、SRT 下载、导出内嵌三条路都走这里，所以在这
     # 一处过滤就够。它的配音在时间轴上照常 —— 隐藏只管画面上的字。
     # 标成音乐/噪音/人声非语言的行同理不出字幕；歌曲（song）出原歌词，见 `_select_text`。
+    segments = list(segments)
+    _feed_custom_words(segments, video_dir)
     ordered = sorted(
         (s for s in segments
          if not getattr(s, "hidden", False)
@@ -763,16 +797,21 @@ def _split_oversized(cue: Cue, style: SubtitleStyle) -> list[Cue]:
     if len(primary) <= style.max_lines and len(secondary) <= style.max_lines:
         return [cue]
 
-    # 按"每种语言每次最多 max_lines 行"切块；两种语言的块数取大的，短的那种后面补空
+    # 按"每种语言每次最多 max_lines 行"切块
     p_chunks = [primary[i:i + style.max_lines] for i in range(0, len(primary), style.max_lines)] or [[]]
     s_chunks = [secondary[i:i + style.max_lines] for i in range(0, len(secondary), style.max_lines)] or [[]]
-    n = max(len(p_chunks), len(s_chunks))
-    # 对齐：如果两种语言块数不同，按文字量比例把行重新配对，尽量让每块都是"译文+对应原文"
-    # 简单做法：按比例切——译文按 s 的块数均分，原文按 p 的块数均分
-    if len(p_chunks) != len(s_chunks):
-        n = max(len(p_chunks), len(s_chunks))
-        p_chunks = _even_chunks(primary, n)
-        s_chunks = _even_chunks(secondary, n) if secondary else [[] for _ in range(n)]
+    # 对齐：两种语言**都有**且块数不同时，按文字量把多的那种重新均分到少的块数里，
+    # 让每块尽量是"译文 + 对应原文"。只有一种语言时直接用它自己的切块（每块 ≤ max_lines）。
+    if secondary and len(p_chunks) != len(s_chunks):
+        n = min(len(p_chunks), len(s_chunks))
+        if len(p_chunks) > n:
+            p_chunks = _even_chunks(primary, n)
+        else:
+            s_chunks = _even_chunks(secondary, n)
+    elif not secondary:
+        s_chunks = [[] for _ in p_chunks]
+    elif not primary:
+        p_chunks = [[] for _ in s_chunks]
 
     weights = [sum(_display_width(l) for l in p) + sum(_display_width(l) for l in s_) or 1.0
                for p, s_ in zip(p_chunks, s_chunks)]

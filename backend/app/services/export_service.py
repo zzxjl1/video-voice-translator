@@ -412,7 +412,7 @@ def _prepare_subtitles(
         style = subtitle_service.SubtitleStyle.from_dict(
             {**plan.style.to_dict(), "track": track}
         )
-        cues = subtitle_service.build_cues(state.segments, style)
+        cues = subtitle_service.build_cues(state.segments, style, video_dir=get_video_dir(video_id))
         if not cues:
             logger.info("[%s] No cues for track %r; skipping", video_id, track)
             continue
