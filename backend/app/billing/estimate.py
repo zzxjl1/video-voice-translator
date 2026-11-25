@@ -40,8 +40,10 @@ OMNI_OUTPUT_TOKENS_PER_SENTENCE = 35
 
 # LLM 翻译按分块（每块 ≈ 1500 入），输出**关掉 thinking 后** ≈ 译文长度（300/块）；
 # 开 thinking 输出会翻到 1400/块，这是 LLM 成本的大头，见 config.LLM_REASONING_EFFORT。
-LLM_CHUNK_INPUT_TOKENS = 1_500
-LLM_CHUNK_OUTPUT_TOKENS = 300
+# 实测（43 句基准，prompt 含 few-shot 之后）：每块 in≈2055 / out≈604。
+# few-shot 让 prompt 变长、译文更完整也让输出变长——比旧值（1500/300）高，估算跟着调。
+LLM_CHUNK_INPUT_TOKENS = 2_050
+LLM_CHUNK_OUTPUT_TOKENS = 600
 LLM_GLOSSARY_INPUT_TOKENS = 350
 LLM_GLOSSARY_OUTPUT_TOKENS = 450
 
