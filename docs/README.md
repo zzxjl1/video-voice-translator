@@ -7,6 +7,7 @@
 - [Piper 本地 TTS 试听页](tts-piper-spike.md)
 - [配音方式：Remote / In-browser / Off](dubbing-modes.md)
 - [计费：成本 / 倍率 / 余额](billing.md)
+- [Spike：人声分离换 Roformer（跑通、未接入，可捡起）](spikes/roformer-separation/README.md)
 - 本地部署：见根目录 [LOCAL_DEPLOY.md](../LOCAL_DEPLOY.md)
 
 约定：

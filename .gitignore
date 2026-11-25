@@ -20,3 +20,11 @@ backend/data/
 
 # playwright-cli session artifacts
 .playwright-cli/
+
+# roformer spike assets (500MB model + test media), see docs/spikes/roformer-separation/
+frontend/public/roformer-model/
+frontend/public/samples/
+frontend/public/sep-listen/
+
+# roformer separation spike (docs/spikes/roformer-separation/)
+frontend/roformer-spike.html

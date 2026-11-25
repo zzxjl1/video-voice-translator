@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="zh"><meta charset="utf-8"><title>roformer spike</title>
+<body><pre id="out">starting…</pre>
+<script type="module">
+// Spike: musetric Duality student (213MB) vs 现有 MDX，在真实样本上跑。
+// 产出：out/roformer/*.wav（instrumental / lead / backing）、耗时、显存门槛、支持判定。
+const out = (s) => { document.getElementById('out').textContent += s + '\n'; };
+const lines = []; window.__report = () => lines.join('\n'); window.__done = false;
+const say = (s) => { lines.push(s); out(s); };
+
+const sep = await import('@musetric/ai/separation');
+say(`exports: ${Object.keys(sep).join(', ')}`);
+
+// 1) 支持判定（显存门槛）
+const supported = await sep.separationSupported();
+const adapter = supported ? await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' }) : null;
+const info = adapter?.info ? `${adapter.info.vendor || '?'} / ${adapter.info.architecture || '?'} / ${adapter.info.description || '?'}` : 'n/a';
+say(`supported=${supported} adapter=${info}`);
+if (adapter) {
+  const L = adapter.limits;
+  say('  maxStorageBuffersPerShaderStage=' + L.maxStorageBuffersPerShaderStage + ' maxBufferSize=' + (L.maxBufferSize/1e6).toFixed(0) + 'MB maxStorageBufferBindingSize=' + (L.maxStorageBufferBindingSize/1e6).toFixed(0) + 'MB');
+}
+
+// 2) 取模型（同源：把 pin 的 HF URL 改写到本地 static）
+say('model files: ' + JSON.stringify(Object.fromEntries(Object.entries(sep.separationModelFiles).map(([k,v]) => [k, {url: v.url, bytes: v.bytes}]))));
+const fetchFile = async (f) => {
+  const local = '/roformer-model/' + f.url.split('/').pop();
+  const r = await fetch(local);
+  if (!r.ok) throw new Error(`fetch ${local}: ${r.status}`);
+  return new Uint8Array(await r.arrayBuffer());
+};
+const t0 = performance.now();
+const [model, modelData] = await Promise.all([fetchFile(sep.separationModelFiles.model), fetchFile(sep.separationModelFiles.modelData)]);
+say(`downloaded ${(model.byteLength+modelData.byteLength)/1e6} MB in ${((performance.now()-t0)/1000).toFixed(1)}s`);
+const t1 = performance.now();
+const loaded = await sep.loadSeparationModel({ model, modelData });
+say(`model loaded in ${((performance.now()-t1)/1000).toFixed(1)}s`);
+
+// 3) 解码样本
+const SAMPLE = '/samples/test.wav';
+const { decodeAudio, encodeWav } = await import('/features/separation/separatorClient.js');
+const file = await (await fetch(SAMPLE)).blob();
+const audio = await decodeAudio(file);  // 44.1k stereo
+const frames = audio.channels[0].length;
+say(`sample: ${(frames/audio.sampleRate).toFixed(1)}s @ ${audio.sampleRate}Hz`);
+
+// 4) 跑分离
+const stems = { instrumental: [], lead: [], backing: [] };
+const t2 = performance.now();
+const scales = await sep.separateTrack({
+  ...sep.separationTrack,
+  source: {
+    frames,
+    peak: async () => 1.0,   // decodeAudio 已归一化到 [-1,1]
+    read: async (start, chans) => {
+      for (let c = 0; c < chans.length; c++) {
+        const src = audio.channels[c], n = chans[c].length;
+        chans[c].set(start + n <= src.length ? src.subarray(start, start + n) : src.subarray(start));
+      }
+    },
+  },
+  loadModel: async () => loaded,
+  report: (u, n) => { if (u % 4 === 0 || u === n - 1) say(`  unit ${u+1}/${n}`); },
+  commit: async ({ stems: s }) => {
+    for (const k of Object.keys(s)) stems[k].push(new Float32Array(s[k]));
+  },
+});
+const ms = performance.now() - t2;
+say('separated in ' + (ms/1000).toFixed(1) + 's -> ' + ((frames/audio.sampleRate)/(ms/1000)).toFixed(1) + 'x realtime; scales=' + JSON.stringify(scales));
+
+// 5) 写 wav 供试听：用浏览器下载（spike 不需要服务器）
+for (const [k, parts] of Object.entries(stems)) {
+  const total = parts.reduce((n, p) => n + p.length, 0);
+  const all = new Float32Array(total); let at = 0;
+  for (const p of parts) { all.set(p, at); at += p.length; }
+  const n = all.length / 2;
+  const ch = [new Float32Array(n), new Float32Array(n)];
+  for (let i = 0; i < n; i++) { ch[0][i] = all[i*2]; ch[1][i] = all[i*2+1]; }
+  const blob = encodeWav(ch, audio.sampleRate);
+  await fetch('http://127.0.0.1:9312/roformer_' + k + '.wav', { method: 'PUT', body: blob });
+  let pk = 0, sum = 0; for (const v of all) { pk = Math.max(pk, Math.abs(v)); sum += v*v; }
+  say(`  ${k.padEnd(13)} peak=${pk.toFixed(3)} rms=${Math.sqrt(sum/all.length).toFixed(4)}`);
+}
+await loaded.release();
+window.__done = true;
+</script></body></html>
