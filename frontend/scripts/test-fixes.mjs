@@ -130,6 +130,13 @@ const r = (p) => fs.readFileSync(new URL(`../${p}`, import.meta.url), 'utf8');
   check('④ windows：restore 只有两个参数', w.restore.length === 2, w.restore.length);
 }
 
+// ---------------------------------------------------------------- ④b 人声轨不再丢右声道
+{
+  const sep = r('features/separation/separatorClient.js');
+  check('④b 分离：人声轨按 (L+R)/2 混成 mono，不再只取 vocals[0]（"左说话右安静"会丢右声道人声）',
+    !/vocalsWriter\.push\(\[vocals\[0\]\]\)/.test(sep) && /mixToMono\(vocals\)/.test(sep));
+}
+
 // ---------------------------------------------------------------- ⑤ i18n 完整性
 {
   const read = (n) => JSON.parse(r(`i18n/${n}.json`));

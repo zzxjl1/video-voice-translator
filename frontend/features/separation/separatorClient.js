@@ -757,7 +757,10 @@ export async function separateAndUpload({
         onProgress?.('separate', { done, total, window, windows });
       },
       onSamples: ({ instrumental, vocals }) => {
-        vocalsWriter.push([vocals[0]]);
+        // 人声轨按 (L+R)/2 混成 mono，而不是只取 vocals[0]：模型是分声道输出的，
+        // 以前只收左声道，"左边说话、右边安静"的视频右声道的人声会被整个丢掉
+        // （ASR 识别不到、克隆参考里也没有）。背景轨保持立体声。
+        vocalsWriter.push([vocals.length > 1 ? mixToMono(vocals) : vocals[0]]);
         backgroundWriter.push(instrumental);
       },
       signal,

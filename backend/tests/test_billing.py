@@ -288,8 +288,9 @@ config.BILLING_SIGNUP_BONUS_POINTS = 500
 from app.billing import estimate as est  # noqa: E402
 
 e = est.estimate_init_points(34, speakers=3)
-check("⑦ 34 秒视频估算 ≥ 真实账本（40.4 积分）且不过分高估（< 1.5×）",
-      40.4 <= e["points"] <= 40.4 * 1.5, e["points"])
+# 校准基准：真实账本里**一次干净初始化**（34 秒 / 9 句 / 3 克隆，去掉 chat、克隆选材、重跑）≈ 23.4 积分
+check("⑦ 34 秒视频估算贴近真实（23.4 的 0.9–1.3×）",
+      23.4 * 0.9 <= e["points"] <= 23.4 * 1.3, e["points"])
 e_off = est.estimate_init_points(34, dubbing_mode="off")
 check("⑦ off 模式不估克隆与 TTS", "clone" not in e_off["breakdown"] and "tts" not in e_off["breakdown"], e_off["breakdown"])
 e_br = est.estimate_init_points(34, dubbing_mode="browser")
@@ -299,8 +300,10 @@ check("⑦ 关掉审听不估 omni", "omni" not in e_nomm["breakdown"], e_nomm["
 check("⑦ 估算随时长单调递增",
       est.estimate_init_points(600)["points_micro"] > est.estimate_init_points(60)["points_micro"] > est.estimate_init_points(34)["points_micro"])
 check("⑦ 时长为 0 不炸", est.estimate_init_points(0)["points_micro"] >= 0)
-check("⑦ 10 分钟视频远超固定 100 积分门槛（说明固定门槛确实不够用）",
+check("⑦ 10 分钟视频超过固定 100 积分门槛（固定门槛对长视频不够用）",
       est.estimate_init_points(600)["points_micro"] > 100 * MICRO, est.estimate_init_points(600)["points"])
+check("⑦ 30 分钟视频 ≈ ¥7.5（749 积分）——不能比这更离谱",
+      600 <= est.estimate_init_points(1800)["points"] <= 900, est.estimate_init_points(1800)["points"])
 
 # 上传超长被拒 + 时长写进工程
 from app import store as _store2  # noqa: E402
