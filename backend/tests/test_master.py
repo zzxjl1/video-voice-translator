@@ -7,6 +7,7 @@ import os, re, subprocess, sys, tempfile, wave
 BACKEND = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BACKEND)
 import numpy as np
+from app import config
 from app.services import export_service as ex, mix_service as M
 
 fails = []
@@ -72,7 +73,7 @@ check("② 取最后一段 Summary", ex.parse_ebur128_summary(twice)[0] == -21.7
 # ---------------------------------------------------------------- ③ 滤镜串
 f = ex.master_filter("t", -20.0, -6.0, MASTER)
 check("③ 滤镜串：先增益，再升采样，最后限幅（顺序是有意的）",
-      re.fullmatch(r"volume=4\.000dB,aresample=48000,alimiter=limit=0\.841\d+:attack=5:release=50:level=disabled:latency=1", f) is not None, f)
+      re.fullmatch(r"volume=4\.000dB,aresample=" + str(config.EXPORT_SAMPLE_RATE) + r",alimiter=limit=0\.841\d+:attack=5:release=50:level=disabled:latency=1", f) is not None, f)
 f = ex.master_filter("t", None, float("-inf"), {**MASTER, "peakLimitDbfs": -40.0})
 check("③ 限幅线性值被夹在 -24 dB（0.0631，在 alimiter 的合法范围 [0.0625, 1] 内）", "limit=0.063096:" in f, f)
 f = ex.master_filter("t", None, float("-inf"), {**MASTER, "peakLimitDbfs": 3.0})
@@ -80,7 +81,7 @@ check("③ ……上限为正数也夹到 0 dB（limit=1）", "limit=1.000000:" 
 
 # ---------------------------------------------------------------- ④ 渲染后重新测量成片
 TMP = tempfile.mkdtemp()
-SR = 24000
+SR = config.EXPORT_SAMPLE_RATE   # 夹具跟随混音采样率；测的是母带逻辑，不是某个采样率
 DUR = 8.0
 
 def run(cmd):
@@ -123,10 +124,43 @@ def render(label, timeline, bed, master=MASTER):
 TARGET, CEIL = MASTER["targetLufs"], MASTER["peakLimitDbfs"]
 
 # 安静：-30 LUFS 量级的配音 + 很轻的垫底 → 应被抬到目标，真峰在上限内
-lufs, tp, vcodec, _ = render("quiet", speech_like(0.04), speech_like(0.005))
+lufs, tp, vcodec, quiet_out = render("quiet", speech_like(0.04), speech_like(0.005))
 check("④ 安静混音被抬到目标响度（±0.7 LU）", abs(lufs - TARGET) < 0.7, f"{lufs:.2f} LUFS")
 check("④ ……真峰不超上限", tp <= CEIL + 0.05, f"{tp:.2f} dBTP")
 check("④ 视频流直拷（没被重编码）", vcodec == "h264", vcodec)
+
+# 成片音频布局：立体声 + 目标采样率。垫底轨是整条链路里唯一的高保真源，导出必须保留它的声场。
+ac, asr_ = run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=channels,sample_rate",
+                "-of", "csv=p=0", quiet_out]).stdout.strip().split(",")
+asr_, ac = quiet_out and run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
+                              "stream=sample_rate,channels", "-of", "csv=p=0", quiet_out]).stdout.strip().split(",")
+check("④ 成片音频是立体声（垫底轨的声场没被 downmix 掉）", int(ac) == config.EXPORT_CHANNELS, ac)
+check("④ 成片采样率 = 混音采样率（垫底轨零重采样）", int(asr_) == config.EXPORT_SAMPLE_RATE, asr_)
+
+# 立体声垫底 → 左右声道必须有差异（防 downmix 回归：混成 mono 再复制成 stereo 时 L≡R）。
+# 写一个左右反相的立体声垫底（正弦 L、反相 R）：混成 mono 会抵消成静音。
+def lr_diff(path):
+    # 二进制输出：不能用上面 text=True 的 run()
+    pcm = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-vn", "-f", "s16le", "-ac", "2", "-ar", "8000", "-"],
+                         capture_output=True, check=True).stdout
+    x = np.frombuffer(pcm, dtype=np.int16).reshape(-1, 2).astype(np.float64)
+    return float(np.sqrt(np.mean((x[:, 0] - x[:, 1]) ** 2)) / (np.sqrt(np.mean(x ** 2)) + 1e-9))
+
+anti = np.sin(2 * np.pi * 330 * t) * 0.08
+# 直接验证 build_ducked_bed 保留立体声：把反相垫底放进一个临时工程目录
+from app import store as _store
+from app.models import video_dir_path as _vdp
+vid = "stereocheck00000000000000000000"
+if not _store.exists(vid):
+    _store.create(vid, "v.mp4", VIDEO)
+inter = np.stack([anti, -anti], axis=1)
+with wave.open(f"{_vdp(vid)}/background.wav", "wb") as w:
+    w.setnchannels(2); w.setsampwidth(2); w.setframerate(SR)
+    w.writeframes(np.clip(np.round(inter * 32767), -32768, 32767).astype(np.int16).tobytes())
+out_bed = ex.build_ducked_bed(vid, _store.get_state(vid), {"bed": {"kind": "background", "gain": 1.0, "duck": []}}, DUR)
+ch = run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=channels", "-of", "csv=p=0", out_bed]).stdout.strip()
+check("④ 垫底轨 build_ducked_bed 输出立体声（不再 -ac 1）", ch == "2", ch)
+check("④ 左右反相的垫底经 build_ducked_bed 后仍有差异（没被 downmix 抵消）", lr_diff(out_bed) > 0.5, f"{lr_diff(out_bed):.3f}")
 
 # 偏响：采样峰值冲过 0 dBFS 的混音 → 响度归到目标，真峰被限在上限内
 lufs, tp, _, _ = render("hot", np.clip(speech_like(1.6), -3.0, 3.0), speech_like(0.2))

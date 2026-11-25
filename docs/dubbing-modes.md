@@ -218,3 +218,25 @@ backend/data/<id>/tts/<segment_id>.mp3
 
 官方建议单次合成 100-200 token 最佳（上限 511）；<10-20 token 会明显变弱。
 worker 按 450 token 打包句子、短句自动拼包；单句超过上限时二分重试，不截断。
+
+## 导出音频链路（采样率 / 声道）
+
+混音与成片统一在 **44.1 kHz 立体声**，AAC 192k（`EXPORT_SAMPLE_RATE` / `EXPORT_CHANNELS` / `EXPORT_AUDIO_BITRATE`）。
+
+为什么是 44.1 kHz：人声分离模型（UVR MDX）工作在 44.1 kHz，分离出的 `background.wav`
+因此必然是 44.1 kHz 立体声——它是整条链路里**唯一的高保真源**（远端 TTS 22.05 kHz、
+浏览器 Kokoro 24 kHz 都比它窄）。混音取同一采样率，垫底轨零重采样直通；人声轨无论
+选哪个采样率都要升一次，没有差别。以前是 24 kHz：所有音源在混音阶段就被削到 12 kHz
+带宽，成片再升到 48 kHz 也补不回来。
+
+声道：**配音轨与保留原声轨保持单声道**（人声居中，1D memmap），在 mux 时用
+`aformat=channel_layouts=stereo` 展开成 L=R；**垫底轨保留立体声**（`build_ducked_bed`
+按 `(帧, 声道)` 流式处理，同一时刻各声道同一增益，duck 不会把声像扭向一边）。
+以前垫底被 `-ac 1` downmix，声场塌成一点，左右反相成分还会互相抵消——成片"闷、扁"的主因。
+
+代价（已实测）：中间 WAV 约 ×3.7（2 小时视频垫底轨 ~2.5 GB 临时文件，导完即删）、
+导出 CPU 时间约 +10–20%、成片音频码流 160k→192k。响度目标与限幅逻辑不变
+（限幅器仍在重采样之后），真工程实测 LUFS −16.0 正中目标。
+
+回归断言：`test_master.py` ④ 成片 `channels=2`、采样率=混音采样率、`build_ducked_bed`
+输出立体声、左右反相垫底经处理后 L/R 仍有差异（防 downmix 回归）。

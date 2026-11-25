@@ -848,7 +848,15 @@ SEPARATOR_PARAMS = {
 # 没有 EXPORT_ENABLED：出片能不能做，取决于 ffmpeg/ffprobe 在不在
 # （export_service.is_available()）—— 这是真实约束，而不是一个能让用户点下
 # 导出键却得到 "Export is disabled" 的环境开关。
-EXPORT_SAMPLE_RATE = _env_int("EXPORT_SAMPLE_RATE", 24000)
+# 混音与成片的采样率。44100 不是随手选的：人声分离模型（UVR MDX）工作在 44.1 kHz，
+# 分离出来的 background.wav 因此必然是 44.1 kHz 立体声——它是整条链路里唯一的高保真
+# 源（远端 TTS 22.05 kHz、浏览器 Kokoro 24 kHz 都比它窄）。混音也取 44.1 kHz，垫底轨
+# 就能零重采样直通；人声轨无论选哪个采样率都要升一次，没有差别。
+# 以前是 24000：所有音源在混音阶段就被削到 12 kHz 带宽，成片再升到 48 kHz 也补不回来。
+EXPORT_SAMPLE_RATE = _env_int("EXPORT_SAMPLE_RATE", 44100)
+# 成片声道。配音与保留原声是单声道（居中），垫底轨保留立体声声场。
+EXPORT_CHANNELS = _env_int("EXPORT_CHANNELS", 2)
+EXPORT_AUDIO_BITRATE = _env("EXPORT_AUDIO_BITRATE", "192k")
 # 增益/下压/响度目标全部搬去了 services/mix_service.py —— 混音策略只允许有
 # 一个归属地，这里留两个地方就会回到"预览与成片各一套"的老路。
 EXPORT_FILENAME = _env("EXPORT_FILENAME", "translated_video.mp4")

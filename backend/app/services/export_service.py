@@ -223,8 +223,9 @@ def build_dubbed_timeline(
     filename = "kept_original.wav" if kept else "dubbed_timeline.wav"
     timeline_path = os.path.join(get_video_dir(video_id), filename)
     raw_path = f"{timeline_path}.raw"
-    # 时间轴用**磁盘映射**（memmap）而不是内存数组（P2 #26）：2 小时 @24kHz 的
-    # int32 缓冲是 ~691MB —— RSS 不与视频时长成正比。
+    # 时间轴用**磁盘映射**（memmap）而不是内存数组（P2 #26）：2 小时 @44.1kHz 的
+    # int32 缓冲是 ~1.27GB —— RSS 不与视频时长成正比。这条轨保持单声道（人声居中），
+    # 立体声只在 mux 时展开，否则缓冲再翻一倍。
     timeline = np.memmap(raw_path, dtype=np.int32, mode="w+", shape=(total_samples,))
 
     fade_samples = max(0, int(plan.get("voiceFadeS", 0.02) * sample_rate))
@@ -461,12 +462,17 @@ def build_ducked_bed(
     duration: float,
 ) -> Optional[str]:
     """
-    按 plan 生成垫底轨：解码一次，逐样本乘上包络与基准增益，写成 mono WAV。
+    按 plan 生成垫底轨：解码一次，逐样本乘上包络与基准增益，写成 **立体声** WAV。
 
     为什么在 python 里做而不用 ffmpeg 的 sidechaincompress：包络必须与播放侧
     求值的是**同一条**（plan.bed.duck 的分段线性断点）；sidechaincompress 是
     另一套压缩器模型，深度与快慢都无法和预览逐点一致 —— 那正是这次要消灭的
     "两套实现"。
+
+    为什么是立体声：分离出的 background.wav 本来就是 44.1 kHz 立体声，是整条
+    链路里唯一的高保真源。以前这里 `-ac 1` 把它 downmix 成单声道，声场塌成一点，
+    左右反相的成分还会互相抵消——成片"闷、扁"的主因之一。配音轨仍是单声道居中，
+    在 mux 时展开成 stereo 与这里相加。
 
     分块处理：解码与写出都是流式的，内存与视频时长无关（2 小时也是常数）。
     垫底比视频长时在读满时长后停住 —— 以前 amix duration=longest 会让成片
@@ -479,6 +485,7 @@ def build_ducked_bed(
         return None
 
     sample_rate = config.EXPORT_SAMPLE_RATE
+    channels = config.EXPORT_CHANNELS
     if bed["kind"] == "background":
         source = os.path.join(get_video_dir(video_id), "background.wav")
     else:
@@ -492,40 +499,48 @@ def build_ducked_bed(
     base_gain = float(bed["gain"])
 
     out_path = os.path.join(get_video_dir(video_id), "bed_ducked.wav")
-    max_samples = int((duration + 0.5) * sample_rate)
-    chunk_bytes = sample_rate * SAMPLE_WIDTH          # 每块 1 秒
+    max_frames = int((duration + 0.5) * sample_rate)
+    # 每块 1 秒：按"帧"计数（一帧 = channels 个样本）
+    chunk_bytes = sample_rate * channels * SAMPLE_WIDTH
+    frame = np.dtype(np.int16)
 
     cmd = ["ffmpeg", "-v", "error", "-i", source]
     if bed["kind"] == "original":
         cmd += ["-vn"]                                # 只要音轨
-    cmd += ["-f", "s16le", "-ac", "1", "-ar", str(sample_rate), "-"]
+    cmd += ["-f", "s16le", "-ac", str(channels), "-ar", str(sample_rate), "-"]
 
     with tempfile.TemporaryFile() as err_file:
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err_file)
         peak = 0.0
-        written = 0
+        written = 0                                  # 已写出的帧数
         try:
             with wave.open(out_path, "wb") as wav:
-                wav.setnchannels(1)
+                wav.setnchannels(channels)
                 wav.setsampwidth(SAMPLE_WIDTH)
                 wav.setframerate(sample_rate)
-                while written < max_samples:
+                while written < max_frames:
                     raw = process.stdout.read(chunk_bytes) if process.stdout else b""
                     if not raw:
                         break
-                    block = np.frombuffer(raw, dtype=np.int16).astype(np.float64)
-                    times = (written + np.arange(len(block))) / sample_rate
-                    # np.interp = 分段线性 —— 与前端对 plan 断点的求值方式一致
-                    gain = base_gain * (
-                        np.interp(times, xs, ys) if xs else 1.0
-                    )
-                    block *= gain
-                    if len(block):
+                    # 末尾不足一帧的零头丢掉（s16le 交错流按帧切）
+                    usable = (len(raw) // (channels * SAMPLE_WIDTH)) * channels * SAMPLE_WIDTH
+                    block = np.frombuffer(raw[:usable], dtype=frame).astype(np.float64)
+                    n_frames = len(block) // channels
+                    if n_frames == 0:
+                        continue
+                    block = block.reshape(n_frames, channels)
+                    times = (written + np.arange(n_frames)) / sample_rate
+                    # np.interp = 分段线性 —— 与前端对 plan 断点的求值方式一致。
+                    # 同一时刻所有声道同一个增益（duck 不该把声像扭向一边）。
+                    # 无 duck 断点时 np.interp 不被调用，gain 是标量：统一成 (n,1) 再广播。
+                    gain = base_gain * (np.interp(times, xs, ys) if xs else np.ones(n_frames))
+                    block *= gain[:, None]
+                    if n_frames:
                         peak = max(peak, float(np.max(np.abs(block))))
                     wav.writeframes(
                         np.clip(block, MIN_SAMPLE, MAX_SAMPLE).astype(np.int16).tobytes()
                     )
-                    written += len(block)
+                    written += n_frames
             code = process.wait()
         finally:
             if process.poll() is None:
@@ -538,8 +553,8 @@ def build_ducked_bed(
     if written == 0:
         raise RuntimeError(f"垫底音源解不出任何音频：{source}")
     logger.info(
-        f"[{video_id}] Ducked bed built ({bed['kind']}, gain {bed['gain']:.3f}, "
-        f"{'%d duck pts' % len(duck) if duck else 'no ducking'}, "
+        f"[{video_id}] Ducked bed built ({bed['kind']}, {sample_rate} Hz × {channels} ch, "
+        f"gain {bed['gain']:.3f}, {'%d duck pts' % len(duck) if duck else 'no ducking'}, "
         f"peak {20 * __import__('math').log10(max(peak, 1e-9)):.1f} dBFS) -> {out_path}"
     )
     return out_path
@@ -565,6 +580,11 @@ def parse_ebur128_summary(stderr: str) -> tuple[Optional[float], float]:
     return (None if lufs <= mix_service.SILENCE_LUFS else lufs), float(peak.group(1))
 
 
+def _channel_layout() -> str:
+    """把任意输入统一成成片声道布局的 aformat 片段（mono → stereo 时为人声居中复制）。"""
+    return f"aformat=channel_layouts={'stereo' if config.EXPORT_CHANNELS >= 2 else 'mono'}"
+
+
 def _measure_mix(timeline_path: str, bed_path: Optional[str]) -> tuple[Optional[float], float]:
     """
     量整条混音的 (整合响度, 采样峰值)。失败就抛，绝不猜。
@@ -573,12 +593,14 @@ def _measure_mix(timeline_path: str, bed_path: Optional[str]) -> tuple[Optional[
     也作为输入打开的（只是不映射，但解复用仍要把它从头读到尾）。BS.1770 本身
     比 loudnorm 第一遍便宜一个数量级（37 分钟混音实测 1.0 秒 vs 25.5 秒）。
     """
+    lay = _channel_layout()
     if bed_path:
         inputs = ["-i", timeline_path, "-i", bed_path]
-        pre = "[0:a][1:a]amix=inputs=2:duration=first:normalize=0[mix];[mix]"
+        pre = f"[0:a]{lay}[v];[1:a]{lay}[b];[v][b]amix=inputs=2:duration=first:normalize=0[mix];[mix]"
     else:
         inputs = ["-i", timeline_path]
-        pre = "[0:a]"
+        pre = f"[0:a]{lay},"
+    # pre 以 ',' 或 '[mix]' 结尾，调用方在后面直接拼 ebur128 / 母带滤镜。
     # -v info：Summary 走的是 info 级日志，warning 会把它吞掉。
     cmd = [
         "ffmpeg", "-hide_banner", "-nostats", "-v", "info", *inputs,
@@ -595,11 +617,11 @@ def _measure_mix(timeline_path: str, bed_path: Optional[str]) -> tuple[Optional[
 
 def master_filter(video_id: str, lufs: Optional[float], peak_dbfs: float, master: dict) -> str:
     """
-    母带滤镜串：一次静态增益 → 升到 48 kHz → 限幅器兜底。
+    母带滤镜串：一次静态增益 → 统一到 EXPORT_SAMPLE_RATE → 限幅器兜底。
 
     增益的决定在 `mix_service.master_gain`（策略归那边）；这里只负责把它翻成滤镜
-    并把结果说清楚。顺序是有讲究的：限幅器放在升采样**之后**。先限 24 kHz 再升
-    采样，过采样产生的采样间峰值会冲出上限（真工程实测 -1.30 dBTP，上限 -1.5）；
+    并把结果说清楚。顺序是有讲究的：限幅器放在重采样**之后**。先限再升采样，
+    过采样产生的采样间峰值会冲出上限（真工程实测 -1.30 dBTP，上限 -1.5）；
     升采样后再限，成片真峰正好落在 -1.50。
     """
     decision = mix_service.master_gain(lufs, peak_dbfs, master)
@@ -629,8 +651,9 @@ def master_filter(video_id: str, lufs: Optional[float], peak_dbfs: float, master
     # alimiter.limit 是线性值，范围 [0.0625, 1]（-24 dB .. 0 dB）。
     ceiling_db = min(0.0, max(-24.0, float(master["peakLimitDbfs"])))
     limit = 10.0 ** (ceiling_db / 20.0)
+    sr = config.EXPORT_SAMPLE_RATE
     return (
-        f"volume={gain:.3f}dB,aresample=48000,"
+        f"volume={gain:.3f}dB,aresample={sr},"
         f"alimiter=limit={limit:.6f}:attack=5:release=50:level=disabled:latency=1"
     )
 
@@ -731,10 +754,17 @@ def _mux(
     for subtitle_input in inputs:
         base_cmd += ["-i", subtitle_input.path]
 
+    # amix 要求所有输入同一通道布局。配音与保留原声是单声道，用 aformat 展开成
+    # 居中的 stereo（L=R）；垫底轨已是 stereo。单声道源用 aformat 而不是 pan：
+    # aformat 对 mono→stereo 的默认就是双声道同值复制，等价于人声居中。
+    lay = _channel_layout()
     if len(mix_labels) > 1:
-        pre_filter = "".join(mix_labels) + f"amix=inputs={len(mix_labels)}:duration=first:normalize=0[mix];[mix]"
+        # 每条输入单独一条链（用 ; 分隔），各自打上标签，再汇入 amix。
+        pre_filter = (";".join(f"{lbl}{lay}[i{n}]" for n, lbl in enumerate(mix_labels)) + ";"
+                      + "".join(f"[i{n}]" for n in range(len(mix_labels)))
+                      + f"amix=inputs={len(mix_labels)}:duration=first:normalize=0[mix];[mix]")
     else:
-        pre_filter = mix_labels[0]
+        pre_filter = f"{mix_labels[0]}{lay},"     # 单输入：与母带滤镜同一条链，用逗号接
 
     lufs, peak_dbfs = _measure_mix(timeline_path, bed_path)       # 不含 kept_path：见上
     filter_complex = f"{pre_filter}{master_filter(video_id, lufs, peak_dbfs, master)}[aout]"
@@ -750,9 +780,10 @@ def _mux(
     cmd += [
         "-c:v", "copy",          # never re-encode the video stream
         "-c:a", "aac",
-        "-b:a", "160k",
-        # 滤镜链末端已经是 48 kHz；显式写出来，是为了不依赖链里谁改了采样率。
-        "-ar", "48000",
+        "-b:a", config.EXPORT_AUDIO_BITRATE,
+        # 滤镜链末端已经是目标采样率/声道；显式写出来，是为了不依赖链里谁改了它。
+        "-ar", str(config.EXPORT_SAMPLE_RATE),
+        "-ac", str(config.EXPORT_CHANNELS),
     ]
 
     if inputs:
