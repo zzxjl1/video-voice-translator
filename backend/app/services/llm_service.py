@@ -66,6 +66,17 @@ _SYSTEM_PROMPT = (
 )
 
 
+def _tags_in(text: str) -> set[str]:
+    """一行里出现的已知标签（规范化拼写）。"""
+    known = set(config.EMOTION_CONTROL_TAGS) | set(config.EMOTION_RICH_TAGS)
+    out: set[str] = set()
+    for match in config.EMOTION_TAG_RE.finditer(text or ""):
+        canonical = config.canonical_emotion_tag(match.group(1).strip())
+        if canonical in known:
+            out.add(canonical)
+    return out
+
+
 def _tag_mismatches(source: str, translated: str) -> tuple[list[str], list[str]]:
     """
     比一行里"源文标签"与"译文标签"，返回 (丢掉, 新造)。
@@ -468,6 +479,16 @@ def _build_chunk_prompt(
         "translate the intended meaning rather than the literal slip. Only fix "
         "what is plainly a recognition error — never substitute a different idea "
         "of your own.",
+        # 7. 标签。以前 prompt 里一个字没提，模型把 [curious] 当正文丢掉是必然的；
+        #    A/B 实测 none/low 两种模式都丢。标签是 TTS 的情绪/音效控制指令，丢了
+        #    = 那一句在成片里没了情绪，而且事后只能靠人工听出来。
+        "7. Square-bracket tags such as [excited], [sarcastic], [laughing] are "
+        "delivery instructions for the speech synthesizer, NOT text. Copy every "
+        "tag from the source into the translation UNCHANGED (same spelling, "
+        "half-width brackets) and in the same position: a tag at the start of "
+        "the source line stays at the start of the translation; an inline tag "
+        "stays right before the words it applies to. Never translate, rename, "
+        "drop or add tags. If a line has no tag, write none.",
         "",
         "## Length budget (important — this audio is lip/duration synced)",
         f"Spoken {target_language} runs at roughly {rate} {unit} per second here.",
@@ -1010,12 +1031,26 @@ async def translate_script(
             tag_missing[item["id"]] = missing
         if invented:
             tag_invented[item["id"]] = invented
-    if tag_missing or tag_invented:
-        # 合成前还有一道白名单防线（会把自造标签剥掉、把全角/大小写归一），
-        # 所以这里不是致命问题，但必须点名：丢掉的那个标签 = 丢掉的情绪/音效。
+    # 丢掉的标签补回去。只记日志不够：丢掉的那个标签 = 那一句在成片里没了情绪/音效，
+    # 而用户只会在导出后才听出来。补的位置：控制标签（[excited] 这类）在源文里本来就在
+    # 句首，补回句首；拟声标签（[laughing]）在源文里的位置无法可靠映射到译文，
+    # 同样放句首——宁可在稍微偏的位置有这个音效，也不要没有。
+    restored = 0
+    for sid, missing in tag_missing.items():
+        text = translations.get(sid) or ""
+        have = _tags_in(text)
+        for tag in missing:
+            if tag not in have:
+                text = f"{tag} {text}".strip()
+                have.add(tag)
+        translations[sid] = text
+        restored += len(missing)
+    if restored:
+        logger.info(f"[{video_id}] translation tag check: restored {restored} dropped tag(s) on {len(tag_missing)} line(s)")
+    if tag_invented:
+        # 自造标签由合成前的白名单防线剥掉，这里只点名便于排查。
         logger.warning(
             f"[{video_id}] translation tag check: "
-            f"{len(tag_missing)} line(s) lost a tag {list(tag_missing)[:6]}, "
             f"{len(tag_invented)} line(s) added an unknown tag {list(tag_invented)[:6]}"
         )
 
