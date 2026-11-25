@@ -66,10 +66,14 @@ class SubtitleStyle:
     font_family: str = "Source Han Sans"
     font_size_percent: float = 4.5      # of video height
     primary_color: str = "#FFFFFF"
+    secondary_color: str = "#FFFFFF"    # ASS SecondaryColour：卡拉OK/说话人变色用；普通字幕同主色
     outline_color: str = "#000000"
     outline_width: float = 2.0
     shadow: float = 1.0
     bold: bool = True
+    italic: bool = False
+    blur: float = 0.0                   # 模糊（代替硬描边做柔和边缘），千分比高度
+    spacing: float = 0.0                # 字间距，像素 @ PlayRes
     background: str = "box"             # none | box
 
     alignment: str = "bottom"           # bottom | center | top
@@ -80,8 +84,29 @@ class SubtitleStyle:
     max_chars_per_line: int = 18
     max_lines: int = 2
 
+    # ---- 时间轴（专业字幕规则）----
     # Never flash a cue for less than this.
     min_duration: float = 0.8
+    # Never hold a single cue longer than this (viewers re-read and lose track);
+    # a cue that would exceed it is split in time.
+    max_duration: float = 7.0
+    # Reading speed ceiling: display cells per second (CJK cells; a Latin char
+    # is half a cell). Above it the cue is split if possible. Netflix: ~17 Latin
+    # cps for adult programmes ≈ 8.5 cells; BBC: ~160–180 wpm. 9 cells is the
+    # common ceiling for translated subtitles.
+    max_cps: float = 9.0
+    # Two consecutive cues never touch: keep at least this gap so the switch is
+    # visible as a cut, not a flicker.
+    min_gap: float = 0.042              # ≈ 2 frames @ 48fps; ~1 frame @ 24fps
+    # Extend a cue past its audio end into the following silence so it doesn't
+    # vanish the instant speech stops. Capped by the next cue and by max_duration.
+    extend_into_silence: float = 0.5
+    # Snap cue boundaries to frame boundaries (0 = off). Avoids a cue switching
+    # mid-frame and flickering between two frames in some players.
+    fps: float = 0.0                    # 0 = don't snap; 23.976/24/25/30/60 = snap
+    # Keep this many frames of the previous cue visible after the next starts
+    # when they're back-to-back within the same shot (0 = hard cut).
+    # (Not used yet; reserved for a fade-in/out option.)
 
     VALID_TRACKS = ("translated", "original", "bilingual")
     VALID_ALIGNMENTS = ("bottom", "center", "top")
@@ -97,15 +122,19 @@ class SubtitleStyle:
         able to 500 an export or the preview.
         """
         defaults = SubtitleStyle()
-        return SubtitleStyle(
+        out = SubtitleStyle(
             track=self.track if self.track in self.VALID_TRACKS else "translated",
             font_family=str(self.font_family or "sans-serif").strip() or "sans-serif",
             font_size_percent=_clamped(self.font_size_percent, defaults.font_size_percent, 1.5, 12.0),
             primary_color=_normalise_color(self.primary_color, "#FFFFFF"),
+            secondary_color=_normalise_color(self.secondary_color, "#FFFFFF"),
             outline_color=_normalise_color(self.outline_color, "#000000"),
             outline_width=_clamped(self.outline_width, defaults.outline_width, 0.0, 8.0),
             shadow=_clamped(self.shadow, defaults.shadow, 0.0, 8.0),
             bold=_as_bool(self.bold, defaults.bold),
+            italic=_as_bool(self.italic, defaults.italic),
+            blur=_clamped(self.blur, defaults.blur, 0.0, 8.0),
+            spacing=_clamped(self.spacing, defaults.spacing, -5.0, 20.0),
             background=(
                 self.background if self.background in self.VALID_BACKGROUNDS else "box"
             ),
@@ -119,7 +148,16 @@ class SubtitleStyle:
             max_chars_per_line=int(_clamped(self.max_chars_per_line, defaults.max_chars_per_line, 6, 60)),
             max_lines=int(_clamped(self.max_lines, defaults.max_lines, 1, 4)),
             min_duration=_clamped(self.min_duration, defaults.min_duration, 0.1, 10.0),
+            max_duration=_clamped(self.max_duration, defaults.max_duration, 1.5, 30.0),
+            max_cps=_clamped(self.max_cps, defaults.max_cps, 3.0, 30.0),
+            min_gap=_clamped(self.min_gap, defaults.min_gap, 0.0, 0.5),
+            extend_into_silence=_clamped(self.extend_into_silence, defaults.extend_into_silence, 0.0, 3.0),
+            fps=_clamped(self.fps, defaults.fps, 0.0, 240.0),
         )
+        # max_duration 必须大于 min_duration，否则一条字幕永远同时违反两条规则
+        if out.max_duration < out.min_duration * 1.5:
+            out.max_duration = out.min_duration * 1.5
+        return out
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -302,6 +340,9 @@ def _normalise_color(value: str, fallback: str) -> str:
 # --------------------------------------------------------------------------
 
 
+from app.services.subtitle_wrap import _display_width as _dw, wrap_text  # noqa: E402
+
+
 @dataclass
 class Cue:
     start: float
@@ -313,10 +354,35 @@ class Cue:
     # re-wrapping a re-joined chunk could shift breaks and drift from the
     # split that the timing was computed for.
     forced_lines: Optional[list[str]] = None
+    # 双语：原文的显示行（和 forced_lines 配对，切分后的碎片靠它知道哪几行是原文）
+    secondary_lines: Optional[list[str]] = None
+    # 同一个源 cue 被切成的时间碎片共用一个 id：它们之间**不加 gap、不延伸**，
+    # 必须无缝衔接（一句歌词/一句长译文被切开，中间不该闪一下空白）。
+    group: Optional[str] = None
+
+    def primary_lines(self, style: SubtitleStyle) -> list[str]:
+        """主文案（译文）的显示行。forced_lines 时 = forced_lines 去掉原文行。"""
+        if self.forced_lines is not None:
+            sec = self.secondary_lines or []
+            return [l for l in self.forced_lines if l not in sec] if sec else list(self.forced_lines)
+        return _wrap(self.text, style.max_chars_per_line) if self.text else []
+
+    def secondary_display_lines(self, style: SubtitleStyle) -> list[str]:
+        """原文的显示行（只在双语轨道下有）。"""
+        if self.forced_lines is not None:
+            return list(self.secondary_lines or [])
+        if style.track == "bilingual" and self.secondary:
+            return _wrap(self.secondary, style.max_chars_per_line)
+        return []
+
+    def secondary_count(self, style: SubtitleStyle) -> int:
+        """末尾这几行是原文——渲染端据此换成原文样式。"""
+        return len(self.secondary_display_lines(style))
 
     def lines(self, style: SubtitleStyle) -> list[str]:
         """
-        The wrapped display lines for this cue — ALL of them, never a cut.
+        The wrapped display lines for this cue — ALL of them, never a cut:
+        译文行在前，原文行在后。
 
         There is deliberately no `max_lines` clamp here. Cues that need more
         lines than the style allows are split in TIME by `_split_oversized`
@@ -327,75 +393,16 @@ class Cue:
         """
         if self.forced_lines is not None:
             return list(self.forced_lines)
-        parts: list[str] = []
-        if self.text:
-            parts.extend(_wrap(self.text, style.max_chars_per_line))
-        if style.track == "bilingual" and self.secondary:
-            parts.extend(_wrap(self.secondary, style.max_chars_per_line))
-        return parts
+        return self.primary_lines(style) + self.secondary_display_lines(style)
 
 
 def _display_width(text: str) -> float:
-    """
-    Rough display width in "character cells": CJK counts 1, Latin 0.5.
-
-    Only used for line breaking, so approximate is fine — it just has to make
-    Chinese lines break at roughly the same visual length as Latin ones.
-    """
-    width = 0.0
-    for ch in text:
-        width += 1.0 if _is_wide(ch) else 0.5
-    return width
-
-
-def _is_wide(ch: str) -> bool:
-    code = ord(ch)
-    return (
-        0x1100 <= code <= 0x115F
-        or 0x2E80 <= code <= 0xA4CF
-        or 0xAC00 <= code <= 0xD7A3
-        or 0xF900 <= code <= 0xFAFF
-        or 0xFE30 <= code <= 0xFE6F
-        or 0xFF00 <= code <= 0xFF60
-        or 0xFFE0 <= code <= 0xFFE6
-        or 0x20000 <= code <= 0x3FFFD
-    )
+    return _dw(text)
 
 
 def _wrap(text: str, max_chars: int) -> list[str]:
-    """
-    Break `text` into lines of at most `max_chars` display cells.
-
-    Breaks on spaces when the text has them (Latin), otherwise per character
-    (CJK). Prefers a space break near the limit so words are not split.
-    """
-    text = " ".join((text or "").split())
-    if not text:
-        return []
-    if _display_width(text) <= max_chars:
-        return [text]
-
-    has_spaces = " " in text
-    lines: list[str] = []
-    current = ""
-    for ch in text:
-        candidate = current + ch
-        if _display_width(candidate) > max_chars and current:
-            # Try to move a trailing word to the next line when breaking a
-            # space-delimited text, so Latin words stay whole.
-            if has_spaces and ch != " ":
-                cut = current.rfind(" ")
-                if cut > 0 and _display_width(current[:cut]) >= max_chars * 0.5:
-                    lines.append(current[:cut].rstrip())
-                    current = current[cut + 1 :].lstrip() + ch
-                    continue
-            lines.append(current.rstrip())
-            current = ch.lstrip() if ch == " " else ch
-        else:
-            current = candidate
-    if current.strip():
-        lines.append(current.strip())
-    return lines
+    """断行（委托给 subtitle_wrap）：在标点/词边界断，两行平衡。"""
+    return wrap_text(text, max_chars)
 
 
 # `_limit_lines` used to live here: it kept the first `max_lines` lines and
@@ -569,6 +576,128 @@ def build_cues(
         else:
             cues.append(_dual_cue(picked, style, start, max(end, start + 0.2)))
 
+    return _apply_timing_rules(cues, style)
+
+
+# --------------------------------------------------------------------------
+# 时间轴后处理：专业字幕的时序规则，在所有 cue 都生成之后统一做一遍，
+# 因为 gap / 延伸 / 帧对齐都要看相邻的 cue。
+# --------------------------------------------------------------------------
+
+
+def _snap(t: float, fps: float) -> float:
+    """对齐到帧边界（向上取整到下一帧的起点，避免切在两帧之间）。"""
+    if fps <= 0:
+        return t
+    return round(round(t * fps) / fps, 6)
+
+
+def _cue_cells(cue: Cue, style: SubtitleStyle) -> float:
+    """
+    一条字幕的阅读量（CJK 格），用来算阅读速度。
+    **只算主文案**：双语轨道里观众读的是译文，原文只是参考，不该因为原文长就把
+    译文也切掉（一条 2.36s 的字幕，译文 14 格 = 5.9 cps 合规，加上英文原文就 18 cps）。
+    """
+    return sum(_display_width(l) for l in cue.primary_lines(style)) / 2.0
+
+
+def _split_by_reading(cue: Cue, style: SubtitleStyle) -> list[Cue]:
+    """
+    一条字幕如果读不完（主文案超过 max_cps）或停太久（超过 max_duration），按主文案
+    行切成连续的几条，每条的时间够读完。文本不丢。
+
+    切块复用 `_split_oversized` 的逻辑（译文 ≤N 行 + 按比例配对的原文），这里只负责
+    **重新分配时间**：每条至少够读完（cells / max_cps）且不短于 min_duration。
+    """
+    cells = _cue_cells(cue, style)
+    duration = cue.end - cue.start
+    too_fast = duration > 0 and cells / duration > style.max_cps
+    too_long = duration > style.max_duration
+    if not (too_fast or too_long):
+        return [cue]
+    if len(cue.primary_lines(style)) <= 1 and not (too_long and cue.secondary_display_lines(style)):
+        # 一行主文案：没法再按行切（硬切会把词拆开），只能保留
+        return [cue]
+    pieces = _split_oversized(cue, style)
+    if len(pieces) <= 1:
+        return [cue]
+    # 重新按阅读速度分配时间
+    needs = [max(_cue_cells(p, style) / style.max_cps, style.min_duration) for p in pieces]
+    total_need = sum(needs)
+    if duration >= total_need:
+        spare = duration - total_need
+        weights = [max(_cue_cells(p, style), 1.0) for p in pieces]
+        tw = sum(weights)
+        durs = [n + spare * w / tw for n, w in zip(needs, weights)]
+    else:
+        # 总时长连"每条读满"都不够：按文字量硬分，保证不丢字（源时间轴的物理限制）
+        weights = [max(_cue_cells(p, style), 1.0) for p in pieces]
+        tw = sum(weights)
+        durs = [duration * w / tw for w in weights]
+    t = cue.start
+    for p, d in zip(pieces, durs):
+        p.start = t
+        p.end = t + d
+        t += d
+    return pieces
+
+
+def _apply_timing_rules(cues: list[Cue], style: SubtitleStyle) -> list[Cue]:
+    """
+    按顺序应用：
+      1. 阅读速度 / 最大时长 → 切分（可能把一条变几条）
+      2. 延伸进静音：一条字幕说完后，后面如果是空的，多停 extend_into_silence
+      3. 最小时长
+      4. 相邻不重叠且留 min_gap
+      5. 帧对齐
+    顺序有讲究：先切再延伸，否则切出来的碎片各自延伸会叠起来；gap 在延伸之后，
+    否则延伸会把 gap 吃掉；帧对齐最后，避免取整后又产生重叠。
+    """
+    if not cues:
+        return cues
+    # 1. 切分
+    out: list[Cue] = []
+    for c in cues:
+        out.extend(_split_by_reading(c, style))
+    cues = out
+
+    # 2. 延伸进静音 + 3. 最小时长 + 4. gap（一次从前往后扫）
+    for i, c in enumerate(cues):
+        nxt = cues[i + 1] if i + 1 < len(cues) else None
+        same_group = nxt is not None and c.group is not None and nxt.group == c.group
+        if same_group:
+            # 同一源 cue 的碎片：无缝衔接，不延伸、不 gap（时长在切分时已分好）
+            continue
+        next_start = nxt.start if nxt else float("inf")
+        # 自然结束点（音频结束）记下来，延伸从它算，不从被钳过的 end 算
+        natural_end = c.end
+        # 最小时长
+        end = max(c.end, c.start + style.min_duration)
+        # 延伸：只往空隙里伸，不超过下一条开始 - gap，也不超过 max_duration
+        if style.extend_into_silence > 0:
+            end = max(end, natural_end + style.extend_into_silence)
+        end = min(end, c.start + style.max_duration)
+        if next_start - style.min_gap > c.start:
+            end = min(end, next_start - style.min_gap)
+        else:
+            # 下一条几乎同时开始：保证至少 0.2s 可见，哪怕会和下条紧贴
+            end = max(c.start + 0.2, min(end, next_start))
+        c.end = max(0.0, end)
+
+    # 5. 帧对齐：起止各自取整到帧；取整后如果和下一条重叠，把 end 退一帧
+    if style.fps > 0:
+        fps = style.fps
+        for c in cues:
+            c.start = _snap(c.start, fps)
+            c.end = _snap(c.end, fps)
+            if c.end <= c.start:
+                c.end = c.start + 1.0 / fps
+        for a, b in zip(cues, cues[1:]):
+            if a.group is not None and a.group == b.group:
+                b.start = a.end            # 碎片共用边界，不留洞
+            elif a.end > b.start:
+                a.end = max(a.start + 1.0 / fps, b.start - 1.0 / fps)
+
     return cues
 
 
@@ -617,6 +746,10 @@ def _split_oversized(cue: Cue, style: SubtitleStyle) -> list[Cue]:
     A cue whose text needs more than `max_lines` lines is split into
     consecutive cues that each fit — the text is never dropped.
 
+    双语轨道：译文和原文**各自**最多 `max_lines` 行（专业做法：双语字幕一块最多
+    2×N 行，不是两种语言加起来 N 行）。超过时按"译文行数 / 原文行数"比例切成连续
+    的几块，每块译文行在前、原文行在后，时间按文字量分配。
+
     The old behaviour kept the first `max_lines` lines and appended "…",
     silently discarding the rest of the sentence. Subtitles exist to carry the
     words; a line cap is a layout preference, not a licence to lose them.
@@ -624,27 +757,63 @@ def _split_oversized(cue: Cue, style: SubtitleStyle) -> list[Cue]:
     to how much text each carries, so a long line simply stays on screen a
     little longer instead of vanishing.
     """
-    parts: list[str] = []
-    if cue.text:
-        parts.extend(_wrap(cue.text, style.max_chars_per_line))
-    if cue.secondary:
-        parts.extend(_wrap(cue.secondary, style.max_chars_per_line))
-    if len(parts) <= style.max_lines:
+    primary = cue.primary_lines(style)
+    secondary = cue.secondary_display_lines(style)
+    # 两种语言各自的行数都对得上一个块 → 不用切
+    if len(primary) <= style.max_lines and len(secondary) <= style.max_lines:
         return [cue]
 
-    chunks = [parts[i:i + style.max_lines] for i in range(0, len(parts), style.max_lines)]
-    weights = [sum(_display_width(l) for l in chunk) or 1.0 for chunk in chunks]
+    # 按"每种语言每次最多 max_lines 行"切块；两种语言的块数取大的，短的那种后面补空
+    p_chunks = [primary[i:i + style.max_lines] for i in range(0, len(primary), style.max_lines)] or [[]]
+    s_chunks = [secondary[i:i + style.max_lines] for i in range(0, len(secondary), style.max_lines)] or [[]]
+    n = max(len(p_chunks), len(s_chunks))
+    # 对齐：如果两种语言块数不同，按文字量比例把行重新配对，尽量让每块都是"译文+对应原文"
+    # 简单做法：按比例切——译文按 s 的块数均分，原文按 p 的块数均分
+    if len(p_chunks) != len(s_chunks):
+        n = max(len(p_chunks), len(s_chunks))
+        p_chunks = _even_chunks(primary, n)
+        s_chunks = _even_chunks(secondary, n) if secondary else [[] for _ in range(n)]
+
+    weights = [sum(_display_width(l) for l in p) + sum(_display_width(l) for l in s_) or 1.0
+               for p, s_ in zip(p_chunks, s_chunks)]
     total = sum(weights)
     duration = max(0.2, cue.end - cue.start)
 
     out: list[Cue] = []
     t = cue.start
-    for chunk in chunks:
-        weight = sum(_display_width(l) for l in chunk) or 1.0
-        out.append(Cue(start=t, end=t + duration * weight / total,
-                       text="", secondary="", forced_lines=chunk))
-        t += duration * weight / total
+    gid = cue.group or f"g{id(cue):x}"
+    for p, s_, w in zip(p_chunks, s_chunks, weights):
+        d = duration * w / total
+        out.append(Cue(start=t, end=t + d, text="", secondary="",
+                       forced_lines=list(p) + list(s_),
+                       secondary_lines=list(s_) or None, group=gid))
+        t += d
     return out
+
+
+def _even_chunks(lines: list[str], n: int) -> list[list[str]]:
+    """把 lines 尽量均匀地分成 n 块（按显示宽度），每块至少一行（lines 非空时）。"""
+    if n <= 0 or not lines:
+        return [[] for _ in range(max(n, 0))]
+    if len(lines) <= n:
+        out = [[l] for l in lines] + [[] for _ in range(n - len(lines))]
+        return out
+    widths = [_display_width(l) for l in lines]
+    total = sum(widths)
+    out: list[list[str]] = []
+    acc: list[str] = []
+    acc_w = 0.0
+    target = total / n
+    for l, w in zip(lines, widths):
+        acc.append(l); acc_w += w
+        remaining_blocks = n - len(out) - 1
+        if acc_w >= target - 1e-9 and remaining_blocks > 0 and len(lines) - (len(out) + sum(len(a) for a in out)) > 0:
+            out.append(acc); acc = []; acc_w = 0.0
+    if acc:
+        out.append(acc)
+    while len(out) < n:
+        out.append([])
+    return out[:n]
 
 
 # 标签的形状规则。**必须与前端 `frontend/utils/subtitleStyle.ts` 的 TAG_SOURCE
@@ -698,11 +867,12 @@ def _song_cues(lyric: str, style: SubtitleStyle, start: float, end: float) -> li
     duration = max(0.2, end - start)
     out: list[Cue] = []
     t = start
+    gid = f"song{id(lyric):x}"
     for chunk, weight in zip(chunks, weights):
         lines = list(chunk)
         lines[0] = f"{SONG_MARK} {lines[0]}"
         lines[-1] = f"{lines[-1]} {SONG_MARK}"
-        out.append(Cue(start=t, end=t + duration * weight / total, text="", forced_lines=lines))
+        out.append(Cue(start=t, end=t + duration * weight / total, text="", forced_lines=lines, group=gid))
         t += duration * weight / total
     return out
 
@@ -828,31 +998,48 @@ def to_ass(cues: list[Cue], style: SubtitleStyle, width: int, height: int) -> st
     # Same padding the preview uses around a line (0.18 of the font size).
     box_pad = max(1.0, font_size * 0.18)
 
+    # ASS 的 Fontname 是逗号分隔格式里的一个字段，**不能含逗号**，所以写不了字体栈。
+    # 只写用户选的那一个名字；libass 找不到时按 fontconfig 自己的规则回退（通常到
+    # 系统黑体），和前端 FONT_FALLBACKS 的目标一致但不受我们控制。这是 ASS 格式的
+    # 限制，不是遗漏。
     font = _ass_field(style.font_family) or "sans-serif"
     alignment = str(_ASS_ALIGNMENT.get(style.alignment, 2))
     bold = "-1" if style.bold else "0"
+    italic = "-1" if style.italic else "0"
+    # 模糊：ASS 的 \blur 是每像素高斯半径；我们的 blur 千分比高度 → PlayRes 像素
+    blur_px = height * style.blur / 1000.0
 
-    def style_line(name, primary, outline_colour, back_colour, border_style, outline_px, shadow_px):
+    def style_line(name, primary, secondary, outline_colour, back_colour, border_style,
+                   outline_px, shadow_px, *, size=None, spacing=None, italic_flag=None, align=None):
         return ",".join(
             [
                 f"Style: {name}",
                 font,
-                str(font_size),
+                str(size if size is not None else font_size),
                 primary,
-                primary,
+                secondary,
                 outline_colour,
                 back_colour,
                 bold,
-                "0", "0", "0",
-                "100", "100", "0", "0",
+                italic if italic_flag is None else italic_flag,
+                "0", "0",
+                "100", "100",
+                _ass_number(style.spacing if spacing is None else spacing),
+                "0",
                 str(border_style),
                 _ass_number(outline_px),
                 _ass_number(shadow_px),
-                alignment,
+                alignment if align is None else str(align),
                 str(margin_h), str(margin_h), str(margin_v),
                 "1",
             ]
         )
+
+    # 双语轨道：原文单独一个样式（小一号、灰一点），译文用 Default。
+    # 同一个 Dialogue 里按行加 \r 样式切换：ASS 允许行内 \r<StyleName>。
+    bilingual = style.track == "bilingual"
+    secondary_size = max(8, round(font_size * 0.82))
+    secondary_color = _ass_color(style.secondary_color) if style.secondary_color != "#FFFFFF" else "&H00D0D0D0"
 
     lines = [
         "[Script Info]",
@@ -873,6 +1060,7 @@ def to_ass(cues: list[Cue], style: SubtitleStyle, width: int, height: int) -> st
         style_line(
             "Default",
             _ass_color(style.primary_color),
+            _ass_color(style.secondary_color),
             _ass_color(style.outline_color),
             "&H80000000",
             1,
@@ -880,11 +1068,27 @@ def to_ass(cues: list[Cue], style: SubtitleStyle, width: int, height: int) -> st
             shadow,
         ),
     ]
+    if bilingual:
+        lines.append(
+            style_line(
+                "Original",
+                secondary_color,
+                secondary_color,
+                _ass_color(style.outline_color),
+                "&H80000000",
+                1,
+                outline,
+                shadow,
+                size=secondary_size,
+                italic_flag="0",
+            )
+        )
     if box:
         lines.append(
             style_line(
                 "Box",
                 "&HFF000000",      # fill fully transparent: only the box is drawn
+                "&HFF000000",
                 "&H80000000",      # BorderStyle 3 paints the box in OutlineColour; 50% black
                 "&HFF000000",
                 3,
@@ -898,19 +1102,44 @@ def to_ass(cues: list[Cue], style: SubtitleStyle, width: int, height: int) -> st
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
 
+    # 行内覆盖标签：模糊（代替硬描边做柔和边缘）
+    inline = ""
+    if blur_px > 0.2:
+        inline += f"\\blur{blur_px:.1f}"
+
     for cue in cues:
-        body = cue.lines(style)
-        if not body:
-            continue
-        # \N is an explicit break, \n would be a soft one.
-        text = "\\N".join(body)
-        text = text.replace("{", "(").replace("}", ")")   # keep override tags out
+        # 双语：译文行 / 原文行分开，各自套样式；其它轨道一行样式到底
+        if bilingual and cue.text and cue.secondary:
+            primary_lines = _wrap(cue.text, style.max_chars_per_line)
+            secondary_lines = _wrap(cue.secondary, style.max_chars_per_line)
+            # 两个说话人重叠的 cue 走 forced_lines，不带 text/secondary
+            if cue.forced_lines is not None:
+                primary_lines, secondary_lines = cue.forced_lines, []
+            pieces = []
+            for t in primary_lines:
+                pieces.append("{\\rDefault}" + inline + _ass_escape(t))
+            for t in secondary_lines:
+                pieces.append("{\\rOriginal}" + _ass_escape(t))
+            text = "\\N".join(pieces)
+        else:
+            body = cue.lines(style)
+            if not body:
+                continue
+            # \N is an explicit break, \n would be a soft one.
+            text = "\\N".join(_ass_escape(l) for l in body)
+            if inline:
+                text = inline + text
         start, end = _ass_time(cue.start), _ass_time(cue.end)
         if box:
             lines.append(f"Dialogue: 0,{start},{end},Box,,0,0,0,,{text}")
         lines.append(f"Dialogue: 1,{start},{end},Default,,0,0,0,,{text}")
 
     return "\n".join(lines) + "\n"
+
+
+def _ass_escape(text: str) -> str:
+    """ASS 正文里 { } 是覆盖标签的边界，正文中出现要转义成全角括号。"""
+    return text.replace("{", "(").replace("}", ")")
 
 
 # --------------------------------------------------------------------------

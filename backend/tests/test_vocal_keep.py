@@ -450,7 +450,10 @@ sty = SS.default_style()
 cues = SS.build_cues([sub_seg("a", 19.71, 22.57, "I think this is great."), sub_seg("b", 20.01, 23.14, "No, I disagree.")], sty, probe_audio=False)
 check("⑤ 两个人同时说：合成一条字幕，每人一行，前面加 “- ”",
       len(cues) == 1 and cues[0].lines(sty) == ["- I think this is great.", "- No, I disagree."], [c.lines(sty) for c in cues])
-check("⑤ 这条字幕的起止覆盖两个人（起点取最早，终点取最晚）", abs(cues[0].start - 19.71) < 1e-6 and abs(cues[0].end - 23.14) < 1e-6)
+# 终点：覆盖到最晚的 23.14，再延伸进后面的静音 extend_into_silence（默认 0.5）
+check("⑤ 这条字幕的起止覆盖两个人（起点取最早，终点不早于最晚的说话结束）",
+      abs(cues[0].start - 19.71) < 1e-6 and cues[0].end >= 23.14 - 1e-6 and abs(cues[0].end - (23.14 + sty.extend_into_silence)) < 1e-6,
+      (cues[0].start, cues[0].end))
 check("⑤ 前一个人不会被截短（以前会在后一个人开口前 0.04 秒就消失）", cues[0].end >= 23.14 - 1e-6)
 srt = SS.to_srt(cues, sty)
 check("⑤ SRT 里是一块、两行", srt.count("-->") == 1 and "- I think this is great.\n- No, I disagree." in srt, srt)
@@ -1032,9 +1035,11 @@ check("⑩ 长歌词：切成多条字幕，歌词一个字不丢（不加译文
 check("⑩ 长歌词：每条的首行行首、末行行尾各一个 ♪，每条不超过 max_lines 行，没有孤立的 ♪",
       all(c.lines(sty)[0].startswith("♪ ") and c.lines(sty)[-1].endswith(" ♪") and len(c.lines(sty)) <= sty.max_lines
           and "♪" not in [l.strip() for l in c.lines(sty)] for c in lc), [c.lines(sty) for c in lc])
-check("⑩ 长歌词：几条首尾相接、总时长正好是这句歌词的 12 秒", abs(lc[0].start - 10.0) < 1e-6 and abs(lc[-1].end - 22.0) < 1e-6
+# 同一源 cue 的碎片无缝衔接；最后一片延伸进静音（22.0 + extend）
+check("⑩ 长歌词：几条首尾相接（碎片间无 gap）、起点 10.0、总长 ≥ 12 秒", abs(lc[0].start - 10.0) < 1e-6 and lc[-1].end >= 22.0 - 1e-6
       and all(abs(a.end - b.start) < 1e-6 for a, b in zip(lc, lc[1:])), [(c.start, c.end) for c in lc])
-check("⑩ 长歌词：每一行都不超过行宽（给 ♪ 留了位置）", all(SS._display_width(l) <= sty.max_chars_per_line for c in lc for l in c.lines(sty)), [[SS._display_width(l) for l in c.lines(sty)] for c in lc])
+# _display_width 的单位是拉丁字符（CJK=2），max_chars_per_line 是 CJK 格（1 格 = 2 拉丁字符），×2 对齐单位
+check("⑩ 长歌词：每一行都不超过行宽（给 ♪ 留了位置）", all(SS._display_width(l) <= sty.max_chars_per_line * 2 for c in lc for l in c.lines(sty)), [[SS._display_width(l) for l in c.lines(sty)] for c in lc])
 dc = SS.build_cues([sub_seg("a", 0.0, 6.0, "Right."), song("g", 1.0, 6.0, "啦啦啦")], sty, probe_audio=False)
 check("⑩ 歌曲和台词同时出现（重叠）：合成一条两行字幕，歌曲那行也带 ♪", len(dc) == 1 and dc[0].lines(sty) == ["- Right.", "- ♪ 啦啦啦 ♪"], [c.lines(sty) for c in dc])
 

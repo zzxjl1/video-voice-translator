@@ -1,0 +1,309 @@
+"""
+字幕断行：在断点处切，两行长度平衡，绝不在词中间断。
+
+专业字幕的断行规则（Netflix TTSG、BBC、Aegisub 的惯例）：
+  1. 优先在**标点之后**断（句号、逗号、冒号、分号），其次在连词/介词之前
+  2. 两行长度要**平衡**（金字塔），不是第一行塞满、第二行只剩一两个词
+  3. 行首不能是收尾标点（。，！？）或收尾括号；行尾不能是开头标点
+  4. 拉丁文绝不在词中间断；CJK 可以逐字断，但不在数字/专有名词中间断
+  5. 两行都不得超过 max 格
+
+用动态规划：把文本切成若干"原子"（拉丁词 / 单个 CJK 字符 / 标点），在原子边界
+处枚举所有断法，取代价最小的。代价 = 每行"离 max 太远"的惩罚 + 不平衡惩罚 +
+坏断点惩罚。文本一般不超过一两百字符，O(n²) 完全够。
+"""
+from __future__ import annotations
+
+import re
+from functools import lru_cache
+
+# 行首不允许出现的字符（收尾标点、收尾括号）
+_NO_LINE_START = set("，。！？；：、）》」』】〉”’…,.;:!?)]}")
+# 行尾不允许出现的字符（开头标点）
+_NO_LINE_END = set("（《「『【〈“‘([{")
+# 高质量断点：在这些之后断最自然（句末 > 从句 > 短暂停顿）
+_BREAK_AFTER_STRONG = set("。！？；…!?;")
+_BREAK_AFTER_WEAK = set("，、：,:")
+# 连词/介词：在这些**之前**断（英文），避免把 "of the" 拆到两行
+_BREAK_BEFORE_EN = {
+    "and", "or", "but", "so", "because", "if", "when", "while", "that", "which",
+    "of", "to", "in", "on", "at", "for", "with", "from", "by", "as", "than",
+}
+# 中文连词/介词：在这些**之前**断
+_BREAK_BEFORE_ZH = {"但是", "因为", "所以", "如果", "而且", "然后", "不过", "还是", "或者"}
+# 中文：这些字不能出现在行首（必须紧跟前一个字/词）
+_ZH_NO_LINE_START = set("了的着过吗呢吧啊呀嘛把被地将就已而或但在")
+# 中文：这些字后面断最自然（句读）
+_ZH_BREAK_AFTER = set("，。！？；：、）」』】”’…")
+# 中文：这些字后面尽量不断（动词+补语、数词+量词）
+_ZH_NO_BREAK_AFTER = set("一二三四五六七八九十第")
+# 中文代词+副词常见搭配不断（你这 那你 我也 他都 …）——用轻惩罚而非禁止
+_ZH_WEAK_AFTER = set("你我他她它这那哪谁")
+
+
+def _display_width(text: str) -> float:
+    """
+    显示宽度（"拉丁字符"为单位）：拉丁/半角 1，CJK/全角 2。
+    与 Netflix TTSG 一致（CJK 字符占拉丁的两倍宽度）。
+    `max_chars` 的语义是**拉丁字符数**：42 → 拉丁 42 字符，中文 21 个字。
+    """
+    return sum(2.0 if _is_wide(ch) else 1.0 for ch in text)
+
+
+def _is_wide(ch: str) -> bool:
+    code = ord(ch)
+    return (
+        0x1100 <= code <= 0x115F
+        or 0x2E80 <= code <= 0xA4CF
+        or 0xAC00 <= code <= 0xD7A3
+        or 0xF900 <= code <= 0xFAFF
+        or 0xFE30 <= code <= 0xFE6F
+        or 0xFF00 <= code <= 0xFF60
+        or 0xFFE0 <= code <= 0xFFE6
+        or 0x20000 <= code <= 0x3FFFD
+    )
+
+
+# 一个"原子"：拉丁词（含内部 ' - ）、一段连续标点/空格、一个 CJK 字符
+_ATOM_RE = re.compile(r"[A-Za-z0-9'’\-]+|\s+|.", re.S)
+
+_jieba_ready = False
+
+
+def _zh_words(text: str) -> set[str]:
+    """
+    中文分词（jieba），返回文本里出现过的多字词集合。按需初始化（0.25s，41MB 词典）——
+    只在真正有 CJK 文本要断行时才加载，纯英文字幕不碰它。
+    jieba 分错的词没有严重影响：它只是用来**惩罚**在词中间断，不是禁止。
+    """
+    global _jieba_ready
+    if not _is_wide(text[0]) and not any(_is_wide(c) for c in text):
+        return set()
+    try:
+        import jieba  # type: ignore
+        if not _jieba_ready:
+            jieba.setLogLevel(60)
+            jieba.initialize()
+            _jieba_ready = True
+        return {w for w in jieba.lcut(text) if len(w) >= 2 and not _is_punct(w)}
+    except ImportError:
+        return set()
+
+
+def _atoms(text: str) -> list[str]:
+    atoms = _ATOM_RE.findall(text)
+    # 中文：把 jieba 切出的多字词合并成一个原子，断行就不会落在词中间
+    words = _zh_words(text)
+    if not words:
+        return atoms
+    joined = "".join(atoms)
+    out: list[str] = []
+    i = 0
+    n = len(joined)
+    while i < n:
+        matched = None
+        for w in sorted(words, key=len, reverse=True):
+            if joined.startswith(w, i):
+                matched = w
+                break
+        if matched:
+            out.append(matched)
+            i += len(matched)
+        else:
+            out.append(joined[i])
+            i += 1
+    return out
+
+
+def _is_punct(atom: str) -> bool:
+    return bool(atom) and not atom.isspace() and not any(c.isalnum() for c in atom)
+
+
+def _atom_break_cost(atoms: list[str], i: int) -> float:
+    """
+    在 atoms[i] 之前断的代价（0 = 完美断点）。i == 0 或 i == len 不可断。
+    规则见模块 docstring。
+    """
+    if i <= 0 or i >= len(atoms):
+        return float("inf")
+    prev = atoms[i - 1]
+    nxt = atoms[i]
+    # 跳过空白：看空白两侧的实际字符
+    j = i - 1
+    while j > 0 and atoms[j].isspace():
+        j -= 1
+    prev = atoms[j]
+    k = i
+    while k < len(atoms) and atoms[k].isspace():
+        k += 1
+    if k >= len(atoms):
+        return float("inf")
+    nxt = atoms[k]
+
+    # 硬规则：行首不能是收尾标点，行尾不能是开头标点
+    if nxt and nxt[0] in _NO_LINE_START:
+        return float("inf")
+    if prev and prev[-1] in _NO_LINE_END:
+        return float("inf")
+    # 中文硬规则：虚词不能行首，数词/第 后面不断
+    if nxt and nxt[0] in _ZH_NO_LINE_START:
+        return float("inf")
+    if prev and prev[-1] in _ZH_NO_BREAK_AFTER:
+        return float("inf")
+
+    # 词内部不断（原子已经保证），但数字和后面的单位/符号不断开：如 "3.14" "%"
+    if prev and nxt and prev[-1].isdigit() and nxt[0] in "%‰°":
+        return float("inf")
+
+    cost = 0.0
+    if prev and prev[-1] in _ZH_BREAK_AFTER:
+        cost += 0.1
+    elif prev and prev[-1] in _ZH_WEAK_AFTER and nxt and _is_wide(nxt[0]):
+        cost += 0.8
+    elif _is_punct(prev):
+        if prev[-1] in _BREAK_AFTER_STRONG:
+            cost += 0.0
+        elif prev[-1] in _BREAK_AFTER_WEAK:
+            cost += 0.3
+        else:
+            cost += 1.5
+    elif nxt and _is_punct(nxt):
+        # 标点前不断（把标点留到下一行开头是错的，上面已禁止；这里处理"标点紧跟前一个词"）
+        cost += 2.0
+    else:
+        # 词与词之间：连词/介词之前断好
+        word_low = nxt.lower()
+        if word_low in _BREAK_BEFORE_EN:
+            cost += 0.2
+        elif nxt in _BREAK_BEFORE_ZH:
+            cost += 0.2
+        elif _is_wide(nxt[0]) and len(nxt) == 1:
+            # CJK 逐字断：默认可接受
+            cost += 0.6
+        else:
+            cost += 1.0
+    return cost
+
+
+def _line_cost(line: str, max_chars: float) -> float:
+    """一行"多合适"：超宽重罚，离 max 太远轻罚（鼓励用足宽度，减少行数）。"""
+    w = _display_width(line)
+    if w > max_chars + 1e-9:
+        return float("inf")
+    # 离满行的距离：用二次惩罚，让短线只在必要时出现
+    shortfall = max_chars - w
+    return (shortfall / max(max_chars, 1.0)) ** 2 * 2.0
+
+
+@lru_cache(maxsize=512)
+def _best_breaks(text: str, max_chars: float) -> tuple[int, ...]:
+    """返回每行起始原子下标（含 0）。用 DP：cost[i] = 放第 i 个原子开头的行的最小总代价。"""
+    atoms = _atoms(text)
+    n = len(atoms)
+    if n == 0:
+        return ()
+    # 前缀宽度（含空格）
+    prefix = [0.0]
+    for a in atoms:
+        prefix.append(prefix[-1] + _display_width(a))
+
+    INF = float("inf")
+    best = [INF] * (n + 1)
+    best[0] = 0.0
+    back = [-1] * (n + 1)
+    for i in range(n):
+        if best[i] == INF:
+            continue
+        for j in range(i + 1, n + 1):
+            line = "".join(atoms[i:j]).strip()
+            if not line:
+                continue
+            w = _display_width(line)
+            if w > max_chars:
+                break
+            lc = _line_cost(line, max_chars)
+            # 行数惩罚：每多一行固定加一点，避免为了"平衡"把短句切太碎
+            step = lc + 0.4
+            if j < n:
+                step += _atom_break_cost(atoms, j)
+            if best[i] + step < best[j]:
+                best[j] = best[i] + step
+                back[j] = i
+    if best[n] == INF:
+        # 没有合法断法（例如一个超长词）：退化为逐字符硬切
+        return tuple(range(0, n, max(1, int(max_chars * 2))))
+    starts = []
+    j = n
+    while j > 0:
+        starts.append(back[j])
+        j = back[j]
+    return tuple(reversed(starts))
+
+
+def _balance_pair(lines: list[str], max_chars: float) -> list[str]:
+    """
+    两行时做"金字塔"平衡：如果第一行比第二行长得多，尝试把断点往前挪。
+    Netflix 风格是上短下长或等长，不是上长下短。
+    """
+    if len(lines) != 2:
+        return lines
+    a, b = lines
+    wa, wb = _display_width(a), _display_width(b)
+    if wa <= wb * 1.15 or wa <= max_chars * 0.5:
+        return lines
+    # 尝试找一个更好的断点：代价 = 不平衡度 + 断点代价（不能为了平衡在词中间断）
+    text = f"{a} {b}"
+    atoms = _atoms(text)
+    base = abs(wa - wb) + 0.0
+    best_i, best_score = None, base
+    for i in range(1, len(atoms)):
+        left = "".join(atoms[:i]).strip()
+        right = "".join(atoms[i:]).strip()
+        if not left or not right:
+            continue
+        lw, rw = _display_width(left), _display_width(right)
+        if lw > max_chars or rw > max_chars:
+            continue
+        bc = _atom_break_cost(atoms, i)
+        if bc == float("inf"):
+            continue
+        # 拉丁文每行至少 2 个词，避免 "why this is such / a big deal" 这种切法
+        if not _is_wide(left[0]) and (left.count(" ") < 1 or right.count(" ") < 1):
+            continue
+        score = abs(lw - rw) + bc * 4.0
+        if score < best_score - 0.5:
+            best_score, best_i = score, i
+    if best_i is None:
+        return lines
+    left = "".join(atoms[:best_i]).strip()
+    right = "".join(atoms[best_i:]).strip()
+    return [left, right]
+
+
+def wrap_text(text: str, max_cells: float, *, balance: bool = True) -> list[str]:
+    """
+    把文本断成若干行，每行不超过 `max_cells` 个 **CJK 格**（1 格 = 1 个汉字 = 2 个拉丁字符）。
+
+    `max_cells` 就是工程里存的 `max_chars_per_line`（历史上一直是这个语义：18 格 = 18 汉字
+    = 36 拉丁字符）。内部按 Netflix TTSG 的宽度（拉丁 1、CJK 2）计算，所以换算成拉丁
+    字符数是 max_cells × 2。
+    拉丁文在词边界断，CJK 在词（jieba）边界断，标点规则见模块 docstring。
+    `balance=True` 时对两行结果做金字塔平衡。
+    """
+    text = " ".join((text or "").split())
+    if not text:
+        return []
+    max_chars = max_cells * 2.0
+    if _display_width(text) <= max_chars:
+        return [text]
+    atoms = _atoms(text)
+    starts = _best_breaks(text, float(max_chars))
+    lines = []
+    for k, s in enumerate(starts):
+        e = starts[k + 1] if k + 1 < len(starts) else len(atoms)
+        line = "".join(atoms[s:e]).strip()
+        if line:
+            lines.append(line)
+    if balance:
+        lines = _balance_pair(lines, float(max_chars))
+    return lines if lines else [text]

@@ -162,7 +162,7 @@ export const COMMAND_LABEL: Record<string, string> = {
   set_speaker_voice: '换音色', clone_voice: '克隆音色', preview_voice: '试听音色',
   set_settings: '改设置', run_initialize: '运行初始化', cancel_job: '取消任务', undo: '撤销',
   export_video: '导出成片', focus_line: '定位到句子', open_panel: '打开面板',
-  set_subtitle_style: '改字幕样式', reset_subtitle_style: '重置字幕样式', set_export_plan: '改导出方案',
+  set_subtitle_style: '改字幕样式', reset_subtitle_style: '重置字幕样式', apply_subtitle_preset: '套用字幕预设', set_export_plan: '改导出方案',
   request_browser_action: '请求浏览器操作',
 };
 

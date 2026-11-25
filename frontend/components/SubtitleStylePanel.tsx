@@ -1,6 +1,7 @@
 import React from 'react';
 import InfoHint from './InfoHint';
 import type {
+  SubtitlePreset,
   SubtitleAlignment,
   SubtitleStyle,
   SubtitleStylePatch,
@@ -103,6 +104,21 @@ const OUTLINE_COLOR_PRESETS = ['#000000', '#FFFFFF', '#374151', '#7F1D1D', '#1E3
  * file and resolved by whoever opens it, so a typo produces a silent fallback
  * on their machine and nothing at all on ours.
  */
+/** 帧对齐选项：值是 fps，显示是文案。 */
+const FPS_CHOICES: Record<number, string> = {
+  0: '不对齐', 23.976: '23.976（电影）', 24: '24', 25: '25（PAL）', 30: '30', 60: '60',
+};
+
+/**
+ * 字体选项。`family` 是写进样式的名字（进 ASS、进预览的 font-family）。
+ *
+ * 用户机器上装了哪个，用户自己未必知道——`useFontAvailability` 在面板里
+ * 用 document.fonts.check() 探测一遍，下拉里把"本机没有"的标出来，省得选了
+ * 一个不存在的字体然后疑惑预览为什么长得不像想象。
+ *
+ * `Source Han Sans` 是开源名，但 Mac/Win 都不预装（Mac 是 PingFang，Win 是
+ * 微软雅黑），所以在大多数机器上它靠 `FONT_FALLBACKS` 回退到系统黑体。
+ */
 const FONT_CHOICES = [
   'Source Han Sans',
   'Noto Sans SC',
@@ -110,7 +126,28 @@ const FONT_CHOICES = [
   'Microsoft YaHei',
   'SimHei',
   'SimSun',
-];
+] as const;
+
+/** 本机能不能渲染这个字体（document.fonts.check 对系统字体名有效）。 */
+const isFontAvailable = (family: string): boolean => {
+  if (typeof document === 'undefined' || !document.fonts?.check) return true;
+  try {
+    // 带一段 CJK 样本，否则 check 只测拉丁字形
+    return document.fonts.check(`16px "${family}"`, '字幕Aa');
+  } catch {
+    return true;
+  }
+};
+
+function useFontAvailability(): Record<string, boolean> {
+  const [avail, setAvail] = React.useState<Record<string, boolean>>({});
+  React.useEffect(() => {
+    document.fonts?.ready.then(() => {
+      setAvail(Object.fromEntries(FONT_CHOICES.map((f) => [f, isFontAvailable(f)])));
+    });
+  }, []);
+  return avail;
+}
 
 /**
  * One label column for every row, so the controls line up. Wide enough for the
@@ -190,6 +227,9 @@ const Group: React.FC<{ title: string; children: React.ReactNode }> = ({ title, 
 interface SubtitleStylePanelProps {
   style: SubtitleStyle;
   onStyleChange: (patch: SubtitleStylePatch) => void;
+  /** 可用预设（后端 subtitle_presets.py 是权威）；空 = 不显示预设组。 */
+  presets?: SubtitlePreset[];
+  onApplyPreset?: (id: string) => void;
   /** 吸附在右栏时自己画卡片的边框和圆角；浮动时由窗口外框画。 */
   docked?: boolean;
   /** 标题栏同时是窗口的拖动区。 */
@@ -201,6 +241,8 @@ interface SubtitleStylePanelProps {
 const SubtitleStylePanel: React.FC<SubtitleStylePanelProps> = ({
   style,
   onStyleChange,
+  presets,
+  onApplyPreset,
   docked = true,
   dragProps,
   windowControls,
@@ -215,6 +257,25 @@ const SubtitleStylePanel: React.FC<SubtitleStylePanelProps> = ({
     </div>
 
     <div className={CARD_BODY}>
+      {/* 预设是"一键到合规"：选完仍能下面微调。放最上面，因为它是起点不是终点。 */}
+      {presets && presets.length > 0 && onApplyPreset && (
+        <Group title="预设">
+          <div className="grid grid-cols-3 gap-1.5">
+            {presets.map(({ id, label, description }) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => onApplyPreset(id)}
+                title={description}
+                className={[OPTION_BASE, OPTION_OFF].join(' ')}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </Group>
+      )}
+
       <Group title="字幕内容">
         <div className="grid grid-cols-3 gap-1.5">
           {CONTENTS.map(({ value, label, hint }) => (
@@ -327,11 +388,31 @@ const SubtitleStylePanel: React.FC<SubtitleStylePanelProps> = ({
           * like the row labels above rather than getting a second, redundant
           * label column ("字幕底衬" next to "半透明底").
           */}
+        {/* 模糊：代替硬描边做柔和边缘。和描边同量纲（千分比高度）。 */}
+        <Slider
+          label="边缘模糊"
+          value={style.blur}
+          min={0}
+          max={5}
+          step={0.1}
+          display={style.blur.toFixed(1)}
+          hint="给字形边缘加一层柔化，比硬描边更像「浮」在画面上。通常和描边二选一：要模糊就把描边调小。"
+          onChange={v => onStyleChange({ blur: v })}
+        />
         <Check
           label="半透明底"
           checked={style.background === 'box'}
           onChange={v => onStyleChange({ background: v ? 'box' : 'none' })}
         />
+        {/* 双语时原文的颜色；单轨时这一项没效果，所以只在双语时显示。 */}
+        {style.track === 'bilingual' && (
+          <ColorField
+            label="原文颜色"
+            value={style.secondary_color}
+            presets={[...TEXT_COLOR_PRESETS, '#D0D0D0']}
+            onChange={v => onStyleChange({ secondary_color: v })}
+          />
+        )}
       </Group>
 
       <Group title="排版">
@@ -341,14 +422,24 @@ const SubtitleStylePanel: React.FC<SubtitleStylePanelProps> = ({
           * resolved on the VIEWER's machine, which is why this is a short list
           * of faces that are actually common rather than free text.
           */}
-        <SelectRow
+        <FontSelectRow
           label="字体"
           value={style.font_family}
-          options={FONT_CHOICES}
-          hint="写进字幕文件的字体名，由播放器（或烧录时本机的字库）解析。列表里没有的字体名不会被改掉。"
           onChange={v => onStyleChange({ font_family: v })}
         />
-        <Check label="加粗" checked={style.bold} onChange={v => onStyleChange({ bold: v })} />
+        <div className="flex gap-3">
+          <Check label="加粗" checked={style.bold} onChange={v => onStyleChange({ bold: v })} />
+          <Check label="斜体" checked={style.italic} onChange={v => onStyleChange({ italic: v })} />
+        </div>
+        <Slider
+          label="字间距"
+          value={style.spacing}
+          min={0}
+          max={10}
+          step={0.5}
+          display={style.spacing.toFixed(1)}
+          onChange={v => onStyleChange({ spacing: v })}
+        />
         {/*
           * "宽度", not "字数": the value counts DISPLAY CELLS, where a CJK
           * character is 1 and a Latin letter is 0.5. Calling it a character
@@ -391,6 +482,53 @@ const SubtitleStylePanel: React.FC<SubtitleStylePanelProps> = ({
           display={`${style.min_duration.toFixed(1)} 秒`}
           hint="一句话再短也至少停留这么久，避免一闪而过。它改变的是字幕出现和消失的时刻，不只是外观。"
           onChange={v => onStyleChange({ min_duration: v })}
+        />
+        <Slider
+          label="最长时长"
+          value={style.max_duration}
+          min={2}
+          max={15}
+          step={0.5}
+          display={`${style.max_duration.toFixed(1)} 秒`}
+          hint="一条字幕停太久观众会重读、走神。超过就按行切成连续几条。Netflix 规范是 7 秒。"
+          onChange={v => onStyleChange({ max_duration: v })}
+        />
+        <Slider
+          label="阅读速度"
+          value={style.max_cps}
+          min={4}
+          max={15}
+          step={0.5}
+          display={`${style.max_cps.toFixed(1)} 字/秒`}
+          hint="观众每秒能读的字数上限（字母算半个字）。超了会切分或延长。Netflix 规范是 8.5。"
+          onChange={v => onStyleChange({ max_cps: v })}
+        />
+        <Slider
+          label="说完整留"
+          value={style.extend_into_silence}
+          min={0}
+          max={2}
+          step={0.1}
+          display={`${style.extend_into_silence.toFixed(1)} 秒`}
+          hint="一句话说完后，字幕往后面的静音里多停一会儿再消失，不要话音一落字就没了。"
+          onChange={v => onStyleChange({ extend_into_silence: v })}
+        />
+        <Slider
+          label="条间间隔"
+          value={style.min_gap}
+          min={0}
+          max={0.2}
+          step={0.01}
+          display={`${Math.round(style.min_gap * 1000)} 毫秒`}
+          hint="相邻两条字幕之间留一点空白，切换才看得出来，不会像闪烁。默认约 1 帧（24fps）。"
+          onChange={v => onStyleChange({ min_gap: v })}
+        />
+        <SelectRow
+          label="帧对齐"
+          value={FPS_CHOICES[style.fps > 0 ? style.fps : 0] ?? '不对齐'}
+          options={Object.values(FPS_CHOICES)}
+          hint="字幕的出现/消失对齐到帧边界，不会在两帧之间切换。按视频帧率选。"
+          onChange={label => onStyleChange({ fps: Number(Object.entries(FPS_CHOICES).find(([, l]) => l === label)?.[0] ?? 0) })}
         />
       </Group>
     </div>
@@ -458,6 +596,30 @@ interface SelectRowProps {
   hint?: string;
   onChange: (value: string) => void;
 }
+
+/**
+ * 字体下拉：和 SelectRow 一样，但选项后面标"本机没有"。
+ * 值仍然是裸字体名（进样式），显示文案只是给用户看的。
+ */
+const FontSelectRow: React.FC<{ label: string; value: string; onChange: (value: string) => void }> = ({
+  label, value, onChange,
+}) => {
+  const avail = useFontAvailability();
+  // 值不在列表里（老工程存了别的名字）：也列出来，别让下拉显示空
+  const options = FONT_CHOICES.includes(value as (typeof FONT_CHOICES)[number])
+    ? [...FONT_CHOICES]
+    : [value, ...FONT_CHOICES];
+  return (
+    <SelectRow
+      label={label}
+      value={value}
+      options={options.map((f) => (avail[f] === false ? `${f}（本机没有）` : f))}
+      hint="写进字幕文件的字体名。预览和烧录用本机字库渲染，没有的会回退到同类系统字体；标了「本机没有」的在预览里看到的其实是回退效果。MKV/ASS 在观众机器上由播放器解析。"
+      // 显示文案可能带「（本机没有）」后缀，写进样式的要是裸字体名
+      onChange={(label) => onChange(label.replace(/（本机没有）$/, ''))}
+    />
+  );
+};
 
 const SelectRow: React.FC<SelectRowProps> = ({ label, value, options, hint, onChange }) => (
   <div className="flex items-center gap-2">

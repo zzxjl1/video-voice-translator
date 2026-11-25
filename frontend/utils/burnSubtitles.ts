@@ -120,7 +120,9 @@ export async function burnSubtitles({
          */
         const cue = cueAtTime(cues, sample.timestamp);
         if (cue && cue.lines.length) {
-          drawCueOnCanvas(ctx, cue.lines, style, width, height);
+          const secCount = cue.secondary_count ?? 0;
+          const flags = cue.lines.map((_l, i) => secCount > 0 && i >= cue.lines.length - secCount);
+          drawCueOnCanvas(ctx, cue.lines, style, width, height, flags);
         }
         return canvas;
       },

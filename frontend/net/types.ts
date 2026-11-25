@@ -162,17 +162,42 @@ export interface SubtitleStyle {
   font_family: string;
   font_size_percent: number;
   primary_color: string;
+  /** 双语轨道里原文的颜色；单轨时无效果。 */
+  secondary_color: string;
   outline_color: string;
   outline_width: number;
   shadow: number;
   bold: boolean;
+  italic: boolean;
+  /** 边缘模糊（千分比高度），代替硬描边做柔和边缘；0 = 不用。 */
+  blur: number;
+  /** 字间距（像素 @ 1080p 高度，按比例缩放）。 */
+  spacing: number;
   background: 'none' | 'box';
   alignment: 'bottom' | 'center' | 'top';
   margin_v_percent: number;
   margin_h_percent: number;
   max_chars_per_line: number;
   max_lines: number;
+  // ---- 时间轴（专业字幕规则）----
   min_duration: number;
+  max_duration: number;
+  /** 阅读速度上限（汉字/秒；拉丁字符算半个）。超了按行切成连续几条。 */
+  max_cps: number;
+  /** 相邻字幕最小间隔秒数。 */
+  min_gap: number;
+  /** 说完后往静音延伸多少秒再消失。 */
+  extend_into_silence: number;
+  /** 起止对齐到帧边界；0 = 不对齐。 */
+  fps: number;
+}
+
+/** 字幕样式预设（后端 subtitle_presets.py 是权威）。 */
+export interface SubtitlePreset {
+  id: string;
+  label: string;
+  description: string;
+  style: SubtitleStyle;
 }
 
 export interface JobInfo {
@@ -385,6 +410,8 @@ export interface SubtitleCue {
   text: string;
   secondary: string;
   lines: string[];
+  /** 末尾这几行是双语轨道的原文行，渲染时换成原文样式。 */
+  secondary_count?: number;
 }
 
 /** 浏览器里跑的人声分离："client" 或 "off"。服务器不自带分离（没有 GPU）。 */
@@ -411,10 +438,14 @@ export const DEFAULT_SUBTITLE_STYLE: SubtitleStyle = {
   font_family: 'Source Han Sans',
   font_size_percent: 4.5,
   primary_color: '#FFFFFF',
+  secondary_color: '#FFFFFF',
   outline_color: '#000000',
   outline_width: 2,
   shadow: 1,
   bold: true,
+  italic: false,
+  blur: 0,
+  spacing: 0,
   background: 'box',
   alignment: 'bottom',
   margin_v_percent: 6,
@@ -422,7 +453,17 @@ export const DEFAULT_SUBTITLE_STYLE: SubtitleStyle = {
   max_chars_per_line: 18,
   max_lines: 2,
   min_duration: 0.8,
+  max_duration: 7,
+  max_cps: 9,
+  min_gap: 0.042,
+  extend_into_silence: 0.5,
+  fps: 0,
 };
+
+/** 老工程存的样式没有新字段：用默认值补齐，免得 undefined 进渲染。 */
+export function withStyleDefaults(style: Partial<SubtitleStyle> | null | undefined): SubtitleStyle {
+  return { ...DEFAULT_SUBTITLE_STYLE, ...(style ?? {}) } as SubtitleStyle;
+}
 
 export const srtFilename = (videoId: string, track: SubtitleTrack): string => `${track}_${videoId.slice(0, 8)}.srt`;
 

@@ -107,6 +107,22 @@ export function containRect(
   };
 }
 
+/** 字体回退表：首选字体本机没有时，按顺序回退到同类系统字体（黑体→黑体）。 */
+const FONT_FALLBACKS: Record<string, string[]> = {
+  'Source Han Sans': ['Noto Sans SC', 'PingFang SC', 'Microsoft YaHei', 'sans-serif'],
+  'Noto Sans SC': ['Source Han Sans', 'PingFang SC', 'Microsoft YaHei', 'sans-serif'],
+  'PingFang SC': ['Source Han Sans', 'Noto Sans SC', 'Microsoft YaHei', 'sans-serif'],
+  'Microsoft YaHei': ['Source Han Sans', 'Noto Sans SC', 'PingFang SC', 'sans-serif'],
+  SimHei: ['Microsoft YaHei', 'Source Han Sans', 'Noto Sans SC', 'sans-serif'],
+  SimSun: ['Songti SC', 'SimSun', 'serif'],
+};
+
+/** 完整的 CSS 字体栈：首选 + 同类回退，去重。 */
+export const fontStack = (family: string): string =>
+  [family, ...(FONT_FALLBACKS[family] ?? ['sans-serif'])]
+    .filter((f, i, a) => a.indexOf(f) === i)
+    .join(', ');
+
 /** Percentage-derived pixel sizes for a frame of the given size. */
 export function resolveMetrics(style: SubtitleStyle, width: number, height: number) {
   return {
@@ -115,7 +131,19 @@ export function resolveMetrics(style: SubtitleStyle, width: number, height: numb
     marginH: (width * style.margin_h_percent) / 100,
     outline: (height * style.outline_width) / 1000,
     shadow: (height * style.shadow) / 1000,
+    // 模糊半径：千分比高度（和 outline/shadow 同一量纲）
+    blur: (height * (style.blur ?? 0)) / 1000,
+    // 字间距：以 1080p 高度为基准的像素数，按实际高度等比缩放
+    letterSpacing: (style.spacing ?? 0) * (height / 1080),
+    // 双语时原文行的字号（82%），和 ASS 的 Original 样式一致
+    secondaryFontSize: Math.max(6, (height * style.font_size_percent * 0.82) / 100),
   };
+}
+
+/** 双语轨道里原文行的颜色：没设就用浅灰（和 ASS Original 样式一致）。 */
+export function secondaryColor(style: SubtitleStyle): string {
+  const c = style.secondary_color ?? '';
+  return c && c.toUpperCase() !== '#FFFFFF' ? c : '#D0D0D0';
 }
 
 /**
@@ -146,13 +174,17 @@ export function overlayContainerStyle(style: SubtitleStyle, rect: Rect): CSSProp
   return { ...base, justifyContent: 'flex-end' };
 }
 
-/** CSS for one line of subtitle text. */
-export function overlayLineStyle(style: SubtitleStyle, rect: Rect): CSSProperties {
+/** CSS for one line of subtitle text. `secondary=true` 为双语里的原文行。 */
+export function overlayLineStyle(style: SubtitleStyle, rect: Rect, secondary = false): CSSProperties {
   const metrics = resolveMetrics(style, rect.width, rect.height);
   const px = (v: number) => `${v.toFixed(1)}px`;
   return {
-    fontSize: px(metrics.fontSize),
+    fontSize: px(secondary ? metrics.secondaryFontSize : metrics.fontSize),
     fontWeight: style.bold ? 700 : 400,
+    fontStyle: style.italic ? 'italic' : 'normal',
+    letterSpacing: metrics.letterSpacing ? px(metrics.letterSpacing) : undefined,
+    // 模糊：用 drop-shadow 做柔和边缘（filter 对文字整体生效，和 ASS 的 \blur 一致）
+    filter: metrics.blur > 0.2 ? `blur(${px(metrics.blur)})` : undefined,
     /*
      * Same chain the burn-in uses (`ctx.font = … ${font_family}, sans-serif`),
      * so the preview and the burned file fail over the same way.
@@ -163,8 +195,8 @@ export function overlayLineStyle(style: SubtitleStyle, rect: Rect): CSSPropertie
      * exactly what a viewer without that font will also see, so it is not a
      * lie, just not a promise.
      */
-    fontFamily: `${style.font_family}, sans-serif`,
-    color: style.primary_color,
+    fontFamily: fontStack(style.font_family),
+    color: secondary ? secondaryColor(style) : style.primary_color,
     textAlign: 'center',
     lineHeight: 1.35,
     maxWidth: '100%',
@@ -213,11 +245,15 @@ export function drawCueOnCanvas(
   style: SubtitleStyle,
   width: number,
   height: number,
+  /** 每一行是不是双语里的原文行；缺省 = 全是主行。 */
+  secondaryFlags?: boolean[],
 ): void {
   if (!lines.length) return;
   const metrics = resolveMetrics(style, width, height);
-  const lineHeight = metrics.fontSize * 1.35;
-  const blockHeight = lineHeight * lines.length;
+  const secFlags = secondaryFlags ?? lines.map(() => false);
+  // 每行各自的高度：原文行字号小一点
+  const lineH = (sec: boolean) => (sec ? metrics.secondaryFontSize : metrics.fontSize) * 1.35;
+  const blockHeight = lines.reduce((h, _l, i) => h + lineH(secFlags[i]), 0);
 
   let blockTop: number;
   if (style.alignment === 'top') blockTop = metrics.marginV;
@@ -225,26 +261,32 @@ export function drawCueOnCanvas(
   else blockTop = height - metrics.marginV - blockHeight;
 
   ctx.save();
-  ctx.font = `${style.bold ? 'bold ' : ''}${metrics.fontSize}px ${style.font_family}, sans-serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
+  // 模糊：整块画布滤镜（Canvas2D filter 和 CSS filter 同一语义）
+  if (metrics.blur > 0.2) ctx.filter = `blur(${metrics.blur.toFixed(1)}px)`;
 
   const maxWidth = width - metrics.marginH * 2;
   const centreX = width / 2;
 
+  let y = blockTop;
   lines.forEach((line, index) => {
-    const y = blockTop + index * lineHeight;
+    const sec = secFlags[index];
+    const fs = sec ? metrics.secondaryFontSize : metrics.fontSize;
+    ctx.font = `${style.bold && !sec ? 'bold ' : ''}${style.italic ? 'italic ' : ''}${fs.toFixed(1)}px ${fontStack(style.font_family)}`;
+    // 字间距：Canvas2D 用 letterSpacing（Chrome 99+）
+    (ctx as CanvasRenderingContext2D & { letterSpacing?: string }).letterSpacing = metrics.letterSpacing ? `${metrics.letterSpacing.toFixed(1)}px` : '0px';
 
     if (style.background === 'box') {
       const textWidth = Math.min(ctx.measureText(line).width, maxWidth);
-      const padX = metrics.fontSize * 0.4;
-      const padY = metrics.fontSize * 0.18;
+      const padX = fs * 0.4;
+      const padY = fs * 0.18;
       ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
       ctx.fillRect(
         centreX - textWidth / 2 - padX,
         y - padY,
         textWidth + padX * 2,
-        metrics.fontSize + padY * 2,
+        fs + padY * 2,
       );
     }
 
@@ -265,11 +307,12 @@ export function drawCueOnCanvas(
       ctx.shadowBlur = 0;
       ctx.shadowOffsetY = 0;
     }
-    ctx.fillStyle = style.primary_color;
+    ctx.fillStyle = sec ? secondaryColor(style) : style.primary_color;
     ctx.fillText(line, centreX, y, maxWidth);
     ctx.shadowColor = 'transparent';
     ctx.shadowBlur = 0;
     ctx.shadowOffsetY = 0;
+    y += lineH(sec);
   });
 
   ctx.restore();

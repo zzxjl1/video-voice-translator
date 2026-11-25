@@ -657,7 +657,10 @@ def preview_cues(video_id: str, body: dict):
     cues = subtitle_service.build_cues(state.segments, style)
     return {"track": style.track, "count": len(cues), "style": style.to_dict(),
             "cues": [{"start": round(c.start, 3), "end": round(c.end, 3), "text": c.text,
-                      "secondary": c.secondary, "lines": c.lines(style)} for c in cues]}
+                      "secondary": c.secondary, "lines": c.lines(style),
+                      # 双语轨道里末尾这几行是原文（渲染时要换成原文样式）
+                      "secondary_count": c.secondary_count(style)}
+                     for c in cues]}
 
 
 # ----------------------------------------------------------------------------

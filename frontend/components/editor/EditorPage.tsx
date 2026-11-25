@@ -16,7 +16,7 @@ import { useMixPlayback } from '../../hooks/useMixPlayback';
 import { useWindows } from '../../hooks/useWindows';
 import { speakerColor } from '../../store/project';
 import type { TimelineSegment } from '../../store/timeline';
-import { DEFAULT_SUBTITLE_STYLE } from '../../net/types';
+import { DEFAULT_SUBTITLE_STYLE, type SubtitlePreset } from '../../net/types';
 import type { Line, SubtitleCapabilities, SubtitleCue, SubtitleStyle, ProjectBilling } from '../../net/types';
 import { containRect, overlayContainerStyle, overlayLineStyle, stripSubtitleTags, type Rect } from '../../utils/subtitleStyle';
 import ChatPanel from '../chat/ChatPanel';
@@ -84,16 +84,38 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
   const style = useMemo(() => ({ ...serverStyle, ...(styleOverride ?? {}) }), [serverStyle, styleOverride]);
   const styleTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
+  // 防抖要发**累积**的 patch：以前只发最后一次，连拖两个不同滑块时第一个的改动会丢。
+  const pendingStyle = useRef<Partial<SubtitleStyle>>({});
   const onStyleChange = useCallback((patch: Partial<SubtitleStyle>) => {
+    pendingStyle.current = { ...pendingStyle.current, ...patch };
     setStyleOverride((prev) => ({ ...(prev ?? {}), ...patch }));
     clearTimeout(styleTimer.current);
     styleTimer.current = setTimeout(async () => {
-      const r = await run('set_subtitle_style', patch as Record<string, unknown>);
+      const all = pendingStyle.current;
+      pendingStyle.current = {};
+      const r = await run('set_subtitle_style', all as Record<string, unknown>);
       if (!r.ok) setNotice(r.error ?? '保存字幕样式失败');
       setStyleOverride(null);
     }, 400);
   }, [run]);
   useEffect(() => () => clearTimeout(styleTimer.current), []);
+
+  // 预设：清单从后端拿（后端是权威），套用走命令，和 AI/面板改的是同一份样式
+  const [presets, setPresets] = useState<SubtitlePreset[]>([]);
+  useEffect(() => {
+    if (presets.length) return;
+    run('get_subtitle_style').then((r) => {
+      if (!r.ok || !r.result) return;
+      const list = r.result.presets as Array<{ id: string; label: string; description: string }> | undefined;
+      if (list) setPresets(list.map((p) => ({ ...p, style: DEFAULT_SUBTITLE_STYLE })));
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const onApplyPreset = useCallback(async (preset: string) => {
+    setStyleOverride(null);
+    const r = await run('apply_subtitle_preset', { preset });
+    if (!r.ok) setNotice(r.error ?? '套用预设失败');
+  }, [run]);
 
   // 播放
   const plan = project!.mix?.plan ?? null;
@@ -380,6 +402,8 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
     ),
     subtitle: (c) => (
       <SubtitleStylePanel
+        presets={presets}
+        onApplyPreset={onApplyPreset}
         style={style} onStyleChange={onStyleChange}
         docked={c.docked} dragProps={c.headerProps} windowControls={c.controls}
       />
@@ -443,7 +467,11 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
             {backgroundUrl && <audio ref={backgroundRef} src={backgroundUrl} preload="auto" className="hidden" />}
             {videoRect && activeCue && (
               <div style={overlayContainerStyle(style, videoRect)}>
-                {activeCue.lines.map((line, i) => <div key={i} style={overlayLineStyle(style, videoRect)}>{line}</div>)}
+                {activeCue.lines.map((line, i) => {
+                  const secCount = activeCue.secondary_count ?? 0;
+                  const isSecondary = secCount > 0 && i >= activeCue.lines.length - secCount;
+                  return <div key={i} style={overlayLineStyle(style, videoRect, isSecondary)}>{line}</div>;
+                })}
               </div>
             )}
 

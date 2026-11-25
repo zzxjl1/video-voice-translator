@@ -21,3 +21,4 @@ dashscope>=1.27.1
 # Do NOT add audio-separator / torch / torchaudio / demucs here. This host has
 # no GPU, so a local separator would consume hundreds of MB of RSS and make the
 # machine swap — that backend was removed on purpose.
+jieba>=0.42.1            # 字幕断行用中文分词（按需加载，只在断 CJK 文本时初始化）
