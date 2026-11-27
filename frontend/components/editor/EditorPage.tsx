@@ -50,6 +50,15 @@ const EditorPage: React.FC<Props> = ({ project: api_, onHome }) => {
   // 脚本 / 助手 / 字幕样式都是窗口：吸附在右栏，或者拖出来自由摆放
   const wm = useWindows();
   const openWindow = wm.open;
+  // 字幕样式 / 音色是"偶尔调一下"的辅助面板：进工程时一律收起。以前 open 状态
+  // 存进 localStorage，被开过一次（AI 的 open_panel、或手动点开）以后每次进来都
+  // 开着，挤占画面。位置/浮动偏好仍然记忆，只不记忆"开着没"。
+  useEffect(() => {
+    wm.close('subtitle');
+    wm.close('voice');
+    // 只在进工程时跑一次；wm 对象每次渲染都是新的，不能进依赖（会无限循环）
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [showExport, setShowExport] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   // 从脚本引用到聊天的那一句：结构化值，不在输入框里拼字符串，

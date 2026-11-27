@@ -26,3 +26,38 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* 字幕面板的滑块：Tailwind 的伪元素 arbitrary variant 在这里不生效，
+   用真 CSS 保证描边圆点跨浏览器一致（橙色描边、白底）。 */
+.vvt-range {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 5px;
+  border-radius: 999px;
+  outline: none;
+  cursor: pointer;
+}
+.vvt-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid #DA7756;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+  cursor: pointer;
+  transition: transform 0.12s;
+}
+.vvt-range::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+}
+.vvt-range::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: #fff;
+  border: 2px solid #DA7756;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+  cursor: pointer;
+}
