@@ -127,7 +127,7 @@ def _key_for(kid: str):
     raise OAuthError("Google signing key not found")
 
 
-def verify_id_token(id_token: str, nonce: str) -> GoogleProfile:
+def verify_id_token(id_token: str, nonce: str | None = None) -> GoogleProfile:
     if not config.AUTH_ENABLED:
         raise OAuthError("Google login is not configured")
     try:
@@ -151,7 +151,9 @@ def verify_id_token(id_token: str, nonce: str) -> GoogleProfile:
 
     if payload.get("iss") not in ISSUERS:
         raise OAuthError("Invalid Google token issuer")
-    if payload.get("nonce") != nonce:
+    # nonce 只在"我们发起授权时预生成了随机数"的流程里校验（OAuth 跳转流）；
+    # One Tap 的 ID Token 直接由页面上的 GIS 回调送来，没有预交换的 nonce，传 None 跳过。
+    if nonce is not None and payload.get("nonce") != nonce:
         raise OAuthError("Invalid Google token nonce")
     if payload.get("azp") and payload["azp"] != config.GOOGLE_CLIENT_ID:
         raise OAuthError("Invalid Google token authorized party")

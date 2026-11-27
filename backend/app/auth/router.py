@@ -5,7 +5,7 @@ import logging
 import secrets
 from urllib.parse import quote
 
-from fastapi import APIRouter, Request, Response
+from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 
 from app import config
@@ -156,10 +156,39 @@ def google_callback(
     return response
 
 
+@router.post("/google/onetap")
+def google_onetap(request: Request, response: Response, body: dict) -> JSONResponse:
+    """
+    Google Identity Services 的 One Tap：页面里的 GIS 把**签好的 ID Token（JWT）**
+    直接 POST 过来，没有跳转、没有授权码。验证本地完成（JWKS 公钥），然后走和
+    跳转流完全相同的落库 + session。
+    """
+    if not config.AUTH_ENABLED:
+        raise HTTPException(status_code=404, detail="Google login is not configured")
+    credential = (body or {}).get("credential")
+    if not credential:
+        raise HTTPException(status_code=400, detail="missing credential")
+    try:
+        profile = google.verify_id_token(credential, None)
+        user = users.upsert_google(profile)
+    except google.OAuthError as e:
+        logger.warning("Google One Tap failed: %s", e)
+        raise HTTPException(status_code=401, detail=str(e)) from e
+    except Exception:  # noqa: BLE001
+        logger.exception("Google One Tap crashed")
+        raise HTTPException(status_code=502, detail="login failed") from None
+    token = sessions.create_session(user["id"], request.headers.get("user-agent"), _client_ip(request))
+    sessions.set_session_cookie(response, token)
+    return JSONResponse({"user": user}, headers={"Cache-Control": "no-store"})
+
+
 @router.get("/me")
 def me(request: Request) -> JSONResponse:
     user = current_user(request)
-    response = JSONResponse({"user": user})
+    response = JSONResponse({
+        "user": user,
+        "google_client_id": config.GOOGLE_CLIENT_ID or None,
+    })
     response.headers["Cache-Control"] = "no-store"
     # 服务端每小时把会话往后推 30 天，但 cookie 只在登录时设置过一次：不重发的话，浏览器里的
     # cookie 到登录后第 30 天照样过期，活跃用户也被登出。前端每次加载都会调 /me，在这里重发。
