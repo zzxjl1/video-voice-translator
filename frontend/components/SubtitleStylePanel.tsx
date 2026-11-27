@@ -382,12 +382,13 @@ const FontSelectRow: React.FC<{ label: string; value: string; onChange: (value: 
 };
 
 /**
- * 顶部实时预览：一块仿视频画面，当前样式直接画在上面——改任何一项立刻看到，
- * 不用理解"4.5% 高"是什么。字号做了放大（在虚拟 150px 高的画面上按比例太小），
- * 但描边/底框/位置/双语分层都是真实的渲染路径（overlayLineStyle）。
+ * 顶部实时预览：一块仿视频画面，中性样例文案——左边的视频里已经有真字幕，
+ * 这里再放真台词只会让人分不清哪句是哪句。样式实时跟面板走：
+ * 字号做了放大（在虚拟 150px 高的画面上按比例太小），但描边/底框/位置/双语
+ * 分层都是真实的渲染路径（overlayLineStyle）。
  */
-const PREVIEW_PRIMARY = '这都不算亚洲人？兄弟，他自曝了！';
-const PREVIEW_SECONDARY = 'If this is not Asian, bro, he just incriminated himself!';
+const PREVIEW_PRIMARY = '字幕样式预览';
+const PREVIEW_SECONDARY = 'Subtitle style preview';
 
 const PreviewFrame: React.FC<{ style: SubtitleStyle }> = ({ style }) => {
   const rect: Rect = { left: 0, top: 0, width: 320, height: 150 };
@@ -441,7 +442,6 @@ const AdvancedFold: React.FC<{ children: React.ReactNode }> = ({ children }) => 
       >
         <span className={`text-[10px] text-gray-400 transition-transform duration-150 ${open ? 'rotate-90' : ''}`}>▶</span>
         <span className="text-[9px] font-bold uppercase tracking-[0.18em] text-gray-400">进阶设置</span>
-        <span className="text-[10px] text-gray-400/80">时间轴 · 排版 · 双语颜色</span>
         <span className="flex-1" />
         <span className="text-[10px] font-semibold text-gray-400">{open ? '收起' : '展开'}</span>
       </button>
