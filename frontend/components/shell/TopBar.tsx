@@ -53,6 +53,8 @@ const ProjectCostHover: React.FC<{ billing: ProjectBilling; onOpenBilling: () =>
   // 卡片是 portal 到 body 的，和胶囊之间隔着 6px 空隙：鼠标穿过去会先触发
   // mouseleave。延迟关闭，进卡片时再取消。
   const closeTimer = React.useRef<number | null>(null);
+  const wrapRef = React.useRef<HTMLDivElement>(null);
+  const cardRef = React.useRef<HTMLDivElement>(null);
   const keepOpen = () => {
     if (closeTimer.current) { window.clearTimeout(closeTimer.current); closeTimer.current = null; }
     setHovered(true);
@@ -62,6 +64,23 @@ const ProjectCostHover: React.FC<{ billing: ProjectBilling; onOpenBilling: () =>
     closeTimer.current = window.setTimeout(() => { setHovered(false); }, 150);
   };
   React.useEffect(() => () => { if (closeTimer.current) window.clearTimeout(closeTimer.current); }, []);
+  // 钉住时：点外面 / Esc 都要收起——否则胶囊被点过一次以后卡片就永远挂着，
+  // 看起来就是"hover 完移开不消失"。
+  React.useEffect(() => {
+    if (!pinned) return;
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as Node;
+      if (wrapRef.current?.contains(t) || cardRef.current?.contains(t)) return;
+      setPinned(false);
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setPinned(false); };
+    document.addEventListener('pointerdown', onDown, true);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('pointerdown', onDown, true);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [pinned]);
   // 顶栏是 overflow-hidden（裁圆角），absolute 浮层会被裁掉——用 fixed 挂在按钮下方。
   const btnRef = React.useRef<HTMLButtonElement>(null);
   const [pos, setPos] = React.useState<{ top: number; right: number } | null>(null);
@@ -79,6 +98,7 @@ const ProjectCostHover: React.FC<{ billing: ProjectBilling; onOpenBilling: () =>
   const fmt = (v: number) => v.toFixed(2).replace(/\.?0+$/, '');
   return (
     <div
+      ref={wrapRef}
       className="relative"
       onMouseEnter={keepOpen}
       onMouseLeave={releaseSoon}
@@ -87,19 +107,20 @@ const ProjectCostHover: React.FC<{ billing: ProjectBilling; onOpenBilling: () =>
         ref={btnRef}
         type="button"
         onClick={() => setPinned((v) => !v)}
-        title="本工程累计消耗的积分（1 积分 ≈ 0.01 元）"
+        title="本项目消耗的积分（1 积分 ≈ 0.01 元）"
         className="flex h-7 items-center gap-1 whitespace-nowrap rounded-full border border-[#e5e5e0] bg-white/90 px-2 text-[11px] font-bold text-gray-600 shadow-sm transition-colors hover:border-claude-accent/40 hover:text-claude-accent"
       >
-        {t('本工程')} {fmt(billing.total_points)} {t('积分')}
+        {t('消耗')} {fmt(billing.total_points)} {t('积分')}
       </button>
       {open && pos && createPortal(
         <div
+          ref={cardRef}
           style={{ position: 'fixed', top: pos.top, right: pos.right }}
           className="z-[80] w-[190px] rounded-xl border border-claude-border bg-white p-2.5 shadow-lg"
           onMouseEnter={keepOpen}
           onMouseLeave={releaseSoon}
         >
-          <div className="mb-1 text-[9px] font-bold uppercase tracking-[0.12em] text-gray-400">{t('本工程消耗')}</div>
+          <div className="mb-1 text-[9px] font-bold uppercase tracking-[0.12em] text-gray-400">{t('消耗明细')}</div>
           {steps.length === 0 && <div className="text-[10px] text-gray-400">{t('还没有消耗')}</div>}
           {steps.map((s) => (
             <div key={s.step} className="flex items-center justify-between text-[10px] text-gray-500">

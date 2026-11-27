@@ -428,6 +428,28 @@ const PreviewFrame: React.FC<{ style: SubtitleStyle }> = ({ style }) => {
   );
 };
 
+/** 进阶区：默认折叠。收起时只占一行标题条，点开是完整的进阶卡片（时间轴 + 排版）。 */
+const AdvancedFold: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [open, setOpen] = React.useState(false);
+  return (
+    <div className="bg-claude-paper/40 border border-[#ECEAE3] rounded-2xl overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen(v => !v)}
+        className="w-full flex items-center gap-2 px-4 py-2.5 cursor-pointer hover:bg-claude-paper/70 transition-colors"
+        aria-expanded={open}
+      >
+        <span className={`text-[10px] text-gray-400 transition-transform duration-150 ${open ? 'rotate-90' : ''}`}>▶</span>
+        <span className="text-[9px] font-bold uppercase tracking-[0.18em] text-gray-400">进阶设置</span>
+        <span className="text-[10px] text-gray-400/80">时间轴 · 排版 · 双语颜色</span>
+        <span className="flex-1" />
+        <span className="text-[10px] font-semibold text-gray-400">{open ? '收起' : '展开'}</span>
+      </button>
+      {open && <div className="px-4 pb-3.5 space-y-3.5 border-t border-[#E3E1D8] pt-3">{children}</div>}
+    </div>
+  );
+};
+
 interface SubtitleStylePanelProps {
   style: SubtitleStyle;
   onStyleChange: (patch: SubtitleStylePatch) => void;
@@ -576,7 +598,7 @@ const SubtitleStylePanel: React.FC<SubtitleStylePanelProps> = ({
         * 进阶区：纸色底、行紧凑、控件小一号。都是"默认值已经很好、偶尔才动"的项，
         * 和上面的主卡片拉开层次，但不折叠——仍然一屏可见。
         */}
-      <Group title="时间轴" tone="secondary">
+      <AdvancedFold>
         <Slider
           label="最长时长"
           value={style.max_duration}
@@ -618,9 +640,7 @@ const SubtitleStylePanel: React.FC<SubtitleStylePanelProps> = ({
           tone="secondary"
           onChange={label => onStyleChange({ fps: Number(Object.entries(FPS_CHOICES).find(([, l]) => l === label)?.[0] ?? 0) })}
         />
-      </Group>
 
-      <Group title="排版" tone="secondary">
         {/*
           * Only the MKV/ASS track and the burn-in can carry a font NAME; an MP4
           * `mov_text` track cannot, and the player decides there. The name is
@@ -699,7 +719,8 @@ const SubtitleStylePanel: React.FC<SubtitleStylePanelProps> = ({
             onChange={v => onStyleChange({ secondary_color: v })}
           />
         )}
-      </Group>
+
+      </AdvancedFold>
     </div>
   </div>
 );
